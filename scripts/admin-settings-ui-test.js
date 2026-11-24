@@ -92,8 +92,8 @@ try {
   assert.ok(await js("[...document.querySelectorAll('.pm-ptable .c-pname b')].every(b => b.getBoundingClientRect().height < 24)"), '專案名稱不換行');
   await shot('4-電腦-專案');
   await sec('accounts', '.adm-acc [data-pm-cross]');
-  const acc = await J("({ reset: document.querySelectorAll('.adm-acc [data-pm-reset]').length, dis: document.querySelectorAll('.adm-acc [data-pm-disable]').length, adm: document.querySelectorAll('.adm-acc [data-pm-admin]').length, rescue: document.querySelector('#adm-rescue')?.innerText || '' })");
-  assert.deepEqual([acc.reset, acc.dis, acc.adm], [2, 2, 2], '帳號與救援：自己以外的人類有重設登入、停用、交接管理員');
+  const acc = await J("({ reset: document.querySelectorAll('.adm-acc [data-pm-reset]').length, dis: document.querySelectorAll('.adm-acc [data-pm-disable]').length, adm: document.querySelectorAll('.adm-acc [data-pm-wsrole]').length, admOff: document.querySelectorAll('.adm-acc [data-pm-wsrole][disabled]').length, transfer: document.querySelectorAll('.adm-acc [data-pm-admin]').length, rescue: document.querySelector('#adm-rescue')?.innerText || '' })");
+  assert.deepEqual([acc.reset, acc.dis, acc.adm, acc.admOff, acc.transfer], [2, 2, 3, 1, 0], '帳號與救援：自己以外的人類有重設登入、停用；每位人類（含自己）有升降工作區管理員，自己是最後一位所以停用；沒有交接管理員');
   assert.match(acc.rescue, /APP_URL=https:\/\/你的網址 npm run admin-rescue[\s\S]*npm run admin-rescue -- --local[\s\S]*DATABASE_URL/, '救援指令：Cloudflare、本機／Docker、Postgres');
   assert.ok(await js("document.querySelector('.adm-acc').getBoundingClientRect().right <= document.querySelector('.adm-main').getBoundingClientRect().right + 1"), '1280 帳號表格沒有超出');
   await shot('5-電腦-帳號與救援');
@@ -131,7 +131,7 @@ try {
   await until(() => js(`!!document.querySelector('[data-pm-mem="${id(wang)}"]')`), 5000, '依成員');
   await click(`[data-pm-mem="${id(wang)}"]`);
   await until(() => js("!!document.querySelector('.pm-acc-line [data-adm=\"accounts\"]')"), 5000, '帳號區一行');
-  assert.ok(await js("!document.querySelector('.pm-detail [data-pm-reset], .pm-detail [data-pm-cross], .pm-detail [data-pm-disable], .pm-detail [data-pm-admin]')"), 'C 成員詳細沒有帳號動作');
+  assert.ok(await js("!document.querySelector('.pm-detail [data-pm-reset], .pm-detail [data-pm-cross], .pm-detail [data-pm-disable], .pm-detail [data-pm-wsrole]')"), 'C 成員詳細沒有帳號動作');
   await click('.pm-acc-line [data-adm="accounts"]');
   await until(() => js("location.pathname === '/admin/accounts'"), 8000, 'C 帳號區連到帳號與救援');
   // 舊網址
