@@ -4,7 +4,7 @@
 // 開放申請：沒設過＝開放（新專案、預設專案、引導建的專案都一樣）；專案管理員關掉才存 open: false
 // 專案可見度：開放專案工作區成員直接加入（POST /api/projects/:id/join）；審核專案走上面的申請；
 // 私人專案不列出、不收申請，看不到的人拿到的錯誤跟「沒有這個專案」一樣。判斷都在權限模組（discover_project、join_project、request_join）
-import { ACCESS_ROLE, PROJECT_VISIBILITY } from './access.js';
+import { ACCESS_ROLE, PROJECT_VISIBILITY, inWorkspace } from './access.js';
 import { PROJECT_ROLE } from './membership.js';
 
 export const joinOpen = (set, pj) => (set && set[pj] ? set[pj].open !== false : true);
@@ -142,10 +142,15 @@ export function registerJoin(d) {
     const role = readRole(body.role), ro = body.readOnly === true;
     const p = (await peopleMap(ctx)).get(r.participant_id);
     if (!p || p.status !== 'active' || p.kind !== 'human') throw new ApiError(409, 'APPLICANT_GONE', '申請人已停用或刪除，請拒絕這個申請');
+    const notMember = () => new ApiError(403, 'NOT_WORKSPACE_MEMBER', `${p.name} 已經不是工作區成員，不能加入專案；請拒絕這個申請。`);
+    if (!inWorkspace(p)) throw notMember();
     const at = nowIso();
-    // 先改狀態（同一筆只會成功一次），再加入專案
-    const upd = await db.run("UPDATE join_requests SET status = 'approved', role = ?, read_only = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'", role, ro ? 1 : 0, me.id, at, r.id);
-    if (!upd.changes) throw new ApiError(409, 'JOIN_DECIDED', '這個申請已經處理過了');
+    // 先改狀態（同一筆只會成功一次；申請人同時被移出工作區也不會成功），再加入專案
+    const upd = await db.run("UPDATE join_requests SET status = 'approved', role = ?, read_only = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'active' AND workspace_status = 'active')", role, ro ? 1 : 0, me.id, at, r.id, p.id);
+    if (!upd.changes) {
+      if ((await db.get('SELECT workspace_status FROM participants WHERE id = ?', p.id))?.workspace_status === 'removed') throw notMember();
+      throw new ApiError(409, 'JOIN_DECIDED', '這個申請已經處理過了');
+    }
     if (!projectsOf(p).includes(r.project)) await applyMembership(ctx, me, [{ id: p.id, projects: PROJECTS.filter(x => projectsOf(p).includes(x) || x === r.project) }], { byLeader: !admin });
     if (role) { await loadProjectRoles(true); const cur = titles(); await saveProjectRoles({ ...cur, [p.id]: { ...(cur[p.id] || {}), [r.project]: role } }); }
     if (ro) await addReadOnly(p.id, [r.project]);

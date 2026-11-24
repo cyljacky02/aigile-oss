@@ -4,6 +4,7 @@
 // C. 從名冊升降工作區管理員、平台管理員；最後一位時按鈕停用並說明原因
 // D. 從名冊移出工作區、停用帳號（停用的在「所有帳號」可以恢復）
 // E. 帳號與救援不再有升降、移出、停用（入口搬到名冊）；375 不橫向捲動
+// F. 升級時同時是專案管理員又是唯讀、先設成唯讀成員的人：工作區管理員在名冊上看到「請確認專案角色」，可以略過；一般成員看不到
 // 名冊的權限規則在 roster-test.js 驗。需要 Chrome 或 Edge；找不到就略過。用法：node scripts/roster-ui-test.js
 import assert from 'node:assert';
 import { startKit, findBrowser, until } from './browser-kit.js';
@@ -20,6 +21,9 @@ try {
   assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '張新人', projects: [{ project: '預設專案', role: 'viewer' }] })).status, 201);
   assert.equal((await call(boss.token, `/api/participants/${Zo}/remove`, 'POST')).status, 200);
   assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '趙前同事' })).status, 201, '邀請已移出的人回來（rejoin）');
+  // 王小美：升級時在預設專案同時是 leader 又是唯讀（升級轉換寫的標記），現在是唯讀成員
+  assert.equal((await call(boss.token, `/api/projects/預設專案/members/${Wg}`, 'PUT', { role: 'viewer' })).status, 200);
+  kit.sql('INSERT INTO app_settings (key, value) VALUES (?, ?)', 'upgrade_review:' + Wg, JSON.stringify(['預設專案']));
 
   const { js, login, cdp } = await kit.browser(1280, 860);
   const size = (w, h) => cdp('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: w < 700 });
@@ -30,6 +34,11 @@ try {
   const has = async name => (await rows()).some(t => t.includes(name));
   const filters = () => js("[...document.querySelectorAll('[data-rs-filter]')].map(b => b.dataset.rsFilter).join(',')");
   const okConfirm = async () => { await until(() => js("!!document.querySelector('.confirm-root [data-ok]')"), 8000, '確認框'); await click('.confirm-root [data-ok]'); };
+  // 按了要跳確認框的按鈕再按確定：名冊剛重讀、按鈕剛換掉時按到舊的就再按一次（不是固定等幾毫秒）
+  const confirmVia = async sel => {
+    await until(async () => (await js("!!document.querySelector('.confirm-root [data-ok]')")) || (await click(sel), false), 8000, '確認框：' + sel);
+    await click('.confirm-root [data-ok]');
+  };
   const filter = k => until(async () => { // 名冊重讀中按鈕還沒出來就再按一次
     if (await js(`document.querySelector('[data-rs-filter="${k}"]')?.getAttribute('aria-pressed') === 'true'`)) return true;
     await click(`[data-rs-filter="${k}"]`);
@@ -49,12 +58,21 @@ try {
   assert.ok(!(await has('趙前同事')), '已移出的不在名冊');
   assert.equal(await filters(), 'active', '一般成員只有啟用中');
   assert.equal(await count('[data-pm-wsrole], [data-pm-platrole], [data-pm-remove], [data-pm-disable]'), 0, '一般成員沒有管理按鈕');
+  assert.equal(await count('.rs-review, [data-rs-review-ok]'), 0, '一般成員看不到升級時的專案角色確認');
   console.log('✓ 一般成員看得到名冊，沒有管理按鈕');
 
   // ---- B 篩選 ----
   await login(boss.token, '/roster');
   await until(() => js("!!document.querySelector('.rs-table')"), 10000, '管理員的成員名冊');
   assert.equal(await filters(), 'active,removed,pending,accounts', '平台管理員：啟用中、已移出、待接受邀請、所有帳號');
+  // ---- F 升級時的專案角色確認 ----
+  await until(() => js("[...document.querySelectorAll('.rs-tr')].some(tr => tr.textContent.includes('王小美') && tr.querySelector('.rs-review'))"), 8000, '王小美標「請確認專案角色」');
+  assert.match(await attr('.rs-review', 'title'), /預設專案/, '說明是哪個專案');
+  assert.equal(await count('.rs-review'), 1, '只有王小美');
+  await click(`[data-rs-review-ok="${Wg}"]`);
+  await until(async () => (await count('.rs-review')) === 0, 8000, '略過後不再標');
+  assert.equal((await api(boss.token, Wg)).upgradeReview, undefined, '伺服器也清掉了');
+  console.log('✓ 升級時的專案角色確認：工作區管理員看得到、可以略過');
   await filter('removed');
   await until(() => has('趙前同事'), 8000, '已移出有趙前同事');
   assert.ok(!(await has('陳昭宇')));
@@ -89,14 +107,14 @@ try {
   console.log('✓ 從名冊升降工作區管理員、平台管理員；最後一位時按鈕停用');
 
   // ---- D 移出、停用 ----
-  await click(`.rs-table [data-pm-remove="${Wg}"]`); await okConfirm();
+  await confirmVia(`.rs-table [data-pm-remove="${Wg}"]`);
   await until(async () => !(await api(boss.token, Wg)), 8000, '王小美移出工作區');
   await until(async () => !(await has('王小美')), 8000, '王小美不在啟用中');
   await filter('removed');
   await until(() => has('王小美'), 8000, '王小美在已移出');
   await filter('active');
   await until(() => js(`!!document.querySelector('.rs-table [data-pm-disable="${Ln}"]')`), 8000, '停用按鈕');
-  await click(`.rs-table [data-pm-disable="${Ln}"]`); await okConfirm();
+  await confirmVia(`.rs-table [data-pm-disable="${Ln}"]`);
   await until(async () => (await call(lin.token, '/api/me')).status === 401, 8000, '林小新停用後登不進來');
   await filter('accounts');
   await until(() => js(`!!document.querySelector('.rs-table [data-pm-enable="${Ln}"]')`), 8000, '所有帳號裡可以恢復林小新');

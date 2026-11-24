@@ -3,6 +3,8 @@
 //   members   所有工作區成員：工作區裡啟用中的人與 AI（包括還沒有專案的人）。有隱含權限的人（平台管理員）不因此列進來
 //   removed   已移出工作區的人類（只有工作區管理員，含平台管理員的隱含權）
 //   accounts  全平台帳號（含停用；只有平台管理員）
+//   members[].upgradeReview  升級前同時是 leader 又是唯讀、先當了唯讀成員的專案 [{ project, projectName }]（只有工作區管理員看得到；
+//             升為專案管理員、改了專案角色或按略過（DELETE /api/roster/:id/upgrade-review）後不再列）
 //   can       查詢者在名冊上能做的事（畫面決定要不要顯示按鈕；伺服器端照樣各自檢查）
 // 每個人的專案資訊（memberships）只列查詢者看得到的專案（私人專案不外洩，access discovers）；AI 查詢時看的是擁有者看得到的。
 // 欄位叫 memberships 而不是 projects：core 的 scrubProjects 會把別人的 projects 過濾成「自己在的專案」，名冊要照可見度過濾，不照共同專案。
@@ -40,6 +42,9 @@ export function registerRoster({ route, db, access, peopleMap, membership, PROJE
       };
     };
     const all = [...people.values()].sort(byJoined);
+    // 升級時要確認的專案角色：只列現在實際上還是唯讀成員的專案（升為工作區管理員、改了專案角色就不列）
+    const reviews = v.can(me, 'review_upgrade', 'workspace') ? await membership.upgradeReviews() : new Map();
+    const reviewOf = p => (reviews.get(p.id) || []).filter(pj => visible.has(pj) && v.roleIn(p, { project: pj }) === 'viewer').map(pj => ({ project: pj, projectName: nameOf(pj) }));
     const can = {
       assignWorkspaceAdmin: v.can(me, 'assign_workspace_admin', 'workspace'),
       removeMember: v.can(me, 'remove_member', 'workspace'),
@@ -47,7 +52,10 @@ export function registerRoster({ route, db, access, peopleMap, membership, PROJE
       manageAccounts: v.can(me, 'manage_accounts', 'platform'),
     };
     const out = {
-      members: all.filter(p => p.status === 'active' && (human(p) || p.kind === 'ai') && inWorkspace(p)).map(p => personOf(p, ROSTER_STATUS.ACTIVE)),
+      members: all.filter(p => p.status === 'active' && (human(p) || p.kind === 'ai') && inWorkspace(p)).map(p => {
+        const out = personOf(p, ROSTER_STATUS.ACTIVE), review = human(p) ? reviewOf(p) : [];
+        return review.length ? { ...out, upgradeReview: review } : out;
+      }),
       can,
     };
     if (v.can(me, 'see_removed_members', 'workspace')) {
@@ -63,5 +71,11 @@ export function registerRoster({ route, db, access, peopleMap, membership, PROJE
       }));
     }
     return out;
+  });
+  // 略過升級時的專案角色確認（工作區管理員）：專案角色不變，只是名冊上不再標
+  route('DELETE', '/api/roster/:id/upgrade-review', async ({ ctx, me, params }) => {
+    await access.check(ctx, me, 'review_upgrade', 'workspace', { what: '略過升級時的專案角色確認' });
+    await membership.clearUpgradeReview(params.id);
+    return { ok: true };
   });
 }

@@ -129,7 +129,7 @@ try {
   assert.deepEqual(r.body.returnedCards, [card.cardId, aiCard.cardId], '設唯讀前先看會退回的卡（含他的 AI 的卡）');
   assert.equal(await roleOf(wang.token, A, chen.id), 'member', 'dryRun 不改');
   r = await removeFromProject(call, wang.token, A, chen.id, { dryRun: true });
-  assert.deepEqual(r.body.returnedCards, [card.cardId], '移出前先看會退回的卡');
+  assert.deepEqual(r.body.returnedCards, [card.cardId, aiCard.cardId], '移出前先看會退回的卡（含跟著離開的 AI 的卡）');
   r = await removeFromProject(call, wang.token, A, chen.id);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(await roleOf(wang.token, A, chen.id), undefined, '移出了');

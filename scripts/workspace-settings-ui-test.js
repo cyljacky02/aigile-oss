@@ -23,7 +23,7 @@ try {
   assert.equal(await js("document.querySelector('.adm-nav [data-adm=\"group\"] .adm-t b').textContent"), '工作區設定', '左側目錄叫工作區設定');
   assert.match(await js("document.querySelector('.adm-h').textContent"), /工作區設定/, '大標題');
   assert.equal(await js("document.querySelector('label[for=\"pm-group-name\"]').textContent"), '工作區名稱');
-  assert.match(await js("document.querySelector('.pm-create-proj').innerText"), /誰可以建立專案[\s\S]*所有成員[\s\S]*只有管理員/);
+  assert.match(await js("document.querySelector('.pm-create-proj').innerText"), /誰可以建立專案[\s\S]*所有成員[\s\S]*只有工作區管理員/);
   assert.match(await js("document.querySelector('.pm-tools strong').textContent"), /可連線的 AI 工具/);
   assert.ok(await js("!!document.querySelector('.pm-join-set [data-pp=\"openjoin\"]') && !!document.querySelector('#pm-room-code')"), '開放註冊、房間碼');
   await until(() => js("!!document.querySelector('.adm-main #ws-ttl')"), 8000, '附件保存期限（工作區覆寫）');
@@ -34,7 +34,7 @@ try {
   await click('[data-pp="createprojects"][value="admins"]');
   await until(async () => (await kit.call(boss.token, '/api/workspace/settings')).body.createProjects === 'admins', 8000, '存成只有管理員');
   await until(async () => (await checked()) === 'admins', 8000, '畫面停在只有管理員');
-  await until(() => js("/設定誰可以建立專案：只有管理員/.test(document.querySelector('.pm-gs-log').textContent)"), 8000, '異動紀錄');
+  await until(() => js("/設定誰可以建立專案：只有工作區管理員/.test(document.querySelector('.pm-gs-log').textContent)"), 8000, '異動紀錄');
 
   // 一般成員：看不到新增專案
   await login(mate.token, '/');

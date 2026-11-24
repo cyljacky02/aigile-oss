@@ -9,8 +9,8 @@
 // - 平台管理員＝帳號的 platform_role 是 admin（deps.isPlatformAdmin），可以有多位；對工作區有隱含的工作區管理權（不必是工作區成員）
 // - 已移出工作區（workspace_status＝removed）的人不是工作區成員（平台管理員照樣有隱含權）
 // - 專案角色存在 project_members：admin＝專案管理員（工作區管理員有隱含權限，取較高者）、member＝專案成員、viewer＝唯讀成員
-// - 隱含權限不算成員資格：工作區管理員（含平台管理員）在沒加入、也沒有職稱的專案不列為成員（implicitOnlyIn）
-// - 唯讀成員的 AI 跟著唯讀；明確設成唯讀成員時一律不能寫（工作區管理員不能被設成唯讀成員）
+// - 隱含權限不算成員資格：工作區管理員（含平台管理員）在沒加入的專案不列為成員，只有職稱也一樣（implicitOnlyIn）
+// - 唯讀成員的 AI 跟著唯讀；明確的唯讀成員跟隱含權限取較高者：升為工作區／平台管理員就能寫，他的 AI 也是（工作區管理員不能被設成唯讀成員）
 // - AI 不能做任何管理動作
 // - 成員名冊：工作區成員（含 AI）看得到工作區裡所有人（see_member）；已移出的人只有工作區管理員看得到（see_removed_members；待接受的邀請走 invite）
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
@@ -98,7 +98,8 @@ const ACTIONS = {
   manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
   assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
   remove_member: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能把他移出工作區。`) }, // 把人移出工作區（帳號不受影響）；target 是平台管理員時只有平台管理員能
-  see_removed_members: { admin: true, rule: workspaceAdmin }, // 成員名冊：已移出工作區的人（待接受的邀請是 GET /api/invites?status=pending，invite）
+  see_removed_members: { admin: true, rule: workspaceAdmin },
+  review_upgrade: { admin: true, rule: workspaceAdmin }, // 成員名冊：升級時同時是 leader 又是唯讀、先當唯讀成員的人（upgradeReview），略過標記 // 成員名冊：已移出工作區的人（待接受的邀請是 GET /api/invites?status=pending，invite）
   invite: { admin: true, rule: workspaceAdmin },
   reset_login: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能重設他的登入。`) }, // target 是平台管理員時只有平台管理員能
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
@@ -121,7 +122,7 @@ const ACTIONS = {
   request_join: { human: true, rule: (v, me, s) => !!v.roleIn(me, 'workspace') && v.visibilityOf(s.project) === VIS.REVIEW, deny: DENY.join }, // 送加入申請：審核專案
   // 一般
   write: { light: true, rule: (v, me, s) => !v.readOnlyAt(me, s.project), deny: d => d.readOnly() },
-  see_project: { rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。') },
+  see_project: { rule: (v, me, s) => (!v.isolatedFrom(me) && !v.hiddenArchived(me).includes(s.project)) || v.projectsOf(me).includes(s.project), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。') },
   see_project_events: { rule: (v, me, s) => v.projectsOf(me).includes(s.project) || workspaceAdmin(v, me) },
   see_member: { rule: (v, me, { target: p }) => p.id === me.id || !!v.roleIn(me, 'workspace'), deny: d => d.err(404, 'NOT_FOUND', `找不到成員 ${d.s.target?.id || ''}`) }, // 成員名冊：工作區成員（含 AI）看得到工作區裡所有人；對象是不是啟用中的工作區成員由呼叫端過濾
   see_ai_state: { light: true, rule: (v, me, { target }) => v.projectsOf(target).some(p => v.projectsOf(me).includes(p)), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。') }, // 工作記憶：至少一個共同專案
@@ -140,23 +141,28 @@ const scopeOf = scope => {
 //   projects()               → 未封存的專案 id
 //   projectsOf(p)            → 他所在、未封存的專案
 //   isolatedFrom(p)          → 不在所有專案（看不到別專案的東西）
+//   hiddenArchived(p)        → 他看不到的封存私人專案（沒注入＝沒有）
 //   loadProjectAdmins(force)       → 讀專案管理員名單（10 秒快取；force 重讀）；projectAdminsOf(pj) → 目前快取裡該專案的專案管理員 id（含封存專案）
 //   loadReadOnly(force)      → 讀唯讀成員名單；isReadOnly(p, pj) → 目前快取裡 p 在 pj 是唯讀成員（AI 跟著所屬人類）
-//   titles()                 → { 成員id: { 專案id: 職稱 } }（目前快取）
+//   ownerOf(ai)              → AI 所屬人類的列（實際的唯讀要看他有沒有隱含權限）
 //   memberProjectsOf(p)      → 他明確加入的（未封存）專案（不含隱含權限；沒給就用 projectsOf）
 //   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
 //   isPlatformAdmin(p)       → 他的帳號是平台管理員（沒注入＝沒有平台管理員）
 //   visibilityOf(pj)         → 專案可見度（PROJECT_VISIBILITY；沒注入或不認得的值＝審核）
 export function createAccess(deps) {
-  const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, projectAdminsOf, isReadOnly, titles } = deps;
+  const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, projectAdminsOf, isReadOnly } = deps;
   const memberProjectsOf = deps.memberProjectsOf || projectsOf;
   // 平台管理員（啟用中的人類）；實際的工作區管理權＝工作區管理員或平台管理員（隱含）
   const isPlatformAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && !!deps.isPlatformAdmin?.(p);
   const adminInWorkspace = p => hasWorkspaceAdminRights(p, deps.isPlatformAdmin);
   // 隱含權限不算成員：工作區管理員（含平台管理員）在沒加入、也沒有職稱的專案不列為成員（名單、人數、團隊狀態、@所有人都不算）
-  const implicitOnly = (p, pj) => !!pj && adminInWorkspace(p) && !memberProjectsOf(p).includes(pj) && !titles()[p.id]?.[pj];
+  // （只有職稱不算成員：職稱不帶權限，也不帶成員資格）
+  const implicitOnly = (p, pj) => !!pj && adminInWorkspace(p) && !memberProjectsOf(p).includes(pj);
 
-  const readOnlyIn = (p, pj) => !!p && !!pj && isReadOnly(p, pj);
+  // 實際的唯讀：明確是唯讀成員，而且沒有更高的隱含權限（取較高者：升為工作區／平台管理員就能寫）。AI 看所屬人類
+  // ownerOf(ai)：所屬人類的列（沒注入／讀不到＝當他沒有隱含權限，寧可少給）
+  const implicitAdmin = p => adminInWorkspace(p?.kind === 'ai' ? deps.ownerOf?.(p) : p);
+  const readOnlyIn = (p, pj) => !!p && !!pj && isReadOnly(p, pj) && !implicitAdmin(p);
   const readOnlyList = p => projects().filter(pj => readOnlyIn(p, pj));
   const readOnlyError = (p, pj) => new ApiError(403, 'READ_ONLY', `${p?.kind === 'ai' ? '你的所屬人類' : '你'}在「${nameOf(pj)}」是唯讀成員，只能看，不能發訊息、回覆、建卡、改卡、交接、上傳或私訊。需要權限請找工作區管理員或該專案的專案管理員。AI 收到這個就停下、在本機對話告訴所屬人類，不要重試。`);
 
@@ -170,7 +176,7 @@ export function createAccess(deps) {
     };
     const isAdmin = adminInWorkspace;
     const v = {
-      people, admin: adminNow, projects, projectsOf, isolatedFrom,
+      people, admin: adminNow, projects, projectsOf, isolatedFrom, hiddenArchived: p => deps.hiddenArchived?.(p) || [],
       admins: () => adminsOf(needPeople()),
       platformAdmins: () => [...needPeople().values()].filter(isPlatformAdmin).sort(byJoined),
       // 最後一位保護：p 是該層的管理員，而且除了他沒有別的（降級、移出、停用、離開都要先問）。工作區只算明確的工作區管理員
