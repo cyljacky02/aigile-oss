@@ -26,7 +26,7 @@ try {
   assert.match(await js("document.querySelector('.pm-create-proj').innerText"), /誰可以建立專案[\s\S]*所有成員[\s\S]*只有管理員/);
   assert.match(await js("document.querySelector('.pm-tools strong').textContent"), /可連線的 AI 工具/);
   assert.ok(await js("!!document.querySelector('.pm-join-set [data-pp=\"openjoin\"]') && !!document.querySelector('#pm-room-code')"), '開放註冊、群組密碼');
-  await until(() => js("!!document.querySelector('.adm-main #adm-ttl')"), 8000, '附件保存期限');
+  await until(() => js("!!document.querySelector('.adm-main #ws-ttl')"), 8000, '附件保存期限（工作區覆寫）');
   assert.equal(await checked(), 'members', '新安裝：所有成員');
   assert.ok(!(await js("document.body.innerText.includes('群組設定')")), '畫面上沒有「群組設定」');
 

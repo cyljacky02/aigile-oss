@@ -73,7 +73,7 @@ try {
   assert.equal((await me(chen.token)).workspaceRole, 'admin', '陳昭宇升為工作區管理員');
   assert.deepEqual((await call(boss.token, '/api/participants')).body.items.filter(p => p.workspaceRole === 'admin').map(p => p.participantId).sort(), [Bo, Cn].sort(), '名單上兩位管理員');
   for (const [tok, who] of [[boss.token, '林志明'], [chen.token, '陳昭宇']]) {
-    assert.equal((await call(tok, '/api/participants/disabled')).status, 200, `${who} 能看已停用名單`);
+    assert.equal((await call(tok, '/api/invites')).status, 200, `${who} 能看邀請`);
     assert.equal((await call(tok, '/api/invites', 'POST', { name: '新人' + who, projects: [A] })).status, 201, `${who} 能發邀請`);
     assert.equal((await call(tok, '/api/group/settings', 'PUT', { openJoin: true })).status, 200, `${who} 能改工作區設定`);
   }
@@ -99,6 +99,9 @@ try {
   // ---- 先升別人、再降自己 ----
   const bossAi = (await call(boss.token, '/api/my-ais', 'POST', { projects: [B], roleKey: 'PG', role: '程式開發', name: '林的PG', ...S })).body;
   assert.ok(bossAi.participantId, '管理員靠隱含權限把 AI 放進沒加入的第二專案');
+  // 林志明也是平台管理員（對工作區有隱含管理權，#9）：平台管理員一樣先升別人、再降自己
+  assert.equal((await call(boss.token, `/api/participants/${Cn}/platform-role`, 'PUT', { role: 'admin' })).status, 200);
+  assert.equal((await call(boss.token, `/api/participants/${Bo}/platform-role`, 'PUT', { role: 'none' })).status, 200);
   const down = await setRole(boss.token, Bo, 'member');
   assert.equal(down.status, 200, JSON.stringify(down.body));
   assert.equal((await me(boss.token)).workspaceRole, 'member', '林志明降為成員');
@@ -120,8 +123,8 @@ try {
   assert.equal((await me(wang.token)).workspaceRole, 'member', '410 之後什麼都沒改');
   console.log('✓ 移交端點回 410');
 
-  // ---- 停用：停用的人不再是管理員，也不能被升 ----
-  assert.equal((await call(boss.token, `/api/participants/${Wg}/disable`, 'POST')).status, 200);
+  // ---- 停用的人不能被升 ----
+  assert.equal((await call(chen.token, `/api/participants/${Wg}/disable`, 'POST')).status, 200, '停用帳號是平台管理員的事');
   assert.equal(code(await setRole(boss.token, Wg, 'admin')), 'NOT_WORKSPACE_MEMBER', '停用的人不能升');
   console.log('workspace-admin-test：全部通過');
 } catch (e) {

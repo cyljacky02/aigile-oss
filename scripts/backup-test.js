@@ -156,6 +156,7 @@ try {
   }
   const meB = (await B.call(dev, '/api/me')).body;
   assert.equal(meB.participantId, liu.participant.participantId, '你的裝置登入改掛到備份裡的管理員');
+  assert.deepEqual([meB.workspaceRole, meB.platformRole], ['admin', 'admin'], '還原的人是工作區管理員與平台管理員');
   assert.equal((await B.call(me.token, '/api/me')).body.participantId, liu.participant.participantId, '你的登入碼也跟著過去');
   assert.equal((await B.call(null, '/api/auth/password', 'POST', { username: 'newboss', password: 'pass-word-2' })).status, 200, '你的密碼照舊能登入');
   assert.equal((await B.call(null, '/api/auth/password', 'POST', { username: 'boss', password: 'pass-word-1' })).status, 400, '備份裡的密碼沒帶過來');

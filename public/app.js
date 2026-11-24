@@ -504,7 +504,7 @@
   }
   document.querySelectorAll('.logout-btn').forEach(b => b.addEventListener('click', () => logout(true)));
 
-  // 訊息附件保存時間（管理員在「管理員設定 › 稽核與儲存」調，/api/me 的 fileTtlHours；沒改過＝主機 FILE_TTL_HOURS，沒設 24 小時）
+  // 訊息附件保存時間（平台管理員在「管理員設定 › 平台設定」設預設、工作區設定可以覆寫，/api/me 的 fileTtlHours；沒改過＝主機 FILE_TTL_HOURS，沒設 24 小時）
   // 中文「1 小時」「24 小時」「3 天」；英文分單複數（1 hour、24 hours、3 days），整句用 L() 組，不靠字典拼單位
   const ttlUnit = h => (h < 1 ? ['m', Math.max(1, Math.round(h * 60))] : h >= 48 && h % 24 === 0 ? ['d', h / 24] : ['h', Math.round(h)]);
   const ttlZh = h => { const [u, n] = ttlUnit(h); return u === 'm' ? `${n} 分鐘` : u === 'd' ? `${n} 天` : `${n} 小時`; };
@@ -532,7 +532,8 @@
   document.addEventListener('click', e => { if (e.target.closest('[data-open-profile]')) { closeSheet(false); openSettings({ tab: 'me' }); } }); // 頭像那列 → 個人設定 › 個人資料
 
   // ---------- 右上頭像選單（每個畫面都有）：我的 AI、成員與權限（管理員）、個人設定、API 資訊與登入碼、登出 ----------
-  const isAdmin = () => state.me?.workspaceRole === 'admin'; // 我是工作區管理員（可以有多位）
+  const isPlat = () => state.me?.platformRole === 'admin'; // 我是平台管理員（平台設定、停用帳號）
+  const isAdmin = () => state.me?.workspaceRole === 'admin' || isPlat(); // 我能管理工作區：工作區管理員（可以有多位），或平台管理員（隱含）
   // 某人是不是工作區管理員（名單上的人看 workspaceRole）
   const isAdmId = id => !!id && ((state.participants?.get(id) || (id === state.me?.participantId ? state.me : null))?.workspaceRole === 'admin');
   // 啟用中的工作區管理員（最後一位不能降級）
@@ -766,7 +767,7 @@
           ${st.manualText ? `<textarea class="sw-text" readonly rows="4" aria-label="接入指令">${esc(st.manualText)}</textarea>` : ''}
           <div class="sw-actions"><span class="grow"></span><button type="button" class="btn" data-sw="done">完成</button><button type="button" class="btn primary" data-sw="copyai">${st.copied ? '✓ 已複製' : copyLabel}</button></div>`;
       }
-      const demoLine = st.demo ? `<p class="sw-demo small" role="status">已載入示範資料「${esc(st.demo)}」，完成設定後在專案清單看得到；看完到「管理員設定 › 系統與備份」清除。</p>`
+      const demoLine = st.demo ? `<p class="sw-demo small" role="status">已載入示範資料「${esc(st.demo)}」，完成設定後在專案清單看得到；看完到「管理員設定 › 平台設定」清除。</p>`
         : '<p class="sw-demo small">想先看看用起來的樣子？<button type="button" class="link" data-sw="demo">載入示範資料</button>（虛構的示範專案，看完可以清掉）</p>';
       el.innerHTML = head + demoLine + `<p class="error sw-err" role="alert"${msg ? '' : ' hidden'}>${esc(msg)}</p>` + html;
       if (st.step === 1 && pj) st.slugField = bindSlugField(el, 'sw-pj-slug', el.querySelector('#sw-pj-name'), pj.id);
@@ -8842,15 +8843,17 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     ['group', '🏷️', '工作區設定', '名稱、建立專案、AI 工具、開放註冊、附件保存'],
     ['projects', '📁', L('專案', 'Projects'), '新增、改名、程式庫、封存、永久刪除'], // 字典的「專案」是單數，目錄要複數
     ['invites', '✉️', '邀請', '邀請新的人、重發、作廢'],
-    ['accounts', '🔑', '帳號與救援', '重設登入、停用、救援指令'],
-    ['audit', '🔍', '稽核與儲存', '全站稽核紀錄、儲存空間、附件保存'],
-    ['system', '🛠️', '系統與備份', '版本更新、範例資料、備份與匯入'],
+    ['accounts', '🔑', '帳號與救援', '重設登入、移出工作區、停用、救援指令'],
+    ['audit', '🔍', '稽核與儲存', '全站稽核紀錄、儲存空間'],
+    ['system', '🛠️', '平台設定', '版本更新、備份與匯入、附件保存預設、範例資料'], // 只有平台管理員看得到（admSecs）
   ];
+  const PLAT_SECS = ['system'];
+  const admSecs = () => ADM_SECS.filter(x => isPlat() || !PLAT_SECS.includes(x[0]));
   const ADM_OLD_TABS = ['projects', 'invites', 'group', 'system']; // 原本在成員管理的分頁
   const ADM_SOON = 6 * 3600_000; // 邀請剩不到 6 小時算「快到期」
   function openAdmin(sec = null) {
     if (!isAdmin()) return openPermTab('members');
-    const adm = ADM_SECS.some(x => x[0] === sec) ? sec : null;
+    const adm = admSecs().some(x => x[0] === sec) ? sec : null;
     if (adm === 'group') perm.gs = null; // 加入設定每次重讀
     Object.assign(perm, { tab: 'admin', adm, picker: false, addOpen: false, moreOpen: null, mobileDetail: false });
     permGo();
@@ -8883,7 +8886,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   function admNavHtml(cur, list) {
     const n = admTodoN(), nInv = (perm.invites || []).filter(i => i.status === '有效').length, nPj = state.projectList.filter(p => !p.archived).length;
     const side = { todo: n ? `<span class="adm-n" aria-label="${n} 件">${n}</span>` : '', projects: `<span class="adm-c muted small">${nPj}</span>`, invites: nInv ? `<span class="adm-c muted small">有效 ${nInv}</span>` : '' };
-    return `<nav class="adm-nav${list ? ' adm-list' : ''}" aria-label="管理員設定的區塊">${ADM_SECS.map(([k, ico, t, sub]) => `<button type="button" class="adm-li${k === cur ? ' sel' : ''}" data-adm="${k}"${k === cur ? ' aria-current="page"' : ''}><span class="adm-ico" aria-hidden="true">${ico}</span><span class="adm-t"><b>${t}</b><span class="adm-sub">${sub}</span></span>${side[k] || ''}<span class="adm-go" aria-hidden="true">›</span></button>`).join('')}</nav>`;
+    return `<nav class="adm-nav${list ? ' adm-list' : ''}" aria-label="管理員設定的區塊">${admSecs().map(([k, ico, t, sub]) => `<button type="button" class="adm-li${k === cur ? ' sel' : ''}" data-adm="${k}"${k === cur ? ' aria-current="page"' : ''}><span class="adm-ico" aria-hidden="true">${ico}</span><span class="adm-t"><b>${t}</b><span class="adm-sub">${sub}</span></span>${side[k] || ''}<span class="adm-go" aria-hidden="true">›</span></button>`).join('')}</nav>`;
   }
   function admTodoHtml() { // 件數放在大標題「📋 待處理 · N」，卡片不再寫一次
     const items = admTodo();
@@ -8905,7 +8908,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const id = esc(p.participantId), isAdm = isAdmId(p.participantId);
       const sub = [p.memberType === 'ai' ? 'AI' : '人類', permSub(p)].filter(Boolean).join(' · ');
       const acts = p.memberType !== 'human' ? '<span class="muted">—</span>'
-        : p.participantId !== meId() ? `<button type="button" class="btn small danger-outline" data-pm-reset="${id}">重設登入…</button><button type="button" class="btn small danger-outline" data-pm-disable="${id}">停用…</button>${wsRoleBtn(p)}`
+        : p.participantId !== meId() ? `<button type="button" class="btn small danger-outline" data-pm-reset="${id}">重設登入…</button><button type="button" class="btn small danger-outline" data-pm-remove="${id}">移出工作區…</button>${isPlat() ? `<button type="button" class="btn small danger-outline" data-pm-disable="${id}">停用…</button>` : ''}${wsRoleBtn(p)}`
         : wsRoleBtn(p);
       return `<tr class="pm-tr"><td class="c-name"><b>${esc(p.name)}</b>${isAdm ? '<span class="pill-tag blue">管理員</span>' : ''}${p.needsLogin ? '<span class="pill-tag red">要重設登入</span>' : ''}<span class="pm-sub"> · ${esc(sub)}</span></td>
         <td class="c-reset"><span class="adm-acts">${acts}</span></td></tr>`;
@@ -8914,8 +8917,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     return `<div class="pm-projs"><div class="pm-card"><div class="pm-card-head"><strong>每個人的帳號</strong><span class="muted small">重設登入、停用、升降工作區管理員會立即執行（會先確認）</span></div>
       <table class="pm-table adm-acc"><thead><tr><th scope="col">成員</th><th scope="col" class="c-reset">帳號動作</th></tr></thead><tbody>
         ${hs.length ? `<tr class="pm-grp-tr"><td colspan="2">人類 · ${hs.length}</td></tr>${hs.map(row).join('')}` : ''}${as.length ? `<tr class="pm-grp-tr"><td colspan="2">AI · ${as.length}</td></tr>${as.map(row).join('')}` : ''}</tbody></table>
-      <p class="muted small pm-note">重設登入：登出他所有裝置、作廢舊登入碼、清掉帳號密碼，產生新邀請連結讓他重新登入（他的 AI 不受影響），連結會列在「邀請」。停用：他和他的 AI 都登不進來，訊息、卡片留著，可以在下面恢復。</p></div>
-      ${permDisabledHtml()}
+      <p class="muted small pm-note">重設登入：登出他所有裝置、作廢舊登入碼、清掉帳號密碼，產生新邀請連結讓他重新登入（他的 AI 不受影響），連結會列在「邀請」。停用：他和他的 AI 都登不進來，訊息、卡片留著，可以在下面恢復。</p>
+      <p class="muted small pm-note">移出工作區：他不再是這個工作區的成員、進不來，專案成員資格一併結束，他的 AI 停用；歷史紀錄與名字保留，帳號不受影響。停用帳號只有平台管理員能做。</p></div>
+      ${isPlat() ? permDisabledHtml() : ''}
       <div class="pm-card adm-rescue" id="adm-rescue"><div class="pm-card-head"><strong>救援指令（管理員自己登不進來時）</strong></div>
         <p class="small">其他人登不進來，用上面的「重設登入」。管理員自己完全登不進來（裝置都登出了、又忘了密碼），請有主機權限的人在程式資料夾執行：</p>
         <pre class="adm-cmd"><code>APP_URL=https://你的網址 npm run admin-rescue</code></pre>
@@ -8943,11 +8947,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     return `<div class="pm-projs"><div class="pm-card adm-store"><div class="pm-card-head"><strong>儲存空間</strong></div>
       ${x.d ? st('🗄️', '專案文件區', x.d.enabled, `全部專案已用 ${fmtBytes(x.d.usedBytes)} / ${fmtBytes(x.d.limitBytes)}`, '開通前不能上傳專案文件', x.d.enabled ? '' : 'Cloudflare 版：建 R2 bucket（<code>npx wrangler@4 r2 bucket create aigile-switch-docs</code>），wrangler.toml 綁定 <code>DOCS</code> 後重新部署。本機與 Docker 版存在 data 資料夾，不用開通。') : ''}
       ${x.f ? st('📎', '訊息附件', x.f.enabled, L(`已用 ${fmtBytes(x.f.usedBytes)} / ${fmtBytes(x.f.limitBytes)} · 上傳 ${ttlZh(curTtl())}後自動刪除`, `Used ${fmtBytes(x.f.usedBytes)} / ${fmtBytes(x.f.limitBytes)} · deleted automatically ${ttlEn(curTtl())} after upload`), '開通前不能上傳訊息附件', '') : ''}</div>
-      ${admTtlHtml(x.t)}
       <div class="pm-card adm-audit"><div class="pm-card-head"><strong>全站稽核紀錄</strong><span class="muted small">最近 200 筆檔案上傳、下載、刪除、拒絕；一般成員在「文件」只看得到自己的</span><span class="grow"></span><button type="button" class="link small" data-adm-audit-reload>重新整理</button></div>
       ${auditTableHtml(x.a.items || [])}</div></div>`;
   }
-  // 訊息附件保存時間（全站一份，存資料庫、不用重新啟動）；改了只影響之後上傳的檔
+  // 訊息附件保存時間的平台預設（平台設定；存資料庫、不用重新啟動）；改了只影響之後上傳的檔。工作區可以在工作區設定覆寫（wsTtlHtml）
   // 主機的 FILE_TTL_HOURS 只是初始值：這裡沒改過才用它，改過就以這裡為準
   function admTtlHtml(t) {
     if (!t) return '';
@@ -8959,13 +8962,25 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const logs = (t.log || []).map(e => `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(L(`${e.byName || ''} 把保存時間從 ${ttlZh(e.from)} 改成 ${ttlZh(e.to)}`, `${e.byName || ''} changed retention from ${ttlEn(e.from)} to ${ttlEn(e.to)}`))}</li>`).join('');
     return `<div class="pm-card adm-ttl"><div class="pm-setrow"><label for="adm-ttl">訊息附件保存時間</label><select id="adm-ttl" aria-describedby="adm-ttl-hint">${hs.map(h => `<option value="${h}"${h === t.hours ? ' selected' : ''}>${esc(ttlLabel(h))}${h === t.defaultHours ? L('（預設）', ' (default)') : ''}</option>`).join('')}</select><button type="button" class="btn small primary" data-pp="filettl">儲存</button>
       <span class="muted small" id="adm-ttl-hint">訊息裡上傳的文件、截圖過了這段時間自動刪除（專案文件不受影響）。改了只影響之後上傳的檔；已經上傳的照上傳當時的設定到期，不會提早或延後刪除。存好立即生效，不用重新啟動或部署。</span>
-      <span class="muted small adm-ttl-src">${src}</span></div>
+      <span class="muted small adm-ttl-src">${src}</span><span class="muted small adm-ttl-ws">這是平台預設：工作區可以在「工作區設定」改成自己的保存時間。</span></div>
       <details class="pm-gs-log adm-ttl-log"${perm.ttlLogOpen ? ' open' : ''}><summary>異動紀錄</summary><ul class="pa-log">${logs || '<li class="muted small">還沒有紀錄</li>'}</ul></details></div>`;
+  }
+  // 工作區的附件保存時間：跟平台預設（空值）或覆寫成自己的（GET／PUT /api/file-ttl）
+  function wsTtlHtml(t) {
+    if (!t) return '';
+    const cur = t.workspaceHours ?? '';
+    const opts = [`<option value=""${cur === '' ? ' selected' : ''}>${esc(L(`跟平台預設（${ttlZh(t.defaultHours)}）`, `Platform default (${ttlEn(t.defaultHours)})`))}</option>`,
+      ...t.choices.map(h => `<option value="${h}"${h === cur ? ' selected' : ''}>${esc(ttlLabel(h))}</option>`)].join('');
+    const logs = (t.log || []).map(e => { const zh = h => (h == null ? '平台預設' : ttlZh(h)), en = h => (h == null ? 'the platform default' : ttlEn(h));
+      return `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(L(`${e.byName || ''} 把保存時間從 ${zh(e.from)} 改成 ${zh(e.to)}`, `${e.byName || ''} changed retention from ${en(e.from)} to ${en(e.to)}`))}</li>`; }).join('');
+    return `<div class="pm-card ws-ttl"><div class="pm-setrow"><label for="ws-ttl">訊息附件保存時間</label><select id="ws-ttl" aria-describedby="ws-ttl-hint">${opts}</select><button type="button" class="btn small primary" data-pp="wsttl">儲存</button>
+      <span class="muted small" id="ws-ttl-hint">這個工作區訊息裡上傳的文件、截圖保存多久。預設跟著平台設定；改了只影響之後上傳的檔。</span></div>
+      <details class="pm-gs-log ws-ttl-log"><summary>異動紀錄</summary><ul class="pa-log">${logs || '<li class="muted small">還沒有紀錄</li>'}</ul></details></div>`;
   }
   function admBodyHtml() {
     const narrow = narrowPerm();
     if (narrow && !perm.adm) return admNavHtml(null, true);
-    const cur = perm.adm || 'todo', [, ico, t] = ADM_SECS.find(x => x[0] === cur);
+    const cur = admSecs().some(x => x[0] === perm.adm) ? perm.adm : 'todo', [, ico, t] = ADM_SECS.find(x => x[0] === cur); // 平台設定只給平台管理員
     const body = cur === 'todo' ? admTodoHtml() : cur === 'group' ? permGroupHtml() : cur === 'projects' ? permProjectsHtml() : cur === 'invites' ? permInvitesHtml() : cur === 'accounts' ? admAccountsHtml() : cur === 'system' ? permSystemHtml() : admAuditHtml();
     const main = `<section class="adm-main" aria-label="${t}">${narrow ? '<button type="button" class="ph-back pm-back" data-adm-back>‹ 管理員設定</button>' : ''}<h3 class="adm-h"><span aria-hidden="true">${ico}</span> ${t}${cur === 'todo' && admTodoN() ? ` · ${admTodoN()}` : ''}</h3>${body}</section>`;
     return narrow ? `<div class="adm-split m-detail">${main}</div>` : `<div class="adm-split">${admNavHtml(cur, false)}${main}</div>`;
@@ -9303,14 +9318,14 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     await loadGroupSettings();
   }
   // 工作區設定＝工作區名稱＋誰可以建立專案＋可連線的 AI 工具＋怎麼加入（開放註冊、群組密碼）＋工作區異動紀錄＋附件保存期限
-  // （附件保存期限「稽核與儲存」也有一份，同一個設定；#9 分成平台預設與工作區覆寫）
+  // （附件保存期限是工作區覆寫；平台預設在「平台設定」）
   function permGroupHtml() {
     return `<div class="pm-projs">
       <div class="pm-card pm-setrow pm-group-name"><label for="pm-group-name">工作區名稱</label><input id="pm-group-name" maxlength="30" value="${esc(BASE_TITLE)}" aria-describedby="pm-gn-hint"><button type="button" class="btn small primary" data-pp="groupname">儲存</button><span class="muted small" id="pm-gn-hint">顯示在登入頁、左上角、分頁標題與 AI 接入設定。</span></div>
       ${createProjectsHtml()}
       ${groupToolsHtml()}
       ${groupJoinHtml()}
-      ${perm.gs && !perm.gs.error ? admTtlHtml(perm.gsTtl) : ''}</div>`;
+      ${perm.gs && !perm.gs.error ? wsTtlHtml(perm.gsTtl) : ''}</div>`;
   }
   // 誰可以建立專案：所有成員／只有管理員（點了就存）
   function createProjectsHtml() {
@@ -9958,7 +9973,19 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       return;
     }
     if (rs) return resetLogin(state.participants.get(rs.dataset.pmReset));
-    const dis = t.closest('[data-pm-disable]'), ena = t.closest('[data-pm-enable]'), adm = t.closest('[data-pm-wsrole]');
+    const dis = t.closest('[data-pm-disable]'), ena = t.closest('[data-pm-enable]'), adm = t.closest('[data-pm-wsrole]'), rmv = t.closest('[data-pm-remove]');
+    if (rmv) { // 移出工作區：帳號不受影響
+      const p = state.participants.get(rmv.dataset.pmRemove);
+      if (!p || !await confirmDialog({ title: `把 ${p.name} 移出工作區？`, confirmText: '移出工作區', danger: true,
+        message: `<b>${esc(p.name)}</b> 不再是這個工作區的成員、進不來；他在各專案的成員資格結束（未結案的卡退回待處理），他的 AI 停用。訊息、卡片與名字都留著。要他回來請重新邀請。` })) return;
+      try {
+        const r = await api(`/api/participants/${encodeURIComponent(p.participantId)}/remove`, { method: 'POST' });
+        toast(r.revokedAiTokens ? `已把 ${p.name} 移出工作區，${r.revokedAiTokens} 隻 AI 已停用` : `已把 ${p.name} 移出工作區`);
+        Object.assign(perm, { selMember: null, mobileDetail: false });
+        await loadParticipants(); drawPerm();
+      } catch (err) { toast(err.message); }
+      return;
+    }
     if (dis) {
       const p = state.participants.get(dis.dataset.pmDisable);
       if (!p || !await confirmDialog({ title: `停用 ${p.name}？`, confirmText: '停用', danger: true,
@@ -10029,15 +10056,28 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!pp) return;
     const id = pp.closest('[data-pj]')?.dataset.pj, a = pp.dataset.pp;
     if (perm.moreOpen) perm.moreOpen = null; // 選單裡選了就收起
-    if (a === 'filettl') {
+    if (a === 'filettl') { // 平台預設（平台設定）
       const hours = Number($('#adm-ttl').value);
       try {
-        const t = await api('/api/file-ttl', { method: 'PUT', body: { hours } });
-        if (perm.admAudit) perm.admAudit.t = t;
-        if (perm.gsTtl) perm.gsTtl = t;
-        applyFileTtl(t.hours);
+        const t = (await api('/api/platform/settings', { method: 'PUT', body: { fileTtlHours: hours } })).fileTtl;
+        perm.platTtl = t;
+        const eff = await api('/api/file-ttl').catch(() => null); // 工作區有覆寫就照覆寫
+        if (eff) { applyFileTtl(eff.hours); if (perm.gsTtl) perm.gsTtl = eff; if (perm.admAudit) perm.admAudit.t = eff; }
         toast(L(`已儲存：之後上傳的訊息附件保存 ${ttlZh(t.hours)}；已上傳的照原本的到期時間`, `Saved: attachments uploaded from now on are kept for ${ttlEn(t.hours)}; files already uploaded keep their original expiry`));
         perm.ttlLogOpen = !!$('.adm-ttl-log')?.open;
+        drawPerm();
+      } catch (err) { toast(err.message); }
+      return;
+    }
+    if (a === 'wsttl') { // 工作區覆寫（空值＝跟平台預設）
+      const v = $('#ws-ttl').value, hours = v === '' ? null : Number(v);
+      try {
+        const t = await api('/api/file-ttl', { method: 'PUT', body: { hours } });
+        perm.gsTtl = t;
+        if (perm.admAudit) perm.admAudit.t = t;
+        applyFileTtl(t.hours);
+        toast(hours === null ? L(`已儲存：跟平台預設，之後上傳的訊息附件保存 ${ttlZh(t.hours)}`, `Saved: following the platform default; attachments uploaded from now on are kept for ${ttlEn(t.hours)}`)
+          : L(`已儲存：之後上傳的訊息附件保存 ${ttlZh(t.hours)}；已上傳的照原本的到期時間`, `Saved: attachments uploaded from now on are kept for ${ttlEn(t.hours)}; files already uploaded keep their original expiry`));
         drawPerm();
       } catch (err) { toast(err.message); }
       return;
@@ -10685,8 +10725,13 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       : st.empty ? `<p class="small">${st.restoring ? '<b>上次匯入沒有做完</b>，可以再選一次備份檔從頭匯入。' : '這是空站，可以匯入備份。'}</p>
         <label class="btn${bk.busy ? ' disabled' : ''}">選擇備份檔…<input type="file" accept=".json,application/json" data-bk-file hidden${bk.busy ? ' disabled' : ''}></label>`
       : '<p class="small">這個站已經有資料，不能匯入；要搬家請在新架的空站匯入</p>';
+    if (perm.platTtl === undefined) { // 平台預設的附件保存時間
+      perm.platTtl = null;
+      api('/api/platform/settings').then(s => { perm.platTtl = s.fileTtl; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(err => toast(err.message));
+    }
     return `<div class="pm-projs">
       ${updCardHtml()}
+      ${admTtlHtml(perm.platTtl)}
       ${demoCardHtml()}
       <div class="pm-card"><div class="pm-card-head"><strong>下載備份</strong><span class="muted small">整個群組的資料（成員、專案、訊息、卡片、決策、技能、設定）存成一個檔。不含 Token、密碼與登入連結：匯入後其他人要你在「成員」按「重設登入」，AI 要主人重發 Token。</span></div>
         <div class="pm-pad bk-row"><label class="bk-check"><input type="checkbox" id="bk-files" checked> 含附件與專案文件</label><button type="button" class="btn primary" data-bk="export"${bk.busy ? ' disabled' : ''}>下載備份</button></div>${bkMsgHtml('export')}</div>

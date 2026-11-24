@@ -115,14 +115,17 @@ try {
   assert.equal((await call(mdev2, `/api/participants/${B}/workspace-role`, 'PUT', { role: 'member' })).status, 403, '不是管理員不能降別人');
   assert.equal((await call(bossTok, `/api/participants/${M}/workspace-role`, 'PUT', { role: 'admin' })).status, 200, '先升別人');
   assert.equal((await call(bossTok, `/api/participants/${B}/workspace-role`, 'PUT', { role: 'member' })).status, 200, '再降自己');
-  assert.equal((await call(bossTok, `/api/participants/${M}/disable`, 'POST')).status, 403, '降級後原本的管理員不能再管');
-  assert.equal((await call(mdev2, '/api/participants/disabled')).status, 200, '新的管理員可以');
+  // 第一位同時是平台管理員（對工作區有隱含管理權）：平台管理員也先升別人、再降自己（#9）
+  assert.equal((await call(bossTok, `/api/participants/${M}/platform-role`, 'PUT', { role: 'admin' })).status, 200, '平台管理員也先升別人');
+  assert.equal((await call(bossTok, `/api/participants/${B}/platform-role`, 'PUT', { role: 'none' })).status, 200, '再降自己');
+  assert.equal((await call(bossTok, '/api/invites')).status, 403, '降級後原本的管理員不能再管');
+  assert.equal((await call(mdev2, '/api/invites')).status, 200, '新的管理員可以');
   assert.equal((await call(mdev2, `/api/participants/${M}/disable`, 'POST')).status, 400, '管理員不能停用自己');
   // 最早加入的人換了也不影響
   await db.run("UPDATE participants SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ?", B);
   app = mk();
-  assert.equal((await call(mdev2, '/api/participants/disabled')).status, 200, '不再看誰最早加入');
-  assert.equal((await call(bossTok, '/api/participants/disabled')).status, 403);
+  assert.equal((await call(mdev2, '/api/invites')).status, 200, '不再看誰最早加入');
+  assert.equal((await call(bossTok, '/api/invites')).status, 403);
   assert.equal(await role(bossTok), 'member');
   console.log('✓ 工作區管理員是明確的角色、可以先升別人再降自己');
 

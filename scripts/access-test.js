@@ -1,7 +1,7 @@
 // 權限模組（src/access.js）：「這個人在這個範圍的實際角色」與「能不能在這個範圍做某件事」
 // 用法：node scripts/access-test.js
 // 規則依第一階段之前的行為（GLOSSARY「成員與權限」用語）：
-//   工作區管理員＝workspace_role 是 admin 的人類，可以有多位（第一階段同時是平台管理員），對所有專案有隱含權限；
+//   工作區管理員＝workspace_role 是 admin 的人類，可以有多位，對所有專案有隱含權限；平台管理員（帳號 platform_role）對工作區有隱含的管理權；
 //   leader＝專案管理員；唯讀＝唯讀成員；AI 不能做任何管理動作
 import assert from 'node:assert';
 import { createAccess, ACCESS_ROLE } from '../src/access.js';
@@ -10,17 +10,19 @@ class ApiError extends Error { constructor(status, code, message) { super(messag
 const requireHuman = me => { if (me.kind !== 'human') throw new ApiError(403, 'FORBIDDEN', '此操作僅限人類成員'); };
 
 const P = (id, kind, projects, extra = {}) => ({ id, kind, name: id, status: 'active', created_at: '2026-01-0' + id.length, projects, ...extra });
-const admin = P('admin', 'human', ['main', 'side'], { workspace_role: 'admin' });
+const admin = P('admin', 'human', ['main', 'side'], { workspace_role: 'admin', platform_role: 'admin' });
 const admin2 = P('admin2', 'human', [], { workspace_role: 'admin' }); // 第二位工作區管理員，沒加入任何專案
 const exAdmin = P('exAdmin', 'human', [], { workspace_role: 'admin', status: 'disabled' }); // 停用的不算
 const lead = P('lead', 'human', ['main']);
 const member = P('member', 'human', ['main']);
 const viewer = P('viewer', 'human', ['main']);
 const loner = P('loner', 'human', []);
+const plat = P('plat', 'human', [], { workspace_role: 'member', platform_role: 'admin', workspace_status: 'removed' }); // 平台管理員：不是工作區成員（被移出）
+const gone = P('gone', 'human', ['main'], { workspace_status: 'removed' }); // 已移出工作區的一般成員
 const sider = P('sider', 'human', ['side']);
 const bot = P('bot', 'ai', ['main'], { owner_id: 'member' });
 const viewerBot = P('viewerBot', 'ai', ['main'], { owner_id: 'viewer' });
-const people = new Map([admin, admin2, exAdmin, lead, member, viewer, loner, sider, bot, viewerBot].map(p => [p.id, p]));
+const people = new Map([admin, admin2, exAdmin, lead, member, viewer, loner, sider, bot, viewerBot, plat, gone].map(p => [p.id, p]));
 const ACTIVE = ['main', 'side']; // 「old」是封存的專案
 const leaders = { main: ['lead'], old: ['lead'] };
 const readOnly = { main: ['viewer'] };
@@ -33,6 +35,7 @@ const access = createAccess({
   loadLeaders: async () => leaders, leadersOf: pj => leaders[pj] || [],
   loadReadOnly: async () => readOnly, isReadOnly: (p, pj) => (readOnly[pj] || []).includes(p.kind === 'ai' ? p.owner_id : p.id),
   titles: () => titles, memberProjectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
+  isPlatformAdmin: p => p.platform_role === 'admin',
 });
 const ctx = {};
 const code = async p => { try { await p; return null; } catch (e) { return e.code; } };
@@ -73,6 +76,24 @@ try {
     assert.ok(!v.can(lead, action, { project: 'main' }), action + '：leader 不行');
   }
   console.log('✓ 平台、工作區動作只有管理員');
+
+  // 平台管理員（#9）：工作區管理員不等於平台管理員；平台管理員不是工作區成員也有工作區管理權、所有專案的專案管理權
+  assert.equal(v.roleIn(admin2, 'platform'), null, '工作區管理員不是平台管理員');
+  for (const action of ['manage_platform', 'manage_accounts', 'assign_platform_admin']) assert.ok(!v.can(admin2, action, 'platform'), action + '：工作區管理員不行');
+  assert.equal(v.roleIn(plat, 'platform'), PLATFORM_ADMIN);
+  assert.equal(v.roleIn(plat, 'workspace'), WORKSPACE_ADMIN, '平台管理員有隱含的工作區管理權（被移出工作區也一樣）');
+  assert.equal(v.roleIn(plat, { project: 'main' }), PROJECT_ADMIN, '也有所有專案的專案管理權');
+  assert.ok(v.can(plat, 'manage_workspace', 'workspace') && v.can(plat, 'remove_member', 'workspace'));
+  assert.ok(v.implicitOnlyIn(plat.id, 'main'), '隱含權不算成員資格');
+  assert.ok(!v.can({ ...plat, status: 'disabled' }, 'manage_platform', 'platform'), '停用的平台管理員不行');
+  assert.equal(v.roleIn(gone, 'workspace'), null, '已移出工作區的一般成員不是工作區成員');
+  assert.ok(!v.can(member, 'remove_member', 'workspace') && v.can(admin2, 'remove_member', 'workspace'), '移出工作區：工作區管理員');
+  assert.deepEqual(v.platformAdmins().map(p => p.id), ['plat', 'admin'], '兩位平台管理員（照加入順序）');
+  assert.ok(!v.lastAdmin(admin, 'platform'), '還有別的平台管理員');
+  assert.ok(access.view({ people: new Map([admin, admin2].map(p => [p.id, p])) }).lastAdmin(admin, 'platform'), '只剩他：最後一位平台管理員');
+  assert.ok(!access.view({ people: new Map([admin, admin2].map(p => [p.id, p])) }).lastAdmin(admin2, 'platform'), '不是平台管理員就不算');
+  await assert.rejects(access.check(ctx, admin2, 'manage_platform', 'platform', { what: '改平台設定' }), e => e.code === 'NOT_ADMIN' && e.message === '只有平台管理員能改平台設定。');
+  console.log('✓ 平台管理員');
 
   // 專案管理：管理員或該專案 leader；封存的專案 leader 只能改名、封存、還原這類 manage_project
   assert.ok(v.can(lead, 'manage_project', { project: 'main' }));
