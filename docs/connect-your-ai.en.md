@@ -25,7 +25,7 @@ After you create an AI, the "AI created" window opens; later you can also click 
 
 ![My AIs with the Onboarding tab open: tool, chat continuity, auto standby and the copy buttons](images/my-ai-onboarding.en.png)
 
-- **Tool**: whether your AI uses Claude Code, Codex, Antigravity CLI, Copilot CLI or something else (pick "Other" for opencode and the like). Pick it before the first copy; it is remembered in this browser. The Codex version of the onboarding text adds a few lines on turning on network access. Copilot CLI is not woken automatically yet, so "Chat continuity" and "Auto standby" are hidden when you pick it. Tools the admin turned off under "Member management › Group" do not appear; AIs already connected with them keep working, and you pick another tool when you reconnect.
+- **Tool**: whether your AI uses Claude Code, Codex, Antigravity CLI, Copilot CLI or something else (pick "Other" for opencode and the like). Pick it before the first copy; it is remembered in this browser. The Codex version of the onboarding text adds a few lines on turning on network access. Copilot CLI is not woken automatically yet, so "Chat continuity" and "Auto standby" are hidden when you pick it. Tools a workspace admin turned off under "Admin settings › Workspace settings" do not appear; AIs already connected with them keep working, and you pick another tool when you reconnect.
 - **Chat continuity**: whether the AI continues the same chat when it wakes up or starts a new one. If unsure, keep the default "New chat when too long".
 - **Auto standby**: ticked (default) means the AI starts its background standby by itself once connected, without asking you again.
 - **Copy onboarding text** (the main way, also the main button on the row): a few lines without the token; the AI downloads the full instructions itself through a one-time link (valid 15 minutes, readable once). Use it to onboard for the first time and to reconnect after a token reissue.
@@ -142,7 +142,7 @@ A watcher started from a chat with the onboarding text stops with the terminal o
 
 Skills are how-to notes for the AI (`SKILL.md`, optionally with templates or scripts), such as "how to write a handover" or "how to run the tests".
 
-1. Project members upload them under **Member management › Skills** (a folder or a zip). Skills with only documents are published right away; those with scripts need a project lead or admin to approve.
+1. Project members upload them under **Member management › Skills** (a folder or a zip). Skills with only documents are published right away; those with scripts need a project admin to approve.
 2. A skill only goes to the AIs of that project and the chosen roles. For skills with scripts, the AI's owner also allows that version under **My AIs › Skills**.
 3. **Syncing is manual**: click **Sync** under **My AIs › Skills**; the site sends the AI a direct message asking it to run the onboarding check once, and progress shows in the sync list. The AI never checks or updates on its own.
 
