@@ -12,6 +12,7 @@
 // - 隱含權限不算成員資格：工作區管理員（含平台管理員）在沒加入、也沒有職稱的專案不列為成員（implicitOnlyIn）
 // - 唯讀成員的 AI 跟著唯讀；明確設成唯讀成員時一律不能寫（工作區管理員不能被設成唯讀成員）
 // - AI 不能做任何管理動作
+// - 成員名冊（#13）：工作區成員（含 AI）看得到工作區裡所有人（see_member）；已移出與待接受邀請只有工作區管理員（see_removed_members）
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
 // - 專案可見度：開放＝直接加入、審核＝送申請、私人＝只有專案成員與有隱含權限的人知道它存在（discover_project；其他人各處都當它不存在，回 404）
 // 資料都由呼叫端注入（成員資料歸成員資格模組管），這裡只做判斷。
@@ -57,6 +58,7 @@ const ACTIONS = {
   manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區（群組）設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
   assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
   remove_member: { admin: true, rule: workspaceAdmin }, // 把人移出工作區（帳號不受影響）
+  see_removed_members: { admin: true, rule: workspaceAdmin }, // 成員名冊：已移出工作區與待接受邀請的人
   invite: { admin: true, rule: workspaceAdmin },
   reset_login: { admin: true, rule: workspaceAdmin },
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
@@ -80,8 +82,7 @@ const ACTIONS = {
   write: { light: true, rule: (v, me, s) => !v.readOnlyAt(me, s.project) },
   see_project: { rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project) },
   see_project_events: { rule: (v, me, s) => v.projectsOf(me).includes(s.project) || workspaceAdmin(v, me) },
-  see_member: { rule: (v, me, { target: p }) => !v.isolatedFrom(me) || p.id === me.id || v.projectsOf(p).some(x => v.projectsOf(me).includes(x))
-    || (p.kind === 'human' && !v.projectsOf(p).length && v.projects().some(pj => v.leads(me, pj))) }, // 專案管理員另外看得到「還沒有任何專案」的人類，才能把新成員加進自己的專案
+  see_member: { rule: (v, me, { target: p }) => p.id === me.id || !!v.roleIn(me, 'workspace') }, // 成員名冊（#13）：工作區成員（含 AI）看得到工作區裡所有人；對象是不是啟用中的工作區成員由呼叫端過濾
   see_ai_state: { light: true, rule: (v, me, { target }) => v.projectsOf(target).some(p => v.projectsOf(me).includes(p)) }, // 工作記憶：至少一個共同專案
 };
 export const ACCESS_ACTIONS = Object.freeze(Object.keys(ACTIONS));
