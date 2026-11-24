@@ -219,17 +219,30 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     const ch = statusChange(c, target.category, me, at);
     return { sets: { ...ch.sets, status_id: target.id }, logs: [`狀態 ${book.of(c)?.name ?? c.status} → ${target.name}`, ...ch.logs.slice(1)] };
   }
-  // 版本相符才更新；D1／SQLite 都用同一條語句，0 筆代表同時有人改過
+  // 卡片寫完會落在哪個狀態：指定了 status_id 就是它；換了類別或專案、沒指定就是那個類別排最前面的（auto；已封存沒有狀態）。
+  // check＝那個狀態還在的條件：讀完狀態清單之後狀態剛被刪掉，就不寫（不然卡片會留在已經沒有的欄）
+  function landing(c, sets) {
+    const pj = sets.project ?? c.project, cat = sets.status ?? c.status;
+    if ('status_id' in sets) return { auto: false, check: sets.status_id == null ? null : ['ps.id = ? AND ps.project = ?', [sets.status_id, pj]] };
+    const auto = (sets.status !== undefined && sets.status !== c.status) || sets.project !== undefined; // 類別沒變就留在原本的欄
+    return { auto, pj, cat, check: auto && cat !== '已封存' ? ['ps.project = ? AND ps.category = ?', [pj, cat]] : null };
+  }
+  const STATUS_GONE = () => new ApiError(409, 'STATUS_DELETED', '要改到的狀態剛被刪除了，請重新讀取後再試。');
+  const statusExists = check => db.get(`SELECT 1 AS x FROM project_statuses ps WHERE ${check[0]}`, ...check[1]);
+  // 版本相符、要落腳的狀態還在才更新；D1／SQLite 都用同一條語句，0 筆代表同時有人改過（或狀態剛被刪）
   function updateStmt(c, sets, at) {
-    const keys = Object.keys(sets);
-    const auto = ((sets.status !== undefined && sets.status !== c.status) || sets.project !== undefined) && !('status_id' in sets); // 類別沒變就留在原本的欄
-    const sql = `UPDATE cards SET ${keys.map(k => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}${auto ? `status_id = ${FIRST_STATUS_SQL}, ` : ''}updated_at = ?, version = version + 1 WHERE seq = ? AND version = ?`;
-    return [sql, [...keys.map(k => sets[k]), ...(auto ? [sets.project ?? c.project, sets.status ?? c.status] : []), at, c.seq, c.version]];
+    const keys = Object.keys(sets), l = landing(c, sets);
+    const sql = `UPDATE cards SET ${keys.map(k => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}${l.auto ? `status_id = ${FIRST_STATUS_SQL}, ` : ''}updated_at = ?, version = version + 1 WHERE seq = ? AND version = ?${l.check ? ` AND EXISTS (SELECT 1 FROM project_statuses ps WHERE ${l.check[0]})` : ''}`;
+    return [sql, [...keys.map(k => sets[k]), ...(l.auto ? [l.pj, l.cat] : []), at, c.seq, c.version, ...(l.check ? l.check[1] : [])]];
   }
   async function save(c, sets, logs, me, at) {
     const [sql, args] = updateStmt(c, sets, at);
     const r = await db.run(sql, ...args);
-    if (!r.changes) throw new ApiError(409, 'CONFLICT', '這張卡片剛被別人修改過，請重新讀取後再試。');
+    if (!r.changes) {
+      const { check } = landing(c, sets);
+      if (check && !(await statusExists(check))) throw STATUS_GONE();
+      throw new ApiError(409, 'CONFLICT', '這張卡片剛被別人修改過，請重新讀取後再試。');
+    }
     if (logs.length) await db.batch(logStmt(c.seq, me, logs, at));
   }
 
@@ -441,18 +454,19 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     }
     const at = nowIso(), uid = randId('card');
     // 建卡、專案內編號、紀錄、關聯訊息放同一個交易；中途失敗不會留下沒有編號的卡
+    // 狀態剛被刪掉（讀完狀態清單之後）就不插入卡片，下面紀錄的 card_seq 查不到＝NULL，整個交易失敗
     const seqOf = '(SELECT seq FROM cards WHERE uid = ?)';
     await db.batch([
       [`INSERT INTO cards (uid, type, title, reason, owner_id, status, status_id, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at,
       decider_id, proposer_id, question, recommendation, options, impact, after_next, project)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [uid, type, title, text(body, 'reason') ?? '', owner, status, target.id, text(body, 'next') ?? '', text(body, 'blocker') ?? '',
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.id = ? AND ps.project = ?)`, [uid, type, title, text(body, 'reason') ?? '', owner, status, target.id, text(body, 'next') ?? '', text(body, 'blocker') ?? '',
         waitFor, text(body, 'criteria') ?? '', me.id, requestId, at, at,
-        dec.decider_id, dec.proposer_id, dec.question, dec.recommendation, dec.options, dec.impact, dec.after_next, project]],
+        dec.decider_id, dec.proposer_id, dec.question, dec.recommendation, dec.options, dec.impact, dec.after_next, project, target.id, project]],
       [ASSIGN_PROJ_NO_SQL, [uid]],
       ...[`建立卡片（類型：${type}）`, ...(type === '決策' ? [`等 ${people.get(dec.decider_id)?.name} 決定`] : [])]
         .map(t => [`INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (${seqOf},?,?,?,?)`, [uid, at, me.id, me.kind === 'human' ? '網頁' : 'API', t]]),
       ...messageIds.map(m => [`INSERT OR IGNORE INTO card_msgs (card_seq, message_id) VALUES (${seqOf},?)`, [uid, m]]),
-    ]);
+    ]).catch(async e => { throw (await statusExists(['ps.id = ?', [target.id]])) ? e : STATUS_GONE(); });
     const c = await db.get('SELECT * FROM cards WHERE uid = ?', uid);
     // 建卡時指定了別人（負責人、等誰、決策者）就通知對方，和交接一樣會叫醒 AI
     const who = [owner && `負責人 ${people.get(owner)?.name}`, waitFor && (type === '決策' ? `等 ${people.get(waitFor)?.name} 決定` : `等 ${people.get(waitFor)?.name}`)].filter(Boolean).join('；');
@@ -977,9 +991,11 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     const status = f.type === '阻塞' ? '受阻' : '待處理', fpj = f.project || PROJECTS[0]; // 不寫死「平台」
     typeAllowed(book, fpj, f.type);
     const uid = randId('card');
-    await db.run(`INSERT INTO cards (uid, type, title, reason, owner_id, status, status_id, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at, project)
-      VALUES (?,?,?,?,?,?,${FIRST_STATUS_SQL},?,?,?,?,?,?,?,?,?)`, uid, f.type, f.title, f.reason ?? '', f.ownerId ?? null, status, fpj, status, f.next ?? '', f.blocker ?? '', f.waitForId ?? null,
-      f.criteria ?? '', r.from_id, `sug_${r.id}`, at, at, fpj);
+    // 狀態剛被刪掉（讀完狀態清單之後）就不插入
+    const made = await db.run(`INSERT INTO cards (uid, type, title, reason, owner_id, status, status_id, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at, project)
+      SELECT ?,?,?,?,?,?,${FIRST_STATUS_SQL},?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.project = ? AND ps.category = ?)`, uid, f.type, f.title, f.reason ?? '', f.ownerId ?? null, status, fpj, status, f.next ?? '', f.blocker ?? '', f.waitForId ?? null,
+      f.criteria ?? '', r.from_id, `sug_${r.id}`, at, at, fpj, fpj, status);
+    if (!made.changes) throw STATUS_GONE();
     await assignProjNo(uid);
     const c = await db.get('SELECT * FROM cards WHERE uid = ?', uid);
     await db.batch([

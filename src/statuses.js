@@ -142,8 +142,7 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
   const reply = async (ctx, pj, extra = {}) => { ctx.statusBook = null; return { items: (await statuses.load(ctx)).list(pj), ...extra }; };
   const find = (book, pj, sid) => { const s = book.byId(sid); if (!s || s.project !== pj) throw notFound(); return s; };
   const cardsIn = sid => db.all(`SELECT * FROM cards WHERE status_id = ? AND status != '${ARCHIVED}' ORDER BY seq`, sid);
-  const eventStmt = (pj, me, text, at = nowIso()) => (projEvent ? [projEvent(pj, me.id, `${me.name} ${text}`, at)] : []);
-  const event = async (pj, me, text) => { const st = eventStmt(pj, me, text); if (st.length) await db.batch(st); };
+  const event = (pj, me, text) => (projEvent ? db.batch([projEvent(pj, me.id, `${me.name} ${text}`, nowIso())]) : null);
   const keys = rows => rows.slice(0, 20).map(c => cardKey(c)).filter(Boolean);
 
   route('GET', '/api/projects/:id/statuses', async ({ ctx, me, params }) => {
@@ -214,15 +213,22 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
       if (!target || target.project !== pj || target.id === s.id) throw invalid('moveTo 要是這個專案的另一個狀態 ID');
       if (target.category === '已完成' && rows.some(c => c.type === '決策')) throw invalid('裡面有決策卡：決策卡要由決策者決定，不能直接搬到已完成。');
     }
-    // 搬卡、刪狀態、異動紀錄在同一個交易：中途失敗就整個回復，不會留下搬了一半的卡
+    // 搬卡、刪狀態、異動紀錄在同一個交易：中途失敗就整個回復，不會留下搬了一半的卡。
+    // 會被留下的卡＝還在這個狀態（這是類別最後一個狀態時：還在這個類別）；剛讀完就有卡搬進來，交易裡就會查到
+    const left = pjCol => `SELECT seq, version FROM cards WHERE project = ${pjCol} AND status != '${ARCHIVED}' AND (status_id = ?${last ? ' OR status = ?' : ''})`;
+    const leftArgs = [s.id, ...(last ? [s.category] : [])];
     const at = nowIso(), stmts = [];
     for (const c of rows) stmts.push(...(await moveCardStmts(ctx, me, c, target, at)));
-    stmts.push(['DELETE FROM project_statuses WHERE id = ?', [s.id]], ...eventStmt(pj, me, `刪除看板狀態「${s.name}」${target ? `（${rows.length} 張卡搬到「${target.name}」）` : ''}`, at));
+    // 最後一句寫異動紀錄兼檢查：還有會被留下的卡，project_id 就查不到、是 NULL，違反 NOT NULL，整個交易回復
+    stmts.push(['DELETE FROM project_statuses WHERE id = ?', [s.id]],
+      [`INSERT INTO project_events (project_id, at, actor_id, text) VALUES ((SELECT p.id FROM projects p WHERE p.id = ? AND NOT EXISTS (${left('p.id')})),?,?,?)`,
+        [pj, ...leftArgs, at, me.id, `${me.name} 刪除看板狀態「${s.name}」${target ? `（${rows.length} 張卡搬到「${target.name}」）` : ''}`]]);
     try { await db.batch(stmts); }
     catch (e) {
-      // 交易失敗：讀到之後有卡被別人改過（搬卡語句會讓交易失敗）就回 409，請重新讀取；其他錯誤照丟
-      const now = new Map((await cardsIn(s.id)).map(c => [c.seq, c.version]));
-      if (rows.length && (now.size !== rows.length || rows.some(c => now.get(c.seq) !== c.version))) throw new ApiError(409, 'CONFLICT', `「${s.name}」裡的卡片剛被別人改過，這次沒有刪除；請重新讀取後再試。`);
+      // 交易失敗：讀完之後卡片有進出或被改過、或要搬去的狀態剛被刪（搬卡語句與上面的檢查會讓交易失敗）就回 409；其他錯誤照丟
+      const now = new Map((await db.all(left('?'), pj, ...leftArgs)).map(c => [c.seq, c.version]));
+      const changed = now.size !== rows.length || rows.some(c => now.get(c.seq) !== c.version) || (target && !(await db.get('SELECT id FROM project_statuses WHERE id = ?', target.id)));
+      if (changed) throw new ApiError(409, 'CONFLICT', `「${s.name}」裡的卡片或要搬去的狀態剛有變動，這次沒有刪除；請重新讀取後再試。`);
       throw e;
     }
     if (rows.length) invalidatePeople();

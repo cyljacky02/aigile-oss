@@ -15,12 +15,15 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pst-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
 // 模擬寫入到一半失敗：開了之後，刪除狀態那一步會出錯（在交易裡就換成一步會失敗的語句，讓資料庫自己回復）
 // 模擬同時有人改卡：beforeStatusDelete 在刪除狀態的交易開始前執行一次
-let failStatusDelete = false, beforeStatusDelete = null;
-const STATUS_DELETE = /^DELETE FROM project_statuses WHERE id\b/;
+// beforeCardWrite 在下一次寫卡片（UPDATE／INSERT cards）之前執行一次（模擬讀完狀態清單、還沒寫進去時狀態被刪）
+let failStatusDelete = false, beforeStatusDelete = null, beforeCardWrite = null;
+const STATUS_DELETE = /^DELETE FROM project_statuses WHERE id\b/, CARD_WRITE = /^\s*(UPDATE cards SET|INSERT INTO cards)\b/;
 const isStatusDelete = sql => failStatusDelete && STATUS_DELETE.test(sql);
+const cardWriteHook = async sqls => { if (beforeCardWrite && sqls.some(q => CARD_WRITE.test(q))) { const f = beforeCardWrite; beforeCardWrite = null; await f(); } };
 const appDb = { ...db,
-  run: (sql, ...args) => (isStatusDelete(sql) ? Promise.reject(new Error('模擬寫入失敗')) : db.run(sql, ...args)),
+  run: async (sql, ...args) => { await cardWriteHook([sql]); if (isStatusDelete(sql)) throw new Error('模擬寫入失敗'); return db.run(sql, ...args); },
   batch: async stmts => {
+    await cardWriteHook(stmts.map(([sql]) => sql));
     if (beforeStatusDelete && stmts.some(([sql]) => STATUS_DELETE.test(sql))) { const f = beforeStatusDelete; beforeStatusDelete = null; await f(); }
     return db.batch(stmts.map(([sql, args]) => (isStatusDelete(sql) ? ['SELECT x FROM no_such_table', []] : [sql, args])));
   } };
@@ -312,6 +315,37 @@ try {
     assert.equal(d.status, '受阻', '卡片沒搬'); assert.equal(d.title, '同時改的標題', '別人的修改還在');
     ok(await del(blocked.id, { moveTo: dev.id }), '重新讀取後再刪');
     assert.equal((await getCard(c.cardId)).status, '開發中');
+  }
+
+  // 17) 刪除時剛好有卡搬進來（狀態原本是空的、是這個類別最後一個）：整個不做、回 409，卡片留在它搬進去的狀態
+  {
+    const stuck = ok(await add({ name: '卡住', category: '受阻' }), '新增').items.at(-1);
+    const c = ok(await mkCard(boss.token, { status: '開發中' }), '卡');
+    beforeStatusDelete = async () => ok(await patchCard(c.cardId, { status: '卡住' }), '同時有卡搬進來');
+    assert.equal(fail(await del(stuck.id), 409, '剛有卡搬進來').error.code, 'CONFLICT');
+    assert.equal(beforeStatusDelete, null, '真的有同時搬卡');
+    assert.ok(await byName('卡住'), '狀態還在');
+    assert.equal((await getCard(c.cardId)).status, '卡住', '卡片在看板上的「卡住」');
+  }
+
+  // 18) 寫卡片時狀態剛被刪（已經讀到狀態清單、還沒寫進去）：改狀態、建卡、採用建議建卡都回 409 STATUS_DELETED，不會留下沒有欄的卡
+  {
+    const dev = await byName('開發中');
+    ok(await del((await byName('卡住')).id, { moveTo: dev.id }), '清掉上一段的卡住');
+    const blockedOnly = async name => { const s = ok(await add({ name, category: '受阻' }), '新增').items.at(-1); beforeCardWrite = async () => ok(await del(s.id), '同時刪掉狀態'); return s; };
+    const c = ok(await mkCard(boss.token, { status: '開發中' }), '卡');
+    await blockedOnly('卡住2');
+    assert.equal(fail(await patchCard(c.cardId, { status: '卡住2' }), 409, '改狀態').error.code, 'STATUS_DELETED');
+    assert.equal(beforeCardWrite, null, '真的有同時刪');
+    assert.equal((await getCard(c.cardId)).status, '開發中', '卡片沒改');
+    await blockedOnly('卡住3');
+    assert.equal(fail(await mkCard(boss.token, { status: '卡住3', title: '不該建立的卡' }), 409, '建卡').error.code, 'STATUS_DELETED');
+    assert.equal(ok(await call(boss.token, `/api/cards?q=${encodeURIComponent('不該建立')}&include=archived`), '搜尋').items.length, 0, '沒有建出卡');
+    const ai2 = await mkAi('乙PG');
+    const sug = ok(await call(ai2.tok, '/api/suggestions', 'POST', { requestId: 's' + (++rq), kind: 'create', project: '預設專案', title: '建議的阻塞卡', type: '阻塞', blocker: '等廠商', ownerId: boss.participant.participantId, why: '卡住了' }), '建議建卡');
+    await blockedOnly('卡住4');
+    assert.equal(fail(await call(boss.token, `/api/suggestions/${sug.suggestionId}/apply`, 'POST', {}), 409, '採用建議').error.code, 'STATUS_DELETED');
+    assert.equal(ok(await call(boss.token, `/api/cards?q=${encodeURIComponent('建議的阻塞')}&include=archived`), '搜尋').items.length, 0, '沒有建出卡');
   }
 
   console.log('project-statuses-test：全部通過');
