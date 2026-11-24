@@ -136,8 +136,9 @@ try {
   }
   console.log('✓ 有隱含權限的人不因此出現在名冊上');
 
-  // ---- 5. 給 AI 用的成員查詢（MCP aigile_team → /api/team-status）：回傳形狀不變，範圍依新規則 ----
+  // ---- 5. 給 AI 用的成員查詢（MCP aigile_team → /api/team-status）：回傳形狀不變，範圍跟所屬人類一樣 ----
   {
+    assert.equal((await call(boss.token, `/api/participants/${Cn}/workspace-role`, 'PUT', { role: 'member' })).status, 200, '陳昭宇降回成員（看不到私人專案）');
     const he = await join('何小平', 'PG'); // 沒有專案：舊規則下只在預設專案的 AI 看不到他
     const He = he.participant.participantId;
     const r = await call(ai.token, '/api/mcp', 'POST', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'aigile_team', arguments: {} } });
@@ -150,6 +151,8 @@ try {
     assert.deepEqual(Object.keys(person(t.members, ai.participantId)).sort(), [...HUMAN_KEYS.filter(k => k !== 'projectRoles'), 'ownerParticipantId', 'ownerName'].sort(), 'AI 成員欄位不變');
     assert.deepEqual(person(t.members, He).projects, [], '沒有專案');
     assert.ok(!JSON.stringify(t).includes(B), '私人專案不外洩');
+    const own = (await call(chen.token, '/api/team-status')).body.members;
+    for (const m of t.members) assert.deepEqual(m.projects, person(own, m.participantId).projects, `AI 看到 ${m.name} 的專案跟所屬人類一樣`);
     const people = await call(ai.token, '/api/participants');
     assert.ok(people.body.items.some(p => p.participantId === He), 'GET /api/participants 的範圍也一樣');
   }

@@ -359,6 +359,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 實際能進的專案（規則在權限模組）：AI 不超出所屬人類能進的專案。所屬人類的列看成員快取（AI 發請求時一定先讀好，見 handleInner）；
   // 快取裡沒有就只看他明確加入的專案（寧可少給）
   const ownerOf = ai => peopleCache.map?.get(ai.owner_id) || { id: ai.owner_id, kind: 'human' };
+  // 名冊上的可見範圍：AI 跟所屬人類一樣（看別人在哪些專案時，用所屬人類的範圍）
+  const viewerOf = me => (me?.kind === 'ai' ? ownerOf(me) : me);
   const projectsOf = effectiveProjects({ projects: () => PROJECTS, memberProjectsOf: membership.projectsOf, implicitAll: adminInWorkspace, ownerOf });
   // 專案可見度（權限模組 discover_project）：私人專案對看不到的人＝不存在（檢查、錯誤訊息列的專案都不提它）
   // 同步版，用目前的成員快取（非成員看私人專案才要判上層管理員）；me 沒帶＝平台自己，都看得到
@@ -1756,12 +1758,19 @@ ${ending}`;
 
   // 呼叫者看得到的專案清單：每個回傳專案清單的路由都用這個（私人專案、別人的專案不外洩）。
   // UX ：不屬於全部專案的人，專案清單只回自己所屬的專案（不露出別專案名稱）
-  // PLAT-381：被隔離的成員也列出自己所屬、已封存的專案（專案管理員才能還原）
+  // 被隔離的成員也列出自己所屬、已封存的專案（專案管理員才能還原）
+  // AI：自己的專案成員資格 ∩ 所屬人類看得到的專案（留著的舊成員資格不會露出所屬人類看不到的專案）
   // 以專案為鍵的清單都只留自己的專案（新名 projectAdmins／archivedProjectAdmins／viewers 與保留一版的舊名 leaders／archivedLeaders／readOnly）
   const PROJECT_MAPS = ['projectAdmins', 'archivedProjectAdmins', 'viewers', 'leaders', 'archivedLeaders', 'readOnly', 'join'];
   function scopeProjects(r, me) {
-    if (!isolatedFrom(me)) return r; // 不受隔離＝看得到所有專案（含封存的私人專案，見 isolatedFrom）
-    const mine = [...new Set([...projectsOf(me), ...listOf(me)])];
+    let mine;
+    if (me?.kind === 'ai') {
+      const seen = new Set(scopeProjects(r, ownerOf(me)).items.map(p => p.id));
+      mine = listOf(me).filter(pj => seen.has(pj));
+    } else {
+      if (!isolatedFrom(me)) return r; // 不受隔離＝看得到所有專案（含封存的私人專案，見 isolatedFrom）
+      mine = [...new Set([...projectsOf(me), ...listOf(me)])];
+    }
     const out = { ...r, items: r.items.filter(p => mine.includes(p.id)) };
     for (const k of PROJECT_MAPS) out[k] = Object.fromEntries(Object.entries(r[k] || {}).filter(([pj]) => mine.includes(pj)));
     return out;
@@ -3091,7 +3100,9 @@ ${ending}`;
       for (const it of items) if (relogin.has(it.participantId)) it.needsLogin = true;
     }
     // 補（UX）：不屬於全部專案的人，別人的 projects 只列自己也在的專案，不露出別專案名稱
-    if (isolatedFrom(me)) { const mine = projectsOf(me); for (const it of items) if (it.participantId !== me.id) { it.projects = (it.projects || []).filter(x => mine.includes(x)); if (it.projectRoles) it.projectRoles = Object.fromEntries(Object.entries(it.projectRoles).filter(([k]) => mine.includes(k))); } }
+    // AI 看到的跟所屬人類一樣（不多也不少）：照所屬人類的範圍過濾，所屬人類自己那列與 AI 自己那列不過濾
+    const viewer = viewerOf(me);
+    if (isolatedFrom(viewer)) { const mine = projectsOf(viewer); for (const it of items) if (it.participantId !== me.id && it.participantId !== viewer.id) { it.projects = (it.projects || []).filter(x => mine.includes(x)); if (it.projectRoles) it.projectRoles = Object.fromEntries(Object.entries(it.projectRoles).filter(([k]) => mine.includes(k))); } }
     return { items: roleForProject(items, url, v) };
   });
 
@@ -3956,14 +3967,15 @@ ${ending}`;
     walk(out);
     return found.size ? { ...out, untrusted_content: UNTRUSTED_KEYS.filter(k => found.has(k)) } : out;
   }
-  function scrubProjects(out, me) {
-    const mine = new Set(projectsOf(me));
+  // 回應裡別人的專案只留呼叫者（AI＝所屬人類）也在的；呼叫者自己、AI 的所屬人類那列不動
+  function scrubProjects(out, me, viewer = me) {
+    const mine = new Set(projectsOf(viewer));
     const walk = v => {
       if (Array.isArray(v)) return v.map(walk);
       if (!v || typeof v !== 'object') return v;
       const o = {};
       for (const [k, x] of Object.entries(v)) o[k] = walk(x);
-      if (o.participantId && o.participantId !== me.id) {
+      if (o.participantId && o.participantId !== me.id && o.participantId !== viewer.id) {
         if (Array.isArray(o.projects)) o.projects = o.projects.filter(p => mine.has(p));
         if (Array.isArray(o.memberProjects)) o.memberProjects = o.memberProjects.filter(p => mine.has(p));
         if (o.projectRoles && typeof o.projectRoles === 'object') o.projectRoles = Object.fromEntries(Object.entries(o.projectRoles).filter(([k]) => mine.has(k)));
@@ -4046,7 +4058,7 @@ ${ending}`;
         if (out instanceof Response) return out;
         const status = out.__status || 200;
         delete out.__status;
-        if (me && isolatedFrom(me)) out = scrubProjects(out, me);
+        if (me && isolatedFrom(viewerOf(me))) out = scrubProjects(out, me, viewerOf(me));
         if (me?.kind === 'ai' && req.method === 'GET' && !TRUSTED_GET.has(r.pattern) && !Array.isArray(out)) out = markUntrusted(out);
         return json(status, out);
       }

@@ -120,8 +120,10 @@ const call = async (token, p, method = 'GET', body) => {
     const tsSolo = (await call(solo.token, '/api/team-status')).body;
     assert.deepEqual(tsSolo.members.find(m => m.participantId === id(boss)).projects, ['預設專案'], 'team-status 別人的 projects 只列看的人也在的專案');
     assert.deepEqual(leak(tsSolo.members), [], 'team-status 不露出其他專案名稱或代號');
-    const tsAi = (await call(ai.token, '/api/team-status')).body;
-    assert.deepEqual(leak(tsAi.members), [], '只在平台的 AI 也看不到');
+    // AI 看到的範圍跟所屬人類一樣：只在平台的人的 AI 也看不到（工作區管理員的 AI 跟他一樣看得到全部）
+    const soloAi = (await call(solo.token, '/api/my-ais', 'POST', { projects: ['預設專案'], roleKey: 'PG', role: r.role, name: '小平的PG', duties: r.duties, style: r.style, autonomy: r.autonomy, mustConfirm: r.mustConfirm, handoff: r.handoff })).body;
+    const tsAi = (await call(soloAi.token, '/api/team-status')).body;
+    assert.deepEqual(leak(tsAi.members), [], '只在平台的人的 AI 也看不到');
     await call(mate.token, '/api/messages', 'POST', { requestId: 'k-t1', project: '預設專案', text: '平台的訊息' });
     const msgs = (await call(solo.token, '/api/messages?limit=20')).body.items;
     assert.deepEqual(msgs.find(m => m.text === '平台的訊息').author.projects, ['預設專案'], '訊息作者的 projects 也只列看的人也在的');

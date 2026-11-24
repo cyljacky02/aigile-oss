@@ -353,9 +353,11 @@ const msg = (tok, text, extra = {}) => call(tok, '/api/messages', 'POST', { requ
     await put(boss.token, plat.participantId, ['預設專案']); await put(boss.token, bank.participantId, ['第二專案']);
     const pp = (await call(plat.token, '/api/participants')).body.items.map(p => p.participantId);
     assert.ok(pp.includes(plat.participantId) && pp.includes(bank.participantId), '成員名冊：只屬平台的成員也看得到只屬第二專案的人');
-    assert.deepEqual((await call(plat.token, '/api/participants')).body.items.find(p => p.participantId === bank.participantId).projects, [], '但看不到他在別專案（不露出別專案名稱）');
+    // AI 在名冊看到的範圍跟所屬人類一樣：平台PG 的所屬人類是工作區管理員（看得到所有專案），所以它也看得到別人在第二專案
+    assert.deepEqual((await call(plat.token, '/api/participants')).body.items.find(p => p.participantId === bank.participantId).projects, ['第二專案'], 'AI 看到的跟所屬人類一樣（不多也不少）');
     assert.ok(pp.includes(bossId), '在所有專案的管理員看得到');
-    assert.deepEqual((await call(plat.token, '/api/participants')).body.items.find(p => p.participantId === bossId).projects, ['預設專案'], '別人的專案只列自己也在的（不露出別專案名稱）');
+    assert.deepEqual((await call(plat.token, '/api/participants')).body.items.find(p => p.participantId === bossId).projects, (await call(boss.token, '/api/me')).body.projects, '所屬人類那列跟他自己看到的一樣');
+    assert.deepEqual((await call(amy.token, '/api/participants')).body.items.find(p => p.participantId === bank.participantId).projects, ['第二專案'], 'Amy 只在第二專案：看得到共同的專案');
     const ts = (await call(plat.token, '/api/team-status')).body.members.map(m => m.participantId);
     assert.ok(ts.includes(bank.participantId), '團隊狀態也列所有工作區成員');
     assert.equal((await call(plat.token, '/api/team-status')).body.members.find(m => m.participantId === bank.participantId).status, null, '別專案的人的工作內容照舊看不到');
