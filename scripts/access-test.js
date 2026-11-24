@@ -148,6 +148,26 @@ try {
   assert.equal(wsRead, 1, 'check 時重讀工作區設定（別份程式剛改過也算）');
   console.log('✓ 建立專案');
 
+  // 專案可見度：main 開放、side 私人；沒注入（上面的 access）＝審核
+  assert.equal(v.visibilityOf('main'), 'review', '沒設可見度＝審核');
+  const vis = { main: 'open', side: 'private' };
+  const va = await createAccess({
+    ApiError, requireHuman, nameOf: id => id, people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
+    isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)), loadLeaders: async () => leaders, leadersOf: pj => leaders[pj] || [],
+    loadReadOnly: async () => readOnly, isReadOnly: () => false, titles: () => titles, visibilityOf: pj => vis[pj],
+  }).load(ctx);
+  assert.ok(va.can(loner, 'discover_project', { project: 'main' }), '開放專案人人看得到');
+  assert.ok(!va.can(member, 'discover_project', { project: 'side' }), '私人專案非成員看不到');
+  assert.ok(!va.can(bot, 'discover_project', { project: 'side' }), 'AI 也看不到');
+  assert.ok(va.can(sider, 'discover_project', { project: 'side' }), '成員看得到');
+  assert.ok(va.can({ ...admin, projects: [] }, 'discover_project', { project: 'side' }), '工作區管理員靠隱含權限看得到');
+  assert.deepEqual(va.visibleProjects(member), ['main']);
+  assert.ok(va.can(loner, 'join_project', { project: 'main' }) && !va.can(loner, 'request_join', { project: 'main' }), '開放：直接加入，不用申請');
+  assert.ok(!va.can(loner, 'join_project', { project: 'side' }) && !va.can(loner, 'request_join', { project: 'side' }), '私人：不能自己加入或申請');
+  assert.ok(v.can(loner, 'request_join', { project: 'main' }) && !v.can(loner, 'join_project', { project: 'main' }), '審核：申請，不能直接加入');
+  for (const [p, ok] of [[admin, true], [lead, true], [member, false], [bot, false], [sider, false]]) assert.equal(v.can(p, 'set_visibility', { project: 'main' }), ok, `改可見度：${p.id}`);
+  console.log('✓ 專案可見度');
+
   // check 的錯誤：預設訊息帶 what；可以換掉
   await assert.rejects(access.check(ctx, member, 'manage_workspace', 'workspace', { what: '改群組名稱' }), e => e.code === 'NOT_ADMIN' && e.message === '只有群組管理員（admin）能改群組名稱。');
   await assert.rejects(access.check(ctx, member, 'manage_project', { project: 'main' }, { deny: () => new ApiError(403, 'NOT_REVIEWER', 'x') }), e => e.code === 'NOT_REVIEWER');
