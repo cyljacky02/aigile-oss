@@ -76,14 +76,14 @@ try {
     await until(() => js("!!document.querySelector('.topbar .av-btn')"), 10000, L + '登入');
     let av = '';
     await until(async () => { await avClose(); av = await avItems(); return av.includes('lead-projects='); }, 10000, L + '頭像選單等 leader 資料載入'); // 全套時偶爾在資料到之前就打開選單
-    assert.match(av, /lead-projects=📁專案管理你負責的 2 個專案/, L + 'leader 有專案管理：' + av);
+    assert.match(av, /lead-projects=📁專案管理你管理的 2 個專案/, L + 'leader 有專案管理：' + av);
     assert.ok(!av.includes('admin=') && !av.includes('pm-projects='), L + 'leader 沒有管理員設定：' + av);
     assert.ok(av.indexOf('lead-projects=') < av.indexOf('perm='), L + '專案管理在成員管理上面');
     await shot(`PLAT-381-1-${tag}-leader-頭像選單`);
     // ---------- C leader 的專案管理頁 ----------
     await click('#av-menu [data-av="lead-projects"]');
     await until(() => js("location.pathname === '/projects' && !!document.querySelector('.pm-ptable')"), 8000, L + '專案管理頁');
-    assert.match(await txt('.work-title'), /📁 專案管理 你是專案管理員的專案 · 新增、永久刪除專案請找管理員 劉昱志/, L + '標題與副標');
+    assert.match(await txt('.work-title'), /📁 專案管理 你是專案管理員的專案 · 永久刪除專案請找工作區管理員 劉昱志/, L + '標題與副標');
     assert.deepEqual(await J("[...document.querySelectorAll('.pm-prow .c-pname b')].map(b => b.textContent)"), ['預設專案', '測試專案'], L + '只列自己當 leader 的專案');
     assert.equal(await js("!!document.querySelector('[data-pm-newproj], .adm-nav')"), false, L + '沒有新增專案、沒有管理員設定左欄');
     assert.match(await js("document.querySelector('#crumbs')?.textContent || ''"), /專案管理/, L + '麵包屑');
@@ -108,10 +108,10 @@ try {
     await js("document.body.click(); true");
     // ---------- E leader 的要你處理 ----------
     await login(wang.token, '/p/main/inbox');
-    await until(() => js("document.querySelectorAll('.wlead .lead-row').length === 2"), 10000, L + '👑 你負責的專案（申請＋技能）');
+    await until(() => js("document.querySelectorAll('.wlead .lead-row').length === 2"), 10000, L + '👑 你管理的專案（申請＋技能）');
     const lead = await txt('.wlead');
-    assert.match(lead, /👑 你負責的專案\s*2/, L + '標題與件數：' + lead);
-    assert.match(lead, /你是「預設專案」的 leader，這些由你處理；超過 1 天沒處理，會提醒管理員。/, L + '說明');
+    assert.match(lead, /👑 你管理的專案\s*2/, L + '標題與件數：' + lead);
+    assert.match(lead, /你是「預設專案」的專案管理員，這些由你處理；超過 1 天沒處理，會提醒工作區管理員。/, L + '說明');
     assert.match(lead, /加入申請：李小華\s*想加入「預設專案」.*想幫忙測試搜尋功能/, L + '加入申請');
     assert.match(lead, /技能待核准：deploy-check\s*預設專案 · 含腳本 1 個 · 陳大文上傳/, L + '技能待核准');
     assert.equal(await js("document.querySelector('.wlead').previousElementSibling === null || !document.querySelector('.wlead').previousElementSibling.matches('.wsugg')"), true, L + '放在最上面');
@@ -147,7 +147,7 @@ try {
     await js("(() => { const n = Date.now.bind(Date); Date.now = () => n() + 25 * 3600 * 1000; document.querySelector('[data-nav=\"inbox\"]').click(); return true; })()");
     await until(() => js("!!document.querySelector('.wlead')"), 10000, L + '超過 1 天出現在管理員的要你處理');
     const late = await txt('.wlead');
-    assert.match(late, /🛡 專案待處理\s*2.*加入申請：李小華.*leader 王小明 還沒處理.*技能待核准：deploy-check.*leader 王小明 還沒處理/, L + '註明 leader 還沒處理：' + late);
+    assert.match(late, /🛡 專案待處理\s*2.*加入申請：李小華.*專案管理員 王小明 還沒處理.*技能待核准：deploy-check.*專案管理員 王小明 還沒處理/, L + '註明 leader 還沒處理：' + late);
     await shot(`PLAT-381-6-${tag}-管理員-超過1天`);
     // ---------- 一般成員 ----------
     await login(chen.token, '/p/main/messages');
@@ -168,8 +168,8 @@ try {
   await login(wang.token, '/projects');
   await until(() => js("document.documentElement.lang === 'en' && !!document.querySelector('.pm-ptable')"), 10000, '英文專案管理頁');
   const enP = await txt('#page-work');
-  assert.match(enP, /Projects you administer · ask the admin 劉昱志 to add or permanently delete projects/, '英文副標：' + enP.slice(0, 200));
-  assert.match(enP, /Projects you lead · 2/, '英文卡片標題（跟要你處理同一個說法，UX #6595）');
+  assert.match(enP, /Projects you administer · ask a workspace admin \(劉昱志\) to permanently delete projects/, '英文副標：' + enP.slice(0, 200));
+  assert.match(enP, /Projects you manage · 2/, '英文卡片標題（跟要你處理同一個說法，UX #6595）');
   await click('[data-pm-more="預設專案"]');
   await until(() => js("!!document.querySelector('.pm-more-menu')"), 5000, '英文 ⋯ 選單');
   const enM = await txt('.pm-more-menu');
@@ -180,7 +180,7 @@ try {
   await login(wang.token, '/p/main/inbox');
   await until(() => js("document.querySelectorAll('.wlead .lead-row').length === 2"), 10000, '英文要你處理');
   const enL = await txt('.wlead');
-  assert.match(enL, /👑 Projects you lead\s*2[\s\S]*You're the project lead of "Default project"[\s\S]*Join request: 李小華\s*wants to join "Default project" · Just now[\s\S]*Reject\s*Approve[\s\S]*Skill awaiting approval: deploy-check\s*Default project · 1 script · uploaded by 陳大文 · Just now\s*View\s*Approve/, '英文「你負責的專案」：' + enL);
+  assert.match(enL, /👑 Projects you manage\s*2[\s\S]*You're a project admin of "Default project"[\s\S]*Join request: 李小華\s*wants to join "Default project" · Just now[\s\S]*Reject\s*Approve[\s\S]*Skill awaiting approval: deploy-check\s*Default project · 1 script · uploaded by 陳大文 · Just now\s*View\s*Approve/, '英文「你負責的專案」：' + enL);
   assert.deepEqual(zhLeft(enL), [], '「你負責的專案」沒有中文殘留：' + enL);
   await shot('PLAT-381-9-電腦-英文-leader-要你處理');
   await login(wang.token, '/');

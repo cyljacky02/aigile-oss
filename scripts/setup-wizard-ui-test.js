@@ -21,7 +21,7 @@ try {
   await cdp('Emulation.setDeviceMetricsOverride', { width: 375, height: 800, deviceScaleFactor: 1, mobile: true });
   await login(tok, '/');
   await until(() => js("!!document.querySelector('#sw .sw-steps')"), 15000, '引導出現');
-  assert.match(await stepOn(), /1\. 群組名稱/);
+  assert.match(await stepOn(), /1\. 工作區名稱/);
   await sleep(400);
   const fit = JSON.parse(await js("JSON.stringify((() => { const m = document.querySelector('.modal.setup').getBoundingClientRect(); return { w: Math.round(m.width), iw: innerWidth, scroll: document.documentElement.scrollWidth > innerWidth + 1 }; })())"));
   assert.ok(fit.w <= fit.iw && !fit.scroll, '375 填滿、不橫向捲動：' + JSON.stringify(fit));

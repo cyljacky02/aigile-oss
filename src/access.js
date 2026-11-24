@@ -186,8 +186,8 @@ export function createAccess(deps) {
     switch (action) {
       case 'write': return readOnlyError(me, s.project || readOnlyList(me)[0]);
       case 'manage_project': case 'configure_project': case 'manage_project_members': case 'set_visibility':
-        return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）或這個專案的專案管理員能${what || '管理這個專案'}。`);
-      case 'set_title': return new ApiError(403, 'NOT_PROJECT_LEADER', `只有管理員、「${nameOf(s.project)}」的專案管理員或 ${s.target?.name || ''} 本人能改他在這個專案的職稱。`);
+        return new ApiError(403, 'NOT_ADMIN', `只有工作區管理員（${adminName()}）或這個專案的專案管理員能${what || '管理這個專案'}。`);
+      case 'set_title': return new ApiError(403, 'NOT_PROJECT_LEADER', `只有工作區管理員、「${nameOf(s.project)}」的專案管理員或 ${s.target?.name || ''} 本人能改他在這個專案的職稱。`);
       case 'see_project': return new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
       case 'see_ai_state': return new ApiError(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。');
       case 'see_member': return new ApiError(404, 'NOT_FOUND', `找不到成員 ${s.target?.id || ''}`);
@@ -199,7 +199,7 @@ export function createAccess(deps) {
         if (vis === VIS.REVIEW && action === 'join_project') return new ApiError(403, 'JOIN_NEEDS_APPROVAL', `「${nameOf(s.project)}」要送加入申請、由專案管理員核准才能加入。`);
         return new ApiError(403, 'FORBIDDEN', '只有工作區成員能加入專案。');
       }
-      default: return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）能${what || '管理專案與成員所屬專案'}。`);
+      default: return new ApiError(403, 'NOT_ADMIN', `只有工作區管理員（${adminName()}）能${what || '管理專案與成員所屬專案'}。`);
     }
   }
   async function check(ctx, me, action, scope, opts = {}) {

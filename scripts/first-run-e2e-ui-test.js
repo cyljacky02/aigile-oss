@@ -93,8 +93,8 @@ try {
     // 第 1 步：空白
     await h.type('#sw-group', '   ');
     await h.click('[data-sw="group"]');
-    assert.match(await h.swErr(), /請輸入群組名稱/);
-    assert.match(await h.fieldErr('#sw-group'), /請輸入群組名稱/, '錯誤在欄位下、紅框');
+    assert.match(await h.swErr(), /請輸入工作區名稱/);
+    assert.match(await h.fieldErr('#sw-group'), /請輸入工作區名稱/, '錯誤在欄位下、紅框');
     await h.type('#sw-group', '我們的團隊');
     await h.click('[data-sw="group"]');
     await until(() => h.js("!!document.querySelector('#sw-pj-name')"), 8000, '改正後到第 2 步');

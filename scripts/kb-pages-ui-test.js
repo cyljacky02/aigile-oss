@@ -99,7 +99,7 @@ try {
     await click('[data-kb-page]');
     await until(() => js("!!document.querySelector('.kb-page-body')"), 8000, 'C 知識頁');
     assert.match(await text('.kb-meta'), /AI 整理，以原始文件為準 整理：整理助手 .+ 來源：雲杉員工手冊\.md、2025 年度公告\.md/, 'C 頂端灰框');
-    assert.match(await text('.kb-conflict'), /⚠ 新舊不一致：.+以公告為準。 🔔 已通知 leader 林小安確認以哪份為準 · .+ 看訊息/, 'C 黃線＋已通知 leader：' + await text('.kb-conflict'));
+    assert.match(await text('.kb-conflict'), /⚠ 新舊不一致：.+以公告為準。 🔔 已通知專案管理員 林小安確認以哪份為準 · .+ 看訊息/, 'C 黃線＋已通知 leader：' + await text('.kb-conflict'));
     assert.match(await text('.kb-guard'), /🛡 文件含指示性文字，未採用/, 'C 紅框');
     assert.ok(await js("[...document.querySelectorAll('.kb-cite')].some(c => /2025 年度公告\\.md › 公告二/.test(c.textContent))"), 'C 出處小字');
     assert.equal(await js("!!document.querySelector('[data-kb-return], [data-kb-del]')"), false, 'C 一般成員沒有退回、刪除');
@@ -197,7 +197,7 @@ try {
   await until(() => js("document.querySelectorAll('[data-kb-pick]').length >= 6"), 8000, '一般成員文件列');
   await pick(['報帳流程.md']);
   await until(() => js("!document.querySelector('.kb-selbar').hidden"), 5000, 'E 一般成員底部列');
-  assert.equal(await text('.kb-selbar'), '已選 1 份 只有 leader 或管理員能把文件加入知識庫。想加的話，在群組跟 leader 說。 取消', 'E 一般成員沒有加入／移出');
+  assert.equal(await text('.kb-selbar'), '已選 1 份 只有專案管理員能把文件加入知識庫。想加的話，在群組跟專案管理員說。 取消', 'E 一般成員沒有加入／移出');
   await shot('14-電腦1280-專案文件-一般成員勾選');
 
   console.log('kb-pages-ui-test：全部通過（整理 AI 設定、目錄、搜尋知識頁、知識頁、已通知 leader、退回、可能過時、請 AI 更新、加入／移出知識庫、來源已移出、1280／375 不橫向捲動）');

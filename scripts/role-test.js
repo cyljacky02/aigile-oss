@@ -97,7 +97,7 @@ try {
   await call(boss.token, `/api/my-ais/${nutAi.participantId}`, 'PATCH', { roleKey: 'PG', role: '程式開發' });
   assert.equal((await call(boss.token, '/api/projects/預設專案/roles/NUT', 'DELETE')).status, 200, '沒人用就能刪');
   const ev = (await call(boss.token, '/api/projects/預設專案/events?limit=10')).body.items || [];
-  assert.ok(ev.some(e => /建立本專案角色「營養師」/.test(e.text)) && ev.some(e => /刪除本專案角色/.test(e.text)), '記在專案異動紀錄');
+  assert.ok(ev.some(e => /建立 AI 職務「營養師」/.test(e.text)) && ev.some(e => /刪除 AI 職務/.test(e.text)), '記在專案異動紀錄');
   // 短版接入：一次性連結（15 分鐘、只能讀一次、重產讓舊的失效、只有所屬人類能產）
   const raw = async p => { const res = await app(new Request(BASE + p), BASE); return { status: res.status, text: await res.text(), cc: res.headers.get('cache-control') }; };
   assert.equal((await call(chen.token, `/api/my-ais/${pgL.participantId}/onboarding-link`, 'POST', {})).status, 404, '別人不能產');

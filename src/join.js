@@ -24,7 +24,7 @@ export function registerJoin(d) {
   const activeProject = pj => projectRows().find(r => r.id === pj);
   // 誰能審：該專案 leader、群組管理員（只有人類）＝權限模組的 manage_project
   async function reviewer(ctx, me, pj) {
-    const v = await access.check(ctx, me, 'manage_project', { project: pj }, { deny: () => new ApiError(403, 'NOT_REVIEWER', `只有「${nameOf(pj)}」的 leader 或群組管理員能處理申請。`) });
+    const v = await access.check(ctx, me, 'manage_project', { project: pj }, { deny: () => new ApiError(403, 'NOT_REVIEWER', `只有「${nameOf(pj)}」的專案管理員能處理加入申請。`) });
     return { admin: v.roleIn(me, 'workspace') === ACCESS_ROLE.WORKSPACE_ADMIN };
   }
   const reviewersOf = (pj, leaders, admin) => { const l = (leaders[pj] || []).filter(Boolean); return l.length ? l : admin ? [admin.id] : []; };
@@ -103,7 +103,7 @@ export function registerJoin(d) {
       await db.batch([['INSERT INTO join_requests (id, project, participant_id, note, status, created_at) VALUES (?,?,?,?,?,?)', [id, row.id, me.id, note, 'pending', at]],
         ...reviewersOf(row.id, leaders, admin).map(pid => notice(pid, 'join_request', `${me.name} 申請加入「${row.name}」`))]);
     } catch (e) {
-      if (/UNIQUE/i.test(e.message)) throw new ApiError(409, 'JOIN_PENDING', '審核中，等 leader 處理');
+      if (/UNIQUE/i.test(e.message)) throw new ApiError(409, 'JOIN_PENDING', '審核中，等專案管理員處理');
       throw e;
     }
     return { id, project: row.id, status: 'pending' };

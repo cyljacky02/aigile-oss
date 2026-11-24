@@ -44,7 +44,7 @@ try {
   assert.equal(await js("!!document.querySelector('.sk-view [data-sktpl]')"), false, '一般成員的空專案卡沒有範本');
   await click('.sk-bar [data-sknew]');
   await until(() => js("!!document.querySelector('.sk-new-up')"), 8000, '新增視窗');
-  assert.match(await txt('#sk-new-list'), /只有預設專案的 leader 或管理員能套用範本/);
+  assert.match(await txt('#sk-new-list'), /只有預設專案的專案管理員能套用範本/);
   assert.equal(await js("!!document.querySelector('#sk-new-list [data-sktpl]')"), false);
   await click('[data-sknew-up]');
   await until(() => js("!!document.querySelector('#sk-pj')"), 8000, '選檔案接上傳視窗');

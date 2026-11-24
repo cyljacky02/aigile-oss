@@ -1838,7 +1838,7 @@ ${ending}`;
   // ---------- 專案成員（GLOSSARY「成員與權限」）：專案角色 admin＝專案管理員、member＝專案成員、viewer＝唯讀成員 ----------
   // 專案管理員（含工作區管理員的隱含權限）從工作區成員挑人加入、移出、設定專案角色、任免其他專案管理員；
   // 不能把工作區以外的人加進來（邀請進工作區是工作區管理員的事），也不能動工作區管理員（對方的上層管理權）。
-  // 舊的成員矩陣（PUT /api/members/matrix）、整批名單（PUT /api/projects/:id/members）、跨專案角色已移除，回 410。
+  // 舊的成員矩陣（PUT /api/members/matrix）、整批名單（PUT /api/projects/:id/members）已移除，回 410（成員一律逐個專案加入）。
   const PROJECT_ROLES = Object.values(PROJECT_ROLE);
   const PROJECT_ROLE_NAME = { [PROJECT_ROLE.ADMIN]: '專案管理員', [PROJECT_ROLE.MEMBER]: '專案成員', [PROJECT_ROLE.VIEWER]: '唯讀成員' };
   const readProjectRole = v => { if (!PROJECT_ROLES.includes(v)) throw invalid('role 需為 admin（專案管理員）、member（專案成員）或 viewer（唯讀成員）'); return v; };
@@ -1954,7 +1954,7 @@ ${ending}`;
     return { project: row.id, participantId: p.id, removed: !dryRun, dryRun, returnedCards: impact?.returnedCards || [] };
   });
   // 舊的管理用端點：已移除
-  const goneMembers = () => { throw new ApiError(410, 'GONE', '這個端點已移除：專案成員請改用 GET／POST /api/projects/:id/members（列出、加入）與 PUT／DELETE /api/projects/:id/members/:participantId（設定專案角色、移出）；跨專案角色已取消。'); };
+  const goneMembers = () => { throw new ApiError(410, 'GONE', '這個端點已移除：專案成員請改用 GET／POST /api/projects/:id/members（列出、加入）與 PUT／DELETE /api/projects/:id/members/:participantId（設定專案角色、移出）；要讓人在每個專案，請把他加進各專案。'); };
   route('PUT', '/api/members/matrix', goneMembers);
   route('PUT', '/api/projects/:id/members', goneMembers);
   // UX ：不屬於全部專案的人，專案清單只回自己所屬的專案（不露出別專案名稱）
@@ -1978,7 +1978,7 @@ ${ending}`;
     return { ok: true };
   });
   route('PUT', '/api/group', async ({ ctx, me, req }) => {
-    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '改群組名稱' });
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '改工作區名稱' });
     const name = String((await readJson(req)).name ?? '').trim();
     if (!name || name.length > 30 || /\n/.test(name)) throw invalid('name 需為 1～30 字，不可換行');
     await saveGroupName(me, name);
@@ -1990,7 +1990,7 @@ ${ending}`;
     const old = await groupName();
     const stmts = [["INSERT INTO app_settings (key, value) VALUES ('group_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [name]],
       ['UPDATE workspaces SET name = ? WHERE id = ?', [name, DEFAULT_WORKSPACE]]]; // 工作區名稱跟著（#10 改成工作區設定）
-    if (old !== name) stmts.push(projEvent(GROUP_EVT, me.id, `${me.name} 把群組名稱從「${old}」改成「${name}」`, nowIso()));
+    if (old !== name) stmts.push(projEvent(GROUP_EVT, me.id, `${me.name} 把工作區名稱從「${old}」改成「${name}」`, nowIso()));
     await db.batch(stmts);
     pageName = { at: 0, name: null }; // 網頁上的群組名立刻換新
   }
@@ -2037,7 +2037,7 @@ ${ending}`;
     return groupSettings();
   });
   route('GET', '/api/group/events', async ({ ctx, me, url }) => {
-    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看群組異動紀錄' });
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看工作區異動紀錄' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);
     const rows = await db.all('SELECT * FROM project_events WHERE project_id = ? ORDER BY id DESC LIMIT ?', GROUP_EVT, limit);
     return { items: rows.map(r => ({ at: r.at, actorId: r.actor_id, text: r.text })) };
@@ -2158,7 +2158,7 @@ ${ending}`;
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    await access.check(ctx, me, 'configure_project', { project: row.id }, { deny: () => new ApiError(403, 'NOT_ADMIN', `只有群組管理員或「${row.name}」的 leader 能改程式庫設定。`) });
+    await access.check(ctx, me, 'configure_project', { project: row.id }, { deny: () => new ApiError(403, 'NOT_ADMIN', `只有工作區管理員或「${row.name}」的專案管理員能改程式庫設定。`) });
     const repo = readRepo(await readJson(req));
     const at = nowIso();
     await db.batch([
@@ -2263,7 +2263,7 @@ ${ending}`;
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    await access.check(ctx, me, 'configure_project', { project: row.id }, { deny: () => new ApiError(403, 'NOT_ADMIN', `只有群組管理員或「${row.name}」的 leader 能開關私訊。`) });
+    await access.check(ctx, me, 'configure_project', { project: row.id }, { deny: () => new ApiError(403, 'NOT_ADMIN', `只有工作區管理員或「${row.name}」的專案管理員能開關私訊。`) });
     const body = await readJson(req);
     if (typeof body.on !== 'boolean') throw invalid('on 需為 true 或 false');
     const at = nowIso();
@@ -2357,7 +2357,7 @@ ${ending}`;
       return dmView(dup, people);
     }
     const open = await dmProjects(human, ai);
-    if (!open.length) throw new ApiError(403, 'DM_DISABLED', '這個專案沒有開放私訊（專案設定由管理員或 leader 開啟）；舊的私訊還看得到，但不能再送。');
+    if (!open.length) throw new ApiError(403, 'DM_DISABLED', '這個專案沒有開放私訊（由專案管理員在專案設定開啟）；舊的私訊還看得到，但不能再送。');
     const project = body.project && open.includes(body.project) ? body.project : open[0];
     await loadReadOnly(); if (access.readOnlyIn(human, project)) throw access.readOnlyError(me, project); // 唯讀的人和他的 AI 不能私訊
     const id = await writeDm({ human, ai, from: me.id, text, project, requestId }); // 叫醒 AI（門鈴只含 ID 與時間）
@@ -2462,7 +2462,7 @@ ${ending}`;
   route('POST', '/api/role-proposals/:id/create', async ({ ctx, me, req, params }) => {
     const p = await rpOfHuman(me, params.id);
     if (rpStatus(p) !== 'pending') throw new ApiError(409, 'PROPOSAL_CLOSED', '這個角色提案已處理或超過 24 小時。');
-    if (!(await roleManagerOf(ctx, me))(p.project)) throw new ApiError(403, 'FORBIDDEN', `只有「${nameOf(p.project)}」的 leader 或群組管理員能建立角色。`);
+    if (!(await roleManagerOf(ctx, me))(p.project)) throw new ApiError(403, 'FORBIDDEN', `只有「${nameOf(p.project)}」的專案管理員能建立 AI 職務。`);
     if (!PROJECTS.includes(p.project)) throw new ApiError(409, 'PROJECT_ARCHIVED', '這個專案已封存。');
     const body = await readJson(req).catch(() => ({}));
     const rdefs = await roleDefsMap(), defs = rdefs[p.project] || [];
@@ -2472,7 +2472,7 @@ ${ending}`;
     await saveRoleDefs(p.project, next);
     Object.assign(p, { status: 'created', decidedAt: now, createdKey: def.key, draft: def });
     await rpSave(p);
-    await db.batch([projEvent(p.project, me.id, `${me.name} 建立本專案角色「${def.role}」（${def.key}）`, at)]);
+    await db.batch([projEvent(p.project, me.id, `${me.name} 建立 AI 職務「${def.role}」（${def.key}）`, at)]);
     return { proposal: rpView(p, { ...rdefs, [p.project]: next }, false), ...scopeProjects(await projectsResponse(ctx), me) };
   });
   route('POST', '/api/role-proposals/:id/skip', async ({ me, params }) => {
@@ -2483,7 +2483,7 @@ ${ending}`;
   // 專案設定 ›「角色」：改名稱與五題、停用／啟用；代碼不改
   async function roleDefOf(ctx, me, pj, key) {
     if (!PROJECTS.includes(pj)) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    if (!(await roleManagerOf(ctx, me))(pj)) throw new ApiError(403, 'FORBIDDEN', `只有「${nameOf(pj)}」的 leader 或群組管理員能管理本專案角色。`);
+    if (!(await roleManagerOf(ctx, me))(pj)) throw new ApiError(403, 'FORBIDDEN', `只有「${nameOf(pj)}」的專案管理員能管理 AI 職務。`);
     const defs = (await roleDefsMap())[pj] || [];
     const i = defs.findIndex(d => d.key === key);
     if (i < 0) throw new ApiError(404, 'NOT_FOUND', '找不到這個角色');
@@ -2508,7 +2508,7 @@ ${ending}`;
     }
     next.updatedAt = at;
     await saveRoleDefs(params.id, defs.map((d, j) => (j === i ? next : d)));
-    await db.batch([projEvent(params.id, me.id, `${me.name} ${what}本專案角色「${next.role}」（${next.key}）`, at)]);
+    await db.batch([projEvent(params.id, me.id, `${me.name} ${what} AI 職務「${next.role}」（${next.key}）`, at)]);
     invalidatePeople();
     return scopeProjects(await projectsResponse(ctx), me);
   });
@@ -2520,7 +2520,7 @@ ${ending}`;
     if (used) throw new ApiError(409, 'ROLE_IN_USE', `還有 ${used} 個成員在用「${d.role}」，先停用，等沒人用再刪。`);
     const at = nowIso();
     await saveRoleDefs(params.id, defs.filter((_, j) => j !== i));
-    await db.batch([projEvent(params.id, me.id, `${me.name} 刪除本專案角色「${d.role}」（${d.key}）`, at)]);
+    await db.batch([projEvent(params.id, me.id, `${me.name} 刪除 AI 職務「${d.role}」（${d.key}）`, at)]);
     return scopeProjects(await projectsResponse(ctx), me);
   });
 
@@ -2994,9 +2994,9 @@ ${ending}`;
     const people = await peopleMap(ctx);
     return { items: (await db.all("SELECT * FROM participants WHERE kind = 'human' AND status = 'disabled' ORDER BY updated_at DESC")).map(p => publicParticipant(p, people)) };
   });
-  // 移交管理員拿掉了：工作區可以有多位管理員，「先升別人、再降自己」
+  // 舊的交接管理員端點拿掉了（回 410）：工作區可以有多位管理員，「先升別人、再降自己」
   route('POST', '/api/admin/transfer', async () => {
-    throw new ApiError(410, 'GONE', '移交管理員已拿掉：請先把對方升為工作區管理員，再把自己降為成員（PUT /api/participants/:id/workspace-role）。');
+    throw new ApiError(410, 'GONE', '這個端點已移除：工作區可以有多位工作區管理員，請先把對方升為工作區管理員，再把自己降為成員（PUT /api/participants/:id/workspace-role）。');
   });
   // 升降工作區管理員（只有工作區管理員；AI 不行）。role：admin | member。立刻生效；不能降最後一位
   route('PUT', '/api/participants/:id/workspace-role', async ({ ctx, me, req, params }) => {

@@ -324,7 +324,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
   route('POST', '/api/skills/:id/review', async ({ ctx, me, params, req, base }) => {
     const r = await db.get('SELECT * FROM skills WHERE id = ?', params.id);
     if (!r || !(await canSee(ctx, me, r.project))) throw new ApiError(404, 'NOT_FOUND', '找不到這個技能');
-    if (!(await canManage(ctx, me, r.project))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的 leader 或群組管理員能核准');
+    if (!(await canManage(ctx, me, r.project))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的專案管理員能核准');
     await assertWritable(me, r.project);
     if (r.uploaded_by === me.id) throw new ApiError(403, 'SELF_REVIEW', '不能核准自己上傳的技能');
     if (r.status !== 'pending') throw new ApiError(409, 'NOT_PENDING', '這個版本已經處理過了');
@@ -343,7 +343,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
   // 下架：目前上架的版本（含待核准的）全部收起，私訊主人
   route('POST', '/api/projects/:id/skills/:name/remove', async ({ ctx, me, params, base }) => {
     const pj = params.id; await requireProject(ctx, me, pj);
-    if (!(await canManage(ctx, me, pj))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的 leader 或群組管理員能下架技能');
+    if (!(await canManage(ctx, me, pj))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的專案管理員能下架技能');
     await assertWritable(me, pj);
     const cur = await db.get("SELECT project, roles FROM skills WHERE project = ? AND name = ? AND status = 'published'", pj, params.name);
     const r = await db.run("UPDATE skills SET status = 'removed' WHERE project = ? AND name = ? AND status IN ('published', 'pending')", pj, params.name);
@@ -355,7 +355,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
   // 新加入的 AI 主人收到「有新技能」，被拿掉的收到「不再發給，同步後移除」
   route('PUT', '/api/projects/:id/skills/:name/target', async ({ ctx, me, params, req, base }) => {
     const pj = params.id; await requireProject(ctx, me, pj);
-    if (!(await canManage(ctx, me, pj))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的 leader 或群組管理員能改發給誰');
+    if (!(await canManage(ctx, me, pj))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的專案管理員能改發給誰');
     await assertWritable(me, pj);
     const rows = await db.all("SELECT * FROM skills WHERE project = ? AND name = ? AND status IN ('published', 'pending') ORDER BY version DESC", pj, params.name);
     if (!rows.length) throw new ApiError(404, 'NOT_FOUND', '沒有上架中的這個技能');
