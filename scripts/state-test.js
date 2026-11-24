@@ -34,12 +34,12 @@ const call = async (token, p, method = 'GET', body, raw) => {
     const amy = (await call(null, '/api/join', 'POST', { name: 'Amy', role: 'PO' })).body;
     const bossId = boss.participant.participantId, percyId = amy.participant.participantId;
     const r = ROLES.find(x => x.key === 'PG');
-    const mk = name => call(boss.token, '/api/my-ais', 'POST', { projects: ['預設專案', '第二專案'], roleKey: 'PG', role: r.role, name, duties: r.duties, style: r.style, autonomy: r.autonomy, mustConfirm: r.mustConfirm, handoff: r.handoff }).then(x => x.body);
-    const plat = await mk('預設PG'), bank = await mk('第二PG');
+    await call(adm.token, `/api/participants/${amy.participant.participantId}/projects`, 'PUT', { projects: ['預設專案', '第二專案'] }); // amy 兩邊都屬於（之後加入的人類預設沒有專案，由管理員設定）
+    const mk = (tok, name) => call(tok, '/api/my-ais', 'POST', { projects: ['預設專案', '第二專案'], roleKey: 'PG', role: r.role, name, duties: r.duties, style: r.style, autonomy: r.autonomy, mustConfirm: r.mustConfirm, handoff: r.handoff }).then(x => x.body);
+    const plat = await mk(boss.token, '預設PG'), bank = await mk(amy.token, '第二PG'); // AI 的專案不超出所屬人類：只在第二專案的 AI 歸 amy
     await call(adm.token, `/api/participants/${plat.participantId}/projects`, 'PUT', { projects: ['預設專案'] });
     await call(adm.token, `/api/participants/${bank.participantId}/projects`, 'PUT', { projects: ['第二專案'] });
     await call(adm.token, `/api/participants/${bossId}/projects`, 'PUT', { projects: ['預設專案'] }); // 只看平台
-    await call(adm.token, `/api/participants/${amy.participant.participantId}/projects`, 'PUT', { projects: ['預設專案', '第二專案'] }); // amy 兩邊都屬於（之後加入的人類預設沒有專案，由管理員設定）
 
     const sha = '0123456789abcdef0123456789abcdef01234567';
     const good = { currentTask: { title: '做 MAIN-8', stage: '實作', sha, cardId: 'MAIN-8' }, backlog: [{ title: 'MAIN-7 批次', trigger: '使用者同意' }], wakeMode: 'watcher' };
