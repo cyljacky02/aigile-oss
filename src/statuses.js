@@ -124,8 +124,8 @@ export function readStatusList(raw, invalid) {
 }
 
 // 狀態管理 API：讀（看得到這個專案的人）；新增、改名／改色／改類別、排序、刪除（管理員或該專案 leader）
-// moveCard(ctx, me, card, target)：刪除狀態時把卡搬到目標狀態（跨類別照卡片規則），由 cards.js 提供
-export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, requireAdminOrLeader, canSeeProject, projectExists, cardKey, moveCard, projEvent }) {
+// moveCardStmts(ctx, me, card, target, at)：刪除狀態時把卡搬到目標狀態的語句（跨類別照卡片規則），cardsMoved()：搬完後清快取；由 cards.js 提供
+export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, requireAdminOrLeader, canSeeProject, projectExists, cardKey, moveCardStmts, cardsMoved, projEvent }) {
   const notFound = () => new ApiError(404, 'NOT_FOUND', '找不到這個狀態');
   async function projectOf(ctx, me, pj, { manage = false } = {}) {
     if (!(await projectExists(pj))) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
@@ -142,7 +142,8 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
   const reply = async (ctx, pj, extra = {}) => { ctx.statusBook = null; return { items: (await statuses.load(ctx)).list(pj), ...extra }; };
   const find = (book, pj, sid) => { const s = book.byId(sid); if (!s || s.project !== pj) throw notFound(); return s; };
   const cardsIn = sid => db.all(`SELECT * FROM cards WHERE status_id = ? AND status != '${ARCHIVED}' ORDER BY seq`, sid);
-  const event = (pj, me, text) => (projEvent ? db.batch([projEvent(pj, me.id, `${me.name} ${text}`, nowIso())]) : null);
+  const eventStmt = (pj, me, text, at = nowIso()) => (projEvent ? [projEvent(pj, me.id, `${me.name} ${text}`, at)] : []);
+  const event = async (pj, me, text) => { const st = eventStmt(pj, me, text); if (st.length) await db.batch(st); };
   const keys = rows => rows.slice(0, 20).map(c => cardKey(c)).filter(Boolean);
 
   route('GET', '/api/projects/:id/statuses', async ({ ctx, me, params }) => {
@@ -212,10 +213,13 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
       target = book.byId(raw);
       if (!target || target.project !== pj || target.id === s.id) throw invalid('moveTo 要是這個專案的另一個狀態 ID');
       if (target.category === '已完成' && rows.some(c => c.type === '決策')) throw invalid('裡面有決策卡：決策卡要由決策者決定，不能直接搬到已完成。');
-      for (const c of rows) await moveCard(ctx, me, c, target);
     }
-    await db.run('DELETE FROM project_statuses WHERE id = ?', s.id);
-    await event(pj, me, `刪除看板狀態「${s.name}」${target ? `（${rows.length} 張卡搬到「${target.name}」）` : ''}`);
+    // 搬卡、刪狀態、異動紀錄在同一個交易：中途失敗就整個回復，不會留下搬了一半的卡
+    const at = nowIso(), stmts = [];
+    for (const c of rows) stmts.push(...(await moveCardStmts(ctx, me, c, target, at)));
+    stmts.push(['DELETE FROM project_statuses WHERE id = ?', [s.id]], ...eventStmt(pj, me, `刪除看板狀態「${s.name}」${target ? `（${rows.length} 張卡搬到「${target.name}」）` : ''}`, at));
+    await db.batch(stmts);
+    if (rows.length) cardsMoved();
     return reply(ctx, pj, { moved: rows.length });
   });
 }

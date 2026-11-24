@@ -13,7 +13,13 @@ import { testToken } from './test-token.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pst-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
-const app = createApp({ db, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0' } });
+// 模擬寫入到一半失敗：開了之後，刪除狀態那一步會出錯（在交易裡就換成一步會失敗的語句，讓資料庫自己回復）
+let failStatusDelete = false;
+const isStatusDelete = sql => failStatusDelete && /^DELETE FROM project_statuses WHERE id\b/.test(sql);
+const appDb = { ...db,
+  run: (sql, ...args) => (isStatusDelete(sql) ? Promise.reject(new Error('模擬寫入失敗')) : db.run(sql, ...args)),
+  batch: stmts => db.batch(stmts.map(([sql, args]) => (isStatusDelete(sql) ? ['SELECT x FROM no_such_table', []] : [sql, args]))) };
+const app = createApp({ db: appDb, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0' } });
 const call = async (token, p, method = 'GET', body) => {
   const r = await app(new Request('http://localhost' + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
   return { status: r.status, body: await r.json().catch(() => ({})) };
@@ -269,6 +275,24 @@ try {
     const aiCard = await mk2(ai.id);
     ok(await call(boss.token, `/api/my-ais/${ai.id}/delete`, 'POST', { confirmName: ai.name }), '刪除 AI');
     assert.ok((await logged(aiCard.cardId)).some(t => t.includes('狀態 進行中 → 排隊')), 'AI 刪除：紀錄寫狀態名稱');
+  }
+
+  // 15) 刪除有卡的狀態是一個動作：中途失敗就一張卡都沒搬、狀態還在
+  {
+    const box = ok(await add({ name: '暫放', category: '待處理' }), '新增').items.at(-1);
+    const cards = [ok(await mkCard(boss.token, { status: '暫放' }), '卡 1'), ok(await mkCard(boss.token, { status: '暫放' }), '卡 2')];
+    failStatusDelete = true;
+    try { assert.ok((await del(box.id, { moveTo: (await byName('開發中')).id })).status >= 500, '刪除失敗'); }
+    finally { failStatusDelete = false; }
+    assert.ok(await byName('暫放'), '狀態還在');
+    for (const c of cards) {
+      const d = await getCard(c.cardId);
+      assert.equal(d.status, '暫放', '卡片沒搬'); assert.equal(d.version, c.version, '卡片沒改');
+      assert.ok(!d.log.some(l => /開發中/.test(l.text)), '沒有搬卡紀錄');
+    }
+    const r = ok(await del(box.id, { moveTo: (await byName('開發中')).id }), '再刪一次');
+    assert.equal(r.moved, 2);
+    for (const c of cards) assert.equal((await getCard(c.cardId)).status, '開發中', '都搬過去了');
   }
 
   console.log('project-statuses-test：全部通過');

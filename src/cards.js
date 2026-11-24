@@ -219,12 +219,16 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     const ch = statusChange(c, target.category, me, at);
     return { sets: { ...ch.sets, status_id: target.id }, logs: [`狀態 ${book.of(c)?.name ?? c.status} → ${target.name}`, ...ch.logs.slice(1)] };
   }
-  async function save(c, sets, logs, me, at) {
+  // 版本相符才更新；D1／SQLite 都用同一條語句，0 筆代表同時有人改過
+  function updateStmt(c, sets, at) {
     const keys = Object.keys(sets);
     const auto = ((sets.status !== undefined && sets.status !== c.status) || sets.project !== undefined) && !('status_id' in sets); // 類別沒變就留在原本的欄
     const sql = `UPDATE cards SET ${keys.map(k => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}${auto ? `status_id = ${FIRST_STATUS_SQL}, ` : ''}updated_at = ?, version = version + 1 WHERE seq = ? AND version = ?`;
-    // 版本相符才更新；D1／SQLite 都用同一條語句，失敗（0 筆）代表同時有人改過
-    const r = await db.run(sql, ...keys.map(k => sets[k]), ...(auto ? [sets.project ?? c.project, sets.status ?? c.status] : []), at, c.seq, c.version);
+    return [sql, [...keys.map(k => sets[k]), ...(auto ? [sets.project ?? c.project, sets.status ?? c.status] : []), at, c.seq, c.version]];
+  }
+  async function save(c, sets, logs, me, at) {
+    const [sql, args] = updateStmt(c, sets, at);
+    const r = await db.run(sql, ...args);
     if (!r.changes) throw new ApiError(409, 'CONFLICT', '這張卡片剛被別人修改過，請重新讀取後再試。');
     if (logs.length) await db.batch(logStmt(c.seq, me, logs, at));
   }
@@ -1036,12 +1040,15 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     return { ...c, key: pub(c) };
   }
   const cardLog = (seq, me, text) => db.batch(logStmt(seq, me, [text], nowIso()));
-  // 刪除狀態時把卡搬到目標狀態（src/statuses.js 用）：跟 PATCH 改狀態同一套規則
-  async function moveCard(ctx, me, c, target) {
-    const book = await statuses.load(ctx), at = nowIso();
-    const mv = moveTo(c, target, me, at, book);
-    await save(c, mv.sets, mv.logs, me, at);
-    invalidatePeople();
+  // 刪除狀態時把卡搬到目標狀態（src/statuses.js 用）：跟 PATCH 改狀態同一套規則。
+  // 只回傳語句，由呼叫端跟刪除放進同一個交易（中途失敗就一張都不搬）；寫完要呼叫 cardsMoved()。
+  // 交易裡版本對不上的 UPDATE 不會報錯、只是 0 筆：紀錄排在 UPDATE 前面、只在版本還沒變時寫，
+  // 所以剛好同時被改的卡不搬也不留紀錄（狀態刪掉後它算在同類別第一個狀態，見 ADR 0001）
+  async function moveCardStmts(ctx, me, c, target, at) {
+    const mv = moveTo(c, target, me, at, await statuses.load(ctx));
+    const logs = mv.logs.map(t => [`INSERT INTO card_log (card_seq, at, by_id, via, text) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM cards WHERE seq = ? AND version = ?)`,
+      [c.seq, at, me.id, me.kind === 'human' ? '網頁' : 'API', t, c.seq, c.version]]);
+    return [...logs, updateStmt(c, mv.sets, at)];
   }
-  return { listCards, createCardBy, cardLog, moveCard };
+  return { listCards, createCardBy, cardLog, moveCardStmts, cardsMoved: invalidatePeople };
 }
