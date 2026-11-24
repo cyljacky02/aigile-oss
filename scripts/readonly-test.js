@@ -1,5 +1,5 @@
-// 重現測試：人類成員可設「唯讀」（以專案為單位）
-// 修正前沒有唯讀：被設唯讀的人照樣能發訊息、建卡、私訊（readOnlyIn 會被忽略）
+// 驗收測試：唯讀成員（專案角色 viewer，以專案為單位）與他的 AI 在該專案只能看、不能寫
+// 設定方式：PUT /api/projects/:id/members/:participantId { role: 'viewer' }（#11；舊的成員矩陣已移除）
 // 用法：node scripts/readonly-test.js
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,6 +8,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
+import { setProjectRole } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-ro-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -31,18 +32,18 @@ try {
   await call(boss.token, '/api/projects/預設專案/dm', 'PUT', { on: true });
   const card = (await call(chen.token, '/api/cards', 'POST', { requestId: 'c1', project: '預設專案', title: '陳負責的卡', ownerId: Cn, status: '進行中' })).body;
   const aiCard = (await call(pgC.token, '/api/cards', 'POST', { requestId: 'c2', project: '預設專案', title: 'AI 負責的卡', ownerId: pgC.participantId, status: '進行中' })).body;
-  const M = (tok, changes, dryRun) => call(tok, '/api/members/matrix', 'PUT', { changes, dryRun });
+  const RO = (tok, id, role, dryRun) => setProjectRole(call, tok, '預設專案', id, role, dryRun ? { dryRun } : {});
 
-  // 設唯讀：先看影響（他和名下 AI 的卡會退回）
-  let r = await M(boss.token, [{ id: Cn, readOnlyIn: ['預設專案'] }], true);
+  // 設成唯讀成員：先看影響（他和名下 AI 的卡會退回）
+  let r = await RO(boss.token, Cn, 'viewer', true);
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body.roChanges[0].returnedCards.sort(), [card.cardId, aiCard.cardId].sort(), '先列出會退回的卡');
-  assert.equal((await M(chen.token, [{ id: L, readOnlyIn: ['預設專案'] }])).status, 403, '一般成員不能設');
-  assert.equal(code(await M(boss.token, [{ id: L, readOnlyIn: ['預設專案'] }])), 'INVALID_REQUEST', '管理員不能設唯讀');
-  assert.equal(code(await M(boss.token, [{ id: pgC.participantId, readOnlyIn: ['預設專案'] }])), 'INVALID_REQUEST', '只能設人類');
-  r = await M(boss.token, [{ id: Cn, readOnlyIn: ['預設專案'] }]);
+  assert.deepEqual(r.body.returnedCards.sort(), [card.cardId, aiCard.cardId].sort(), '先列出會退回的卡');
+  assert.equal((await RO(chen.token, L, 'viewer')).status, 403, '專案成員不能設');
+  assert.equal(code(await RO(boss.token, L, 'viewer')), 'INVALID_REQUEST', '工作區管理員不能設成唯讀成員');
+  assert.equal(code(await RO(boss.token, pgC.participantId, 'viewer')), 'INVALID_REQUEST', 'AI 不能設（跟著所屬人類）');
+  r = await RO(boss.token, Cn, 'viewer');
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body.readOnly['預設專案'], [Cn], '專案清單帶唯讀名單');
+  assert.deepEqual((await call(boss.token, '/api/projects')).body.viewers['預設專案'], [Cn], '專案清單帶唯讀成員');
   const c1 = (await call(boss.token, `/api/cards/${card.cardId}`)).body;
   assert.ok(c1.owner === null && c1.status === '待處理', '他的卡退回待處理、未指派');
   assert.equal((await call(boss.token, `/api/cards/${aiCard.cardId}`)).body.owner, null, '他 AI 的卡也退回');
@@ -71,12 +72,12 @@ try {
   assert.equal(code(await call(boss.token, `/api/cards/${c2.cardId}/handover`, 'POST', { toId: Cn, version: c2.version, note: 'x' })), 'READ_ONLY_MEMBER', '不能交給唯讀的人');
   assert.equal(code(await call(boss.token, '/api/cards', 'POST', { requestId: 'c5', project: '預設專案', title: '指派給唯讀', ownerId: Cn })), 'READ_ONLY_MEMBER', '不能指派給唯讀的人');
   assert.equal(code(await call(boss.token, '/api/cards', 'POST', { requestId: 'c6', project: '預設專案', type: '決策', title: '要決定', deciderId: Cn, question: 'A 還是 B？', options: ['A', 'B'] })), 'READ_ONLY_MEMBER', '不能當決策者');
-  assert.equal(code(await M(boss.token, [{ id: Cn, leaderOf: ['預設專案'] }])), 'INVALID_REQUEST', '唯讀的人不能當 leader');
+  assert.equal((await call(boss.token, '/api/projects/預設專案/members')).body.members.find(m => m.participantId === pgC.participantId).role, 'viewer', '他的 AI 在成員清單也是唯讀成員');
 
-  // 改回一般成員就能發
-  await M(boss.token, [{ id: Cn, readOnlyIn: [] }]);
-  assert.equal((await msg(chen.token, { text: '我回來了' })).status, 201, '改回一般就能發訊息');
-  assert.deepEqual((await call(chen.token, '/api/me')).body.readOnlyIn, [], '改回一般');
+  // 改回專案成員就能發
+  await RO(boss.token, Cn, 'member');
+  assert.equal((await msg(chen.token, { text: '我回來了' })).status, 201, '改回專案成員就能發訊息');
+  assert.deepEqual((await call(chen.token, '/api/me')).body.readOnlyIn, [], '改回專案成員');
 
   // 邀請時就選唯讀
   r = await call(boss.token, '/api/invites', 'POST', { name: '王唯讀', projects: ['預設專案'], readOnly: ['預設專案'] });

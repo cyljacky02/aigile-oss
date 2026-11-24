@@ -9,6 +9,7 @@ import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { testToken } from './test-token.js';
+import { makeProjectAdmin } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-t1-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -25,7 +26,7 @@ try {
   const id = p => p.participant.participantId;
   const setPj = (p, projects) => call(boss.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects });
   await setPj(boss, ['預設專案', '第二專案']); await setPj(wang, ['預設專案']); await setPj(chen, ['第二專案']); await setPj(wu, ['第二專案']);
-  assert.equal((await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(wang), leaderOf: ['預設專案'] }] })).status, 200);
+  assert.equal((await makeProjectAdmin(call, boss.token, id(wang), ['預設專案'])).status, 200);
   const ai = (await call(chen.token, '/api/my-ais', 'POST', { projects: ['第二專案'], roleKey: 'PG', role: 'PG', name: '陳的AI', duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body;
   const aiTok = (await testToken(db, ai.participantId));
   const list = tok => call(tok, '/api/join/projects');

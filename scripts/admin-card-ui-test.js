@@ -27,10 +27,10 @@ try {
 
   // ---- ：新建專案 testing，管理員沒角色 → 不算成員 ----
   const pj = (await kit.call(boss.token, '/api/projects', 'POST', { name: 'testing' })).body.id;
-  await kit.call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: mateId, projects: ['預設專案', '第二專案', pj] }] });
+  await kit.call(boss.token, `/api/participants/${mateId}/projects`, 'PUT', { projects: ['預設專案', '第二專案', pj] });
   await kit.call(boss.token, `/api/participants/${mateId}/project-roles`, 'PUT', { roles: { [pj]: 'BA' } });
   const wang = (await kit.call(null, '/api/join', 'POST', { name: '王小明', role: 'UX' })).body, wangId = wang.participant.participantId;
-  await kit.call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: wangId, projects: [pj] }] });
+  await kit.call(boss.token, `/api/participants/${wangId}/projects`, 'PUT', { projects: [pj] });
   await kit.call(boss.token, `/api/participants/${wangId}/project-roles`, 'PUT', { roles: { [pj]: 'UX' } });
   await kit.call(boss.token, `/api/participants/${bossId}/project-roles`, 'PUT', { roles: { 預設專案: 'PO' } }); // 平台有角色＝照舊是成員
   const views = (await kit.call(boss.token, '/api/projects')).body.items;

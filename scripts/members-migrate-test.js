@@ -70,7 +70,7 @@ async function seesSameAsBefore(db, call, label) {
   assert.deepEqual(pr.body.archivedLeaders, { [OLD]: ['p_lead'] }, `${label}：封存專案的 leader 照舊（才能還原）`);
   assert.deepEqual(pr.body.readOnly[B], ['p_ro'], `${label}：唯讀照舊`);
   assert.deepEqual(pr.body.readOnly[A] || [], [], `${label}：別的專案不唯讀`);
-  assert.deepEqual(pr.body.crossRoleIds, ['p_cross'], `${label}：跨專案角色照舊`);
+  assert.equal(pr.body.crossRoleIds, undefined, `${label}：跨專案角色已取消（轉成各專案的成員資格）`);
   const count = id => pr.body.items.find(x => x.id === id).memberCount;
   assert.equal(count(A), 4, `${label}：預設專案 4 人（管理員有角色標籤、停用的不算）`);
   assert.equal(count(B), 3, `${label}：第二專案 3 人（隱形管理員、已刪除的不算）`);

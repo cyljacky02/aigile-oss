@@ -1,14 +1,14 @@
-// 成員資格模組（GLOSSARY「成員與權限」）：誰在哪個工作區、哪些專案，專案角色（專案管理員＝leader、唯讀成員），跨專案角色。
+// 成員資格模組（GLOSSARY「成員與權限」）：誰在哪個工作區、哪些專案，專案角色（專案管理員、專案成員、唯讀成員）。
 // 這些資料的讀寫都只經過這裡。資料表依 docs/adr/0002（migrations/008）：
 //   participants.workspace_id／workspace_role／workspace_status／account_id、accounts、workspaces、
 //   project_members(project_id, participant_id, role)：role＝admin（專案管理員）| member（專案成員）| viewer（唯讀成員）。
-// 跨專案角色還在 app_settings 的 cross_roles（#11 才轉成各專案的成員資格）。
+// 跨專案角色已取消：升級時 app_settings 的 cross_roles 轉成每個專案的明確成員資格（migrateLegacy），轉完刪掉。
 //
 // 讀：同步，看已載入的快照（project_members 整張＋cross_roles，10 秒快取；load(true) 重讀；invalidate() 標成過期）。
 //     快照以成員 id 查：呼叫端拿到的 participant 列（不論從哪讀的）只用到 p.id、p.kind、p.owner_id。
 // 寫：回傳 [sql, args] 語句陣列，呼叫端跟卡片退回、專案事件放進同一個 db.batch（一起成功或一起失敗）；執行後呼叫 load(true)。
 // PROJECTS：未封存專案 id 的陣列（core.js 原地更新的同一個陣列）。
-// onChange：模組自己改了資料（跨專案角色第一次載入時的補資料）後通知呼叫端（core.js 清成員快取）。
+// onChange：模組自己改了資料（升級轉換）後通知呼叫端（core.js 清成員快取）。
 export const DEFAULT_WORKSPACE = 'default';
 export const PROJECT_ROLE = Object.freeze({ ADMIN: 'admin', MEMBER: 'member', VIEWER: 'viewer' });
 const PR = PROJECT_ROLE;
@@ -87,6 +87,13 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 某人在某專案設成專案管理員（不在專案就以專案管理員加入）：建立專案的人用
   const makeProjectAdminStmts = (id, pj) => [[`INSERT INTO project_members (project_id, participant_id, role) VALUES (?, ?, '${PR.ADMIN}') ON CONFLICT(project_id, participant_id) DO UPDATE SET role = excluded.role`, [pj, id]]];
 
+  // ---------- 單一成員的專案角色（專案成員端點） ----------
+  // roleOf：快照裡 id 在 pj 的專案角色（不在專案回 null；AI 一律 member，唯讀跟著所屬人類看 isReadOnly）
+  const roleOf = (id, pj) => (snap.byId.get(id) || []).find(x => x.project === pj)?.role || null;
+  // 以這個專案角色加入（已在專案就不動）；改已在專案的人的專案角色。移出專案走 setProjectsStmts（卡片退回、職稱清掉在呼叫端）
+  const addMemberStmts = (id, pj, role) => [['INSERT OR IGNORE INTO project_members (project_id, participant_id, role) VALUES (?, ?, ?)', [pj, id, role]]];
+  const setMemberRoleStmts = (id, pj, role) => [['UPDATE project_members SET role = ? WHERE project_id = ? AND participant_id = ?', [role, pj, id]]];
+
   // ---------- 唯讀成員：只記人類；他名下的 AI 在該專案跟著唯讀（AI 權限不超過主人） ----------
   const loadReadOnly = async force => (await loadMembers(force)).ro; // 回 { 專案id: [人類id] }
   const isReadOnlyHuman = (id, pj, map = snap.ro) => !!pj && (map[pj] || []).includes(id);
@@ -104,37 +111,13 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     await loadMembers(true);
   }
 
-  // ---------- 跨專案角色：固定屬於所有專案、不能移出；cross_roles＝{ add: [id], remove: [id], frozen: 時間 } ----------
-  // 新成員一律不自動跨專案（不看 PO／SM 角色），只能管理員手動開。
-  // 原本「角色是 PO／SM 就跨」的規則在第一次載入時寫成固定名單（frozen），現有的人照舊
+  // ---------- 舊設定（app_settings） ----------
   const upsert = key => `INSERT INTO app_settings (key, value) VALUES ('${key}', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
   const readSetting = async key => (await db.get('SELECT value FROM app_settings WHERE key = ?', key).catch(() => null))?.value;
   const readJson = async key => { try { return JSON.parse((await readSetting(key)) || 'null'); } catch { return null; } };
+  // 舊的跨專案角色：cross_roles＝{ add: [id], remove: [id], frozen: 時間 }；還沒寫成固定名單（沒有 frozen）時，角色是 PO／SM 的人與 AI 也算
   const legacyCross = p => ['PO', 'SM'].includes(p.role_key) || ['PO', 'SM'].includes(String(p.role || '').trim().toUpperCase());
-  const defaultCross = () => false;
-  let cross = { add: new Set(), remove: new Set(), frozen: null }, crossAt = 0;
-  async function loadCrossRoles(force = false) {
-    if (!force && Date.now() - crossAt < 10_000) return cross;
-    let v = {};
-    try { v = JSON.parse((await readSetting('cross_roles')) || '{}'); } catch {}
-    if (!v.frozen) {
-      const remove = new Set(v.remove || []), add = new Set(v.add || []);
-      for (const p of await db.all("SELECT * FROM participants WHERE status = 'active' AND kind != 'system'")) if (legacyCross(p) && !remove.has(p.id)) add.add(p.id);
-      v = { add: [...add], remove: [], frozen: nowIso() };
-      await db.run(upsert('cross_roles'), JSON.stringify(v));
-      onChange();
-    }
-    cross = { add: new Set(v.add || []), remove: new Set(v.remove || []), frozen: v.frozen }; crossAt = Date.now();
-    return cross;
-  }
-  // draft：還沒存的草稿（crossRoles() 複製一份、setCrossRole 改）；沒帶就看目前的
-  const isCrossRole = (p, draft = cross) => p.status === 'active' && p.kind !== 'system' && !draft.remove.has(p.id) && (draft.add.has(p.id) || defaultCross(p));
-  const crossRoles = () => ({ add: new Set(cross.add), remove: new Set(cross.remove), frozen: cross.frozen });
-  function setCrossRole(draft, p, on) {
-    if (on) { draft.remove.delete(p.id); if (!defaultCross(p)) draft.add.add(p.id); } else { draft.add.delete(p.id); if (defaultCross(p)) draft.remove.add(p.id); }
-  }
-  // frozen 要留著，不然會重新套舊規則
-  const setCrossRolesStmts = draft => [[upsert('cross_roles'), [JSON.stringify({ add: [...draft.add], remove: [...draft.remove], frozen: draft.frozen || nowIso() })]]];
+  const crossOf = (cr, p) => p.status === 'active' && p.kind !== 'system' && !(cr.remove || []).includes(p.id) && ((cr.add || []).includes(p.id) || (!cr.frozen && legacyCross(p)));
 
   // ---------- 直接讀資料庫（不經快取；示範資料這類一次性的整批修改用） ----------
   // 某人含封存專案的清單
@@ -187,7 +170,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 所以重跑、兩份程式同時跑都不會重複（project_members、accounts 的主鍵再擋一次）。
   // 舊資料：projects 逗號字串（NULL＝所有未封存專案）、project_leaders → 專案管理員、read_only → 唯讀成員（leader 優先）、
   // is_admin（沒有就最早加入的啟用人類）→ 工作區管理員＋平台管理員、停用 → 停用帳號、已刪除（人類）→ 已移出工作區。
-  // 跨專案角色、隱形管理員的成員資格原樣保留（#11、#8 才改）。匯入備份中（restore_state）不做，回 false。
+  // 跨專案角色 → 每個未封存專案的明確成員資格（migrateCrossRoles）。隱形管理員的成員資格原樣保留（#8 才改）。匯入備份中（restore_state）不做，回 false。
   async function migrateLegacy() {
     if (await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
     const base = [
@@ -196,7 +179,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       ['UPDATE projects SET workspace_id = ? WHERE workspace_id IS NULL', [DEFAULT_WORKSPACE]],
     ];
     const todo = await db.all('SELECT id, kind, status, role, role_key, projects FROM participants WHERE workspace_id IS NULL ORDER BY created_at, id');
-    if (!todo.length) { await db.batch(base); return true; }
+    if (!todo.length) { await db.batch(base); await migrateCrossRoles(false); return true; }
     const humans = await db.all("SELECT id, is_admin FROM participants WHERE kind = 'human' AND status = 'active' ORDER BY created_at, id");
     const adminId = (humans.find(p => Number(p.is_admin) === 1) || humans[0])?.id;
     const projects = await db.all('SELECT id, archived FROM projects');
@@ -204,7 +187,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     const leaders = (await readJson('project_leaders')) || {}, ro = (await readJson('read_only')) || {}, cr = (await readJson('cross_roles')) || {};
     const listed = (map, pj, id) => Array.isArray(map?.[pj]) && map[pj].includes(id);
     // 跨專案角色（還沒寫成固定名單的套舊規則）：沒在逗號字串裡也能當 leader、設唯讀 → 以那個角色加入；其他人不在專案裡的角色是移出時沒清掉的，不算
-    const isCross = p => p.status === 'active' && !(cr.remove || []).includes(p.id) && ((cr.add || []).includes(p.id) || (!cr.frozen && legacyCross(p)));
+    const isCross = p => crossOf(cr, p);
     const at = nowIso(), each = [];
     for (const p of todo) {
       const stmts = [];
@@ -222,21 +205,40 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     await db.batch(base);
     for (let i = 0; i < each.length; i += 30) await db.batch(each.slice(i, i + 30).flat()); // 一批 30 人（D1 單批不要太大）
     console.log(`成員與權限：已把 ${todo.length} 位成員轉到新的資料表`);
+    await migrateCrossRoles(true);
     onChange();
     return true;
+  }
+  // 跨專案角色 → 每個未封存專案的明確成員資格（INSERT OR IGNORE：已在的專案角色不變，負責人照舊是專案管理員）；轉完刪掉 cross_roles。
+  // 同一批裡每句都看 cross_roles 還在不在：重跑、兩份程式同時跑都只轉一次，之後被移出的人不會被加回來。
+  // legacy：這次也轉了舊成員（升級前的站）；沒有 cross_roles＝還沒寫成固定名單，套舊規則（PO／SM）
+  async function migrateCrossRoles(legacy) {
+    const raw = await readSetting('cross_roles');
+    if ((raw === undefined || raw === null) && !legacy) return;
+    let cr = {};
+    try { cr = JSON.parse(raw || '{}') || {}; } catch {}
+    const ids = (await db.all("SELECT id, kind, status, role, role_key FROM participants WHERE status = 'active' AND kind != 'system' ORDER BY created_at, id")).filter(p => crossOf(cr, p)).map(p => p.id);
+    const active = (await db.all('SELECT id FROM projects WHERE archived = 0')).map(r => r.id);
+    const rows = JSON.stringify(ids.flatMap(id => active.map(p => ({ p, id }))));
+    const still = raw === undefined || raw === null ? '1 = 1' : "EXISTS (SELECT 1 FROM app_settings WHERE key = 'cross_roles')";
+    await db.batch([
+      [`INSERT OR IGNORE INTO project_members (project_id, participant_id, role) SELECT json_extract(value, '$.p'), json_extract(value, '$.id'), '${PR.MEMBER}' FROM json_each(?) WHERE ${still}`, [rows]],
+      ["DELETE FROM app_settings WHERE key = 'cross_roles'", []],
+    ]);
+    if (ids.length) console.log(`成員與權限：跨專案角色已取消，${ids.length} 位改成各專案的成員`);
+    onChange();
   }
 
   // 重讀所有快取（force）；invalidate 只標成過期，下次讀時重讀
   async function load(force = false) {
-    await Promise.all([loadMembers(force), loadCrossRoles(force)]);
+    await loadMembers(force);
   }
-  function invalidate() { snapAt = 0; crossAt = 0; }
+  function invalidate() { snapAt = 0; }
 
   return { projectsOf, allProjectsOf, setProjectsStmts,
-    loadLeaders, leadersOf, leaderProjectsOf, setLeadersStmts,
+    loadLeaders, leadersOf, leaderProjectsOf, setLeadersStmts, roleOf, addMemberStmts, setMemberRoleStmts,
     makeProjectAdminStmts,
     loadReadOnly, isReadOnlyHuman, isReadOnly, readOnlyProjectsOf, readOnlyOf, setReadOnlyStmts, addReadOnly,
-    loadCrossRoles, isCrossRole, crossRoles, setCrossRole, setCrossRolesStmts,
     fetchProjectsOf, fetchMembersOf, removeProjectStmts,
     enterWorkspaceStmts, syncAdminStmts, accountStatusStmts, forgetStmts, migrateLegacy,
     loadMembers, refreshOne, load, invalidate };

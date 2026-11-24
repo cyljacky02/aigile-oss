@@ -26,7 +26,7 @@ const titles = { lead: { main: 'PO' } };
 const access = createAccess({
   ApiError, requireHuman, nameOf: id => ({ main: '主專案', side: '副專案', old: '舊專案' })[id] || id,
   people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
-  isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)), isCrossRole: () => false,
+  isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)),
   loadLeaders: async () => leaders, leadersOf: pj => leaders[pj] || [],
   loadReadOnly: async () => readOnly, isReadOnly: (p, pj) => (readOnly[pj] || []).includes(p.kind === 'ai' ? p.owner_id : p.id),
   titles: () => titles,
@@ -59,7 +59,7 @@ try {
     assert.ok(v.can(admin, action, 'platform'), action);
     assert.ok(!v.can(lead, action, 'platform'), action + '：leader 不行');
   }
-  for (const action of ['manage_workspace', 'invite', 'reset_login', 'assign_members', 'create_project', 'assign_project_admin']) {
+  for (const action of ['manage_workspace', 'invite', 'reset_login', 'assign_members', 'create_project']) {
     assert.ok(v.can(admin, action, 'workspace'), action);
     assert.ok(!v.can(lead, action, 'workspace'), action + '：leader 不行');
   }
@@ -79,6 +79,14 @@ try {
   assert.ok(v.can(admin, 'configure_project', { project: 'old' }));
   assert.ok(v.can(lead, 'manage_project_members', { project: 'main' }));
   assert.ok(!v.can(lead, 'manage_project_members', { project: 'side' }));
+  assert.ok(!v.can(member, 'manage_project_members', { project: 'main' }), '專案成員不能管理成員');
+  assert.ok(!v.can(viewer, 'manage_project_members', { project: 'main' }), '唯讀成員不能管理成員');
+  // 任免專案管理員：工作區管理員，以及該（未封存）專案的專案管理員
+  assert.ok(v.can(admin, 'assign_project_admin', { project: 'side' }));
+  assert.ok(v.can(lead, 'assign_project_admin', { project: 'main' }), '專案管理員能任免自己專案的專案管理員');
+  assert.ok(!v.can(lead, 'assign_project_admin', { project: 'side' }));
+  assert.ok(!v.can(lead, 'assign_project_admin', { project: 'old' }), '封存的專案不行');
+  assert.ok(!v.can(member, 'assign_project_admin', { project: 'main' }));
   console.log('✓ 專案管理');
 
   // 職稱：管理員、該專案 leader、本人

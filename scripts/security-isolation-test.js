@@ -34,9 +34,8 @@ try {
   await call(admin, `/api/participants/${eve.participant.participantId}/projects`, 'PUT', { projects: [] }).catch(() => {});
   const eveProjects = (await call(eve.token, '/api/me')).body.projects || [];
   assert.ok(!eveProjects.includes(pB), '新來的不在 B');
-  // 跨專案 AI（所有人都看得到它），B 的訊息 @ 它
+  // B 的 AI，B 的訊息 @ 它
   const ai = (await call(admin, '/api/my-ais', 'POST', { projects: [pB], roleKey: 'PO', role: 'PO', name: '跨專案助手', ...S })).body;
-  await call(admin, '/api/members/matrix', 'PUT', { changes: [{ id: ai.participantId, crossRole: true }] });
 
   // B 的卡與訊息
   const card = (await call(bob.token, '/api/cards', 'POST', { requestId: rid(), project: pB, title: '機密：合併計畫', reason: '機密原因', next: '機密下一步' })).body;
@@ -78,7 +77,7 @@ try {
   const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.ok(appJs.includes('<h2 id="modal-title">${esc(title)}</h2>'), '視窗標題一律跳脫');
   assert.ok(!/title: `[^`]*\$\{esc\(/.test(appJs), '標題不再自己跳脫（避免兩次）');
-  for (const k of ['dry.crossChanges || []).map(c => `${esc(c.name)}', 'dry.roleChanges || []).map(c => `${esc(c.name)}', 'dry.impact.map(x => `${esc(x.name)}']) assert.ok(appJs.includes(k), '權限確認清單跳脫：' + k);
+  for (const k of ['Object.entries(t.roles).map(([pj, v]) => `${esc(t.name)}', "ids.map(id => `${esc(P2(id)?.name || '')}", "rmInfo.map(x => `${esc(P2(x.id)?.name || '')}"]) assert.ok(appJs.includes(k), '權限確認清單跳脫：' + k);
   const curSrc = /const curSeq = (c => \{[^\n]*\});/.exec(appJs)[1];
   const curSeq = new Function('atob', `return ${curSrc}`)(s => Buffer.from(s, 'base64').toString('binary'));
   assert.equal(curSeq(evil), null, '游標不是整數就不顯示');

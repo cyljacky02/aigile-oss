@@ -10,6 +10,7 @@ import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { testToken } from './test-token.js';
+import { addToProject, makeProjectAdmin } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-decision-routing-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -32,8 +33,7 @@ try {
   const xiao = (await call(null, '/api/join', 'POST', { name: '小安', role: 'QA' })).body;
   const percy = (await call(null, '/api/join', 'POST', { name: 'Percy', role: 'BA' })).body;
   const L = liu.participant.participantId, X = xiao.participant.participantId, P = percy.participant.participantId;
-  const M = changes => call(liu.token, '/api/members/matrix', 'PUT', { changes });
-  assert.equal((await M([{ id: X, projects: ['預設專案'] }, { id: P, projects: ['預設專案'] }])).status, 200, '小安、Percy 加進專案');
+  assert.equal((await addToProject(call, liu.token, '預設專案', [X, P])).status, 201, '小安、Percy 加進專案');
   const mk = async name => { const a = (await call(liu.token, '/api/my-ais', 'POST', { projects: ['預設專案'], roleKey: 'PG', role: '程式開發', name, duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body;
     return { id: a.participantId, tok: await testToken(db, a.participantId) }; };
   const A = await mk('提問助手'), B = await mk('被問助手');
@@ -54,7 +54,7 @@ try {
   assert.ok(!(await asks(call, liu.token)).includes(qAi) && !(await asks(call, xiao.token)).includes(qAi), '全指定 AI：誰的清單都不列');
 
   // ---------- 專案有 leader → 沒指定的改給 leader ----------
-  assert.equal((await M([{ id: P, leaderOf: ['預設專案'] }])).status, 200, 'Percy 當專案 leader');
+  assert.equal((await makeProjectAdmin(call, liu.token, P, ['預設專案'])).status, 200, 'Percy 當專案管理員');
   assert.deepEqual(await asks(call, percy.token), [qNone], 'leader：沒指定的給他');
   assert.deepEqual(await asks(call, liu.token), [qLiu], '有 leader 後，管理員不再收到沒指定的');
 

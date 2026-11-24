@@ -7,6 +7,7 @@ import path from 'node:path';
 import assert from 'node:assert';
 import { fileURLToPath } from 'node:url';
 import { ROLES } from '../src/roles.js';
+import { addToProject, setProjectRole, removeFromProject } from './test-members.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3995;
@@ -155,12 +156,10 @@ const msg = (tok, text, extra = {}) => call(tok, '/api/messages', 'POST', { requ
     // ① 只有群組管理員（最早加入的人類）能管理專案與成員
     const pr = (await call(amy.token, '/api/projects')).body;
     assert.equal(pr.adminId, bossId, '群組管理員＝最早加入的人類');
-    assert.ok(pr.crossRoleIds.includes(percyId), 'PO 是跨專案角色');
+    assert.equal(pr.crossRoleIds, undefined, '沒有跨專案角色（角色是 PO 也不特別）');
     assert.equal((await call(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' })).status, 200, '工作區設定：只有管理員能建立專案');
     assert.equal((await call(amy.token, '/api/projects', 'POST', { name: '非管理員' })).body.error?.code, 'NOT_ADMIN', '非管理員不能新增專案');
     assert.equal((await call(amy.token, `/api/projects/${newId}`, 'PATCH', { name: 'x' })).body.error?.code, 'NOT_ADMIN', '非管理員不能改名');
-    // ③ 跨專案角色固定，不能移出
-    assert.equal((await put(boss.token, percyId, ['預設專案'])).body.error?.code, 'CROSS_ROLE_FIXED', 'PO 不能被移出專案');
     // ⑥ AI 的專案不能超出所屬人類
     const lone = (await call(null, '/api/join', 'POST', { name: '王小明', role: 'UX' })).body;
     const loneId = lone.participant.participantId;
@@ -172,15 +171,14 @@ const msg = (tok, text, extra = {}) => call(tok, '/api/messages', 'POST', { requ
     assert.equal((await put(lone.token, loneId, ['預設專案', '第二專案'])).body.error?.code, 'NOT_ADMIN', '一般成員不能自己加入專案');
     // ④ 移出前預告退回幾張卡；移出後卡片退回待處理、未指派
     const oc = (await call(boss.token, '/api/cards', 'POST', { requestId: 'req_mv1', title: '小明PG 的平台卡', project: '預設專案', ownerId: loneAi.participantId, status: '進行中' })).body;
-    const dry = (await call(boss.token, '/api/projects/預設專案/members', 'PUT', { dryRun: true, memberIds: pr.items.length && (await call(boss.token, '/api/participants')).body.items.filter(p => (p.projects || []).includes('預設專案') && p.participantId !== loneId).map(p => p.participantId) })).body;
-    assert.equal(dry.error?.code, 'NEEDS_ONE_PROJECT', '只屬於這個專案的人不能直接移出');
+    const dry = (await removeFromProject(call, boss.token, '預設專案', loneAi.participantId, { dryRun: true })).body;
+    assert.equal(dry.error?.code, 'NEEDS_ONE_PROJECT', '只屬於這個專案的 AI 不能直接移出');
     await put(boss.token, loneId, ['預設專案', '第二專案']);
     await put(boss.token, loneAi.participantId, ['預設專案', '第二專案']);
-    const keep = (await call(boss.token, '/api/participants')).body.items.filter(p => (p.projects || []).includes('預設專案') && p.participantId !== loneAi.participantId).map(p => p.participantId);
-    const dry2 = (await call(boss.token, '/api/projects/預設專案/members', 'PUT', { dryRun: true, memberIds: keep })).body;
-    assert.deepEqual(dry2.impact.map(x => [x.name, x.returnedCards]), [['小明PG', [oc.cardId]]], '預告：1 張卡會退回待處理');
+    const dry2 = (await removeFromProject(call, boss.token, '預設專案', loneAi.participantId, { dryRun: true })).body;
+    assert.deepEqual(dry2.returnedCards, [oc.cardId], '預告：1 張卡會退回待處理');
     assert.equal((await call(boss.token, `/api/cards/${oc.cardId}`)).body.owner?.participantId, loneAi.participantId, 'dryRun 不改資料');
-    assert.equal((await call(boss.token, '/api/projects/預設專案/members', 'PUT', { memberIds: keep })).status, 200);
+    assert.equal((await removeFromProject(call, boss.token, '預設專案', loneAi.participantId)).status, 200);
     const oc2 = (await call(boss.token, `/api/cards/${oc.cardId}`)).body;
     assert.ok(!oc2.owner && oc2.status === '待處理', '移出後卡片未指派、退回待處理');
     // ⑤ 異動紀錄
@@ -309,29 +307,22 @@ const msg = (tok, text, extra = {}) => call(tok, '/api/messages', 'POST', { requ
     assert.equal((await msg(boss.token, '[進度] 壞掉的字�', { project: 'all' })).body.error?.code, 'INVALID_ENCODING', 'U+FFFD 擋下');
     assert.equal((await msg(boss.token, '[進度] 真的嗎???', { project: 'all' })).status, 201, '3 個問號不擋');
     assert.equal((await msg(boss.token, '[進度] 連結 https://x.test/a?q=????&b=1 請看', { project: 'all' })).status, 201, '網址裡的問號不擋');
-    // ===== ：成員與權限一次儲存、跨專案角色可開關、我的 AI 可改專案 =====
-    const M = (tok, changes, dryRun) => call(tok, '/api/members/matrix', 'PUT', { changes, dryRun });
+    // ===== ：專案成員端點（舊的成員矩陣已移除，回 410）、我的 AI 可改專案 =====
+    const code = x => x.body.error?.code;
     const projOf = async id => (await call(boss.token, '/api/participants')).body.items.find(p => p.participantId === id).projects;
-    assert.equal((await M(amy.token, [])).status, 403, '只有管理員能用成員與權限');
-    const mdry = (await M(boss.token, [{ id: both.participantId, projects: ['預設專案', '第二專案'] }, { id: bank.participantId, projects: ['預設專案', '第二專案'] }], true)).body;
-    assert.equal(mdry.dryRun, true); assert.equal(mdry.impact.length, 2, 'dryRun 列出兩人的影響');
-    assert.deepEqual(await projOf(both.participantId), ['預設專案'], 'dryRun 不寫入');
-    const msave = (await M(boss.token, [{ id: both.participantId, projects: ['預設專案', '第二專案'] }, { id: bank.participantId, projects: ['預設專案', '第二專案'] }])).body;
-    assert.equal(msave.impact.length, 2);
-    assert.deepEqual(await projOf(bank.participantId), ['預設專案', '第二專案'], '一次存多人、多專案');
-    await M(boss.token, [{ id: both.participantId, projects: ['預設專案'] }, { id: bank.participantId, projects: ['第二專案'] }]);
-    const con = (await M(boss.token, [{ id: plat.participantId, crossRole: true }])).body;
-    assert.ok(con.crossRoleIds.includes(plat.participantId), '管理員可把成員設為跨專案角色');
-    assert.deepEqual(await projOf(plat.participantId), (await call(boss.token, '/api/projects')).body.items.filter(p => !p.archived).map(p => p.id), '設為跨專案角色＝自動在所有專案');
-    assert.equal((await M(boss.token, [{ id: plat.participantId, projects: ['預設專案'] }])).body.error?.code, 'CROSS_ROLE_FIXED', '跨專案角色不能只移出專案');
-    const coff = (await M(boss.token, [{ id: plat.participantId, crossRole: false, projects: ['預設專案'] }])).body;
-    assert.ok(!coff.crossRoleIds.includes(plat.participantId) && (await projOf(plat.participantId)).join() === '預設專案', '同一次關掉跨專案角色並移出專案');
-    assert.ok((await M(boss.token, [{ id: bossId, crossRole: true }])).body.crossRoleIds.includes(bossId));
-    assert.equal((await M(boss.token, [{ id: bossId, crossRole: false }])).body.error?.code, 'ADMIN_CROSS_ROLE', '管理員本人不能關掉自己的跨專案角色');
-    assert.equal((await M(boss.token, [{ id: percyId, crossRole: false }])).body.crossRoleIds.includes(percyId), false, '預設的跨專案角色（PO）也能關掉');
-    assert.equal((await M(boss.token, [{ id: bank.participantId, projects: [] }])).body.error?.code, 'NEEDS_ONE_PROJECT', '至少一個專案');
+    assert.equal((await call(boss.token, '/api/members/matrix', 'PUT', { changes: [] })).status, 410, '舊的成員矩陣回 410');
+    assert.equal((await addToProject(call, amy.token, '第二專案', [both.participantId])).status, 403, '專案成員不能加人');
+    assert.equal((await addToProject(call, boss.token, '第二專案', [both.participantId])).status, 201, '工作區管理員把 AI 加入第二專案');
+    assert.equal((await addToProject(call, boss.token, '預設專案', [bank.participantId])).status, 201);
+    assert.deepEqual(await projOf(bank.participantId), ['預設專案', '第二專案'], '加入專案');
+    assert.deepEqual((await removeFromProject(call, boss.token, '第二專案', both.participantId, { dryRun: true })).body.returnedCards, [], 'dryRun 先看影響');
+    assert.deepEqual(await projOf(both.participantId), ['預設專案', '第二專案'], 'dryRun 不寫入');
+    assert.equal((await removeFromProject(call, boss.token, '第二專案', both.participantId)).status, 200);
+    assert.equal((await removeFromProject(call, boss.token, '預設專案', bank.participantId)).status, 200);
+    assert.deepEqual(await projOf(both.participantId), ['預設專案'], '移出專案');
+    assert.equal(code(await removeFromProject(call, boss.token, '第二專案', bank.participantId)), 'NEEDS_ONE_PROJECT', 'AI 至少一個專案');
     const pev = (await call(boss.token, '/api/projects/預設專案/events?limit=50')).body.items.map(e => e.text);
-    assert.ok(pev.some(t => /取消 Amy 為跨專案角色/.test(t)), '跨專案角色變更記在異動紀錄');
+    assert.ok(pev.some(t => /林志明 把 第二專案PG 加入專案（專案成員）/.test(t)), '加入記在異動紀錄');
     // 我的 AI：所屬人類改 AI 的專案
     const adry = (await call(boss.token, `/api/my-ais/${bank.participantId}`, 'PATCH', { projects: ['預設專案'], dryRun: true })).body;
     assert.ok(adry.dryRun && adry.impact[0].removed.includes('第二專案'), '改 AI 專案前先看影響');
@@ -339,33 +330,29 @@ const msg = (tok, text, extra = {}) => call(tok, '/api/messages', 'POST', { requ
     const asave = (await call(boss.token, `/api/my-ais/${bank.participantId}`, 'PATCH', { projects: ['預設專案', '第二專案'] })).body;
     assert.deepEqual(asave.projects, ['預設專案', '第二專案'], '所屬人類可改自己 AI 的專案');
     assert.equal((await call(amy.token, `/api/my-ais/${bank.participantId}`, 'PATCH', { projects: ['預設專案'] })).status, 404, '不能改別人的 AI');
-    // ===== ：專案 leader =====
-    await M(boss.token, [{ id: percyId, projects: ['預設專案', '第二專案'] }]);
-    assert.equal((await M(amy.token, [{ id: bank.participantId, projects: ['預設專案', '第二專案'] }])).status, 403, '還不是 leader 不能改');
-    assert.equal((await M(boss.token, [{ id: bank.participantId, leaderOf: ['預設專案'] }])).body.error?.code, 'INVALID_REQUEST', 'leader 只能是人類');
+    // ===== ：專案管理員 =====
+    await put(boss.token, percyId, ['預設專案', '第二專案']);
+    assert.equal((await addToProject(call, amy.token, '預設專案', [bank.participantId])).status, 403, '還不是專案管理員不能加人');
+    assert.equal(code(await setProjectRole(call, boss.token, '預設專案', plat.participantId, 'admin')), 'INVALID_REQUEST', '專案管理員只能是人類');
     const mate = (await call(null, '/api/join', 'POST', { name: '陳建宏', role: 'BA' })).body;
-    assert.equal((await M(boss.token, [{ id: mate.participant.participantId, leaderOf: ['預設專案'] }])).body.error?.code, 'LEADER_NOT_MEMBER', '要先在專案才能當 leader');
-    const setL = (await M(boss.token, [{ id: percyId, leaderOf: ['預設專案'] }])).body;
-    assert.deepEqual(setL.leaders['預設專案'], [percyId], '管理員指定 Amy 為平台 leader');
-    assert.equal((await M(amy.token, [{ id: bank.participantId, projects: ['第二專案'] }], true)).status, 200, 'leader 可以看影響');
-    const lAdd = (await M(amy.token, [{ id: mate.participant.participantId, projects: ['預設專案'] }])).body;
-    assert.equal(lAdd.impact[0].added[0], '預設專案', 'leader 可以把人加入自己的專案');
-    assert.equal((await M(amy.token, [{ id: mate.participant.participantId, projects: ['預設專案', '第二專案'] }])).body.error?.code, 'NOT_PROJECT_LEADER', 'leader 不能改別的專案');
-    assert.equal((await M(amy.token, [{ id: plat.participantId, crossRole: true }])).body.error?.code, 'NOT_PROJECT_LEADER', 'leader 不能設跨專案角色');
-    assert.equal((await M(amy.token, [{ id: mate.participant.participantId, leaderOf: ['預設專案'] }])).body.error?.code, 'NOT_PROJECT_LEADER', 'leader 不能指定 leader');
-    assert.equal((await M(amy.token, [{ id: percyId, projects: ['第二專案'] }])).body.error?.code, 'NOT_PROJECT_LEADER', 'leader 不能把自己移出');
-    assert.equal((await M(amy.token, [{ id: bossId, projects: ['第二專案'] }])).body.error?.code, 'NOT_PROJECT_LEADER', 'leader 不能改管理員／跨專案角色');
+    assert.equal(code(await setProjectRole(call, boss.token, '預設專案', mate.participant.participantId, 'admin')), 'NOT_MEMBER', '要先在專案才能任命');
+    assert.equal((await setProjectRole(call, boss.token, '預設專案', percyId, 'admin')).status, 200);
+    assert.deepEqual((await call(boss.token, '/api/projects')).body.projectAdmins['預設專案'], [percyId], '管理員任命 Amy 為平台的專案管理員');
+    assert.equal((await addToProject(call, amy.token, '預設專案', [mate.participant.participantId])).status, 201, '專案管理員可以把工作區成員加入自己的專案');
+    assert.equal((await addToProject(call, amy.token, '第二專案', [mate.participant.participantId])).status, 403, '專案管理員不能改別的專案');
+    assert.equal((await setProjectRole(call, amy.token, '預設專案', mate.participant.participantId, 'admin')).status, 200, '專案管理員可以任命其他專案管理員');
+    assert.equal((await setProjectRole(call, amy.token, '預設專案', mate.participant.participantId, 'member')).status, 200, '也可以卸任');
+    assert.equal(code(await removeFromProject(call, amy.token, '預設專案', bossId)), 'CANNOT_MANAGE_ADMIN', '專案管理員不能動工作區管理員');
     const lev = (await call(boss.token, '/api/projects/預設專案/events?limit=10')).body.items.map(e => e.text);
-    assert.ok(lev.some(t => /Amy（預設專案 leader） 加入 陳建宏/.test(t)), 'leader 的變更記在異動紀錄');
-    assert.ok((await call(boss.token, '/api/messages?limit=20')).body.items.some(m => /Amy（預設專案 leader）把 陳建宏 加入預設專案/.test(m.text) && m.project === '預設專案'), '通知管理員');
-    await M(boss.token, [{ id: percyId, projects: ['第二專案'] }]);
-    assert.deepEqual((await call(boss.token, '/api/projects')).body.leaders['預設專案'], [], '移出專案時 leader 身分一起拿掉');
-    assert.equal((await M(amy.token, [{ id: mate.participant.participantId, projects: ['預設專案'] }])).status, 403, '不再是 leader 就不能改');
+    assert.ok(lev.some(t => /Amy 把 陳建宏 加入專案（專案成員）/.test(t)), '專案管理員的變更記在異動紀錄');
+    await put(boss.token, percyId, ['第二專案']);
+    assert.deepEqual((await call(boss.token, '/api/projects')).body.projectAdmins['預設專案'], [], '移出專案時專案管理員身分一起拿掉');
+    assert.equal((await addToProject(call, amy.token, '預設專案', [bank.participantId])).status, 403, '不再是專案管理員就不能改');
     // ===== ：成員名單、團隊狀態依專案 =====
-    await M(boss.token, [{ id: plat.participantId, projects: ['預設專案'] }, { id: bank.participantId, projects: ['第二專案'] }]);
+    await put(boss.token, plat.participantId, ['預設專案']); await put(boss.token, bank.participantId, ['第二專案']);
     const pp = (await call(plat.token, '/api/participants')).body.items.map(p => p.participantId);
     assert.ok(pp.includes(plat.participantId) && !pp.includes(bank.participantId), '只屬平台的成員拿不到只屬第二專案的人');
-    assert.ok(pp.includes(bossId), '跨專案角色（管理員）看得到');
+    assert.ok(pp.includes(bossId), '在所有專案的管理員看得到');
     assert.deepEqual((await call(plat.token, '/api/participants')).body.items.find(p => p.participantId === bossId).projects, ['預設專案'], '別人的專案只列自己也在的（不露出別專案名稱）');
     const ts = (await call(plat.token, '/api/team-status')).body.members.map(m => m.participantId);
     assert.ok(!ts.includes(bank.participantId), '團隊狀態也依專案');

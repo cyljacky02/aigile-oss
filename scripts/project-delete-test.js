@@ -14,6 +14,7 @@ import { openNodeDb } from '../src/db-node.js';
 import { dbStorage } from '../src/storage-db.js';
 import { memStorage } from '../src/storage-r2.js';
 import { testToken } from './test-token.js'; // 資料庫只存雜湊：換一組已知的 Token
+import { makeProjectAdmin } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-projdel-'));
 const db = openNodeDb(path.join(dataDir, 'switch.db'));
@@ -35,7 +36,7 @@ try {
   const pid = np.items.find(p => p.name === '要刪的專案').id;
   const enc = encodeURIComponent(pid);
   assert.equal((await call(liu.token, `/api/participants/${id(wang)}/projects`, 'PUT', { projects: ['預設專案', pid] })).status, 200);
-  assert.equal((await call(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(wang), leaderOf: [pid] }] })).status, 200, 'wang 當 leader');
+  assert.equal((await makeProjectAdmin(call, liu.token, id(wang), [pid])).status, 200, 'wang 當 leader');
   const mkAi = async (name, projects) => (await call(liu.token, '/api/my-ais', 'POST', { projects, roleKey: 'PG', role: 'PG', name, duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body;
   const aiOnly = await mkAi('只在這裡的AI', [pid]);
   const aiBoth = await mkAi('兩邊都有的AI', ['預設專案', pid]);

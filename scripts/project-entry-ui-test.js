@@ -6,6 +6,7 @@
 // 本機暫存資料庫＋無頭 Chrome／Edge，不連正式站。用法：node scripts/project-entry-ui-test.js（找不到瀏覽器就略過）
 import assert from 'node:assert';
 import { startKit, findBrowser, until, sleep } from './browser-kit.js';
+import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('project-entry-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('projentry');
@@ -14,7 +15,7 @@ try {
   const liu = await join('林志明', 'PO'), wang = await join('陳小美', 'UX'), chen = await join('王大同', 'PG');
   const id = p => p.participant.participantId;
   for (const [p, pj] of [[wang, ['預設專案', '第二專案']], [chen, ['預設專案']]]) await kit.call(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: pj });
-  assert.equal((await kit.call(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(wang), leaderOf: ['預設專案'] }] })).status, 200, 'wang 當預設專案 leader');
+  assert.equal((await makeProjectAdmin(kit.call, liu.token, id(wang), ['預設專案'])).status, 200, 'wang 當預設專案 leader');
   const np = (await kit.call(liu.token, '/api/projects', 'POST', { name: '要封存的', code: 'ARC' })).body;
   const arc = np.items.find(p => p.name === '要封存的');
 
@@ -80,7 +81,7 @@ try {
   let av = await avItems();
   assert.match(av, /admin=⚙️管理員設定專案、邀請、帳號/, '管理員設定：' + av);
   assert.match(av, /pm-projects=📁專案管理新增、改名、封存/, '專案管理：' + av);
-  assert.match(av, /perm=👥成員管理成員、角色、技能/, '成員管理：' + av);
+  assert.match(av, /perm=👥成員管理成員、AI 職務、技能/, '成員管理：' + av);
   assert.ok(!av.includes('成員與權限'), '沒有「成員與權限」');
   await click('#av-menu [data-av="pm-projects"]');
   await until(() => js("!!document.querySelector('.adm-main .pm-ptable') && location.pathname === '/admin/projects'"), 8000, '頭像 › 專案管理＝管理員設定 › 專案');
@@ -143,12 +144,12 @@ try {
   await until(() => js("document.documentElement.lang === 'en' && !!document.querySelector('.proj-switch [data-pset]')"), 15000, '英文介面');
   await openGear();
   const enMenu = await text('#pset-menu');
-  assert.match(enMenu, /Project settings[\s\S]*Rename[\s\S]*Repository and branch[\s\S]*Members and roles in this project/, '英文齒輪選單：' + enMenu);
+  assert.match(enMenu, /Project settings[\s\S]*Rename[\s\S]*Repository and branch[\s\S]*Members and project roles/, '英文齒輪選單：' + enMenu);
   await js("document.body.click(); true");
   av = await avItems();
   assert.match(av, /admin=⚙️Admin settingsprojects, invites, accounts/, '英文頭像選單：' + av);
   assert.match(av, /pm-projects=📁Project managementadd, rename, archive/, '英文頭像選單：' + av);
-  assert.match(av, /perm=👥Member managementmembers, roles, skills/, '英文頭像選單：' + av);
+  assert.match(av, /perm=👥Member managementmembers, AI duties, skills/, '英文頭像選單：' + av);
   await click('#av-menu [data-av="pm-projects"]');
   await until(() => js("!!document.querySelector('.adm-main .pm-ptable')"), 8000, '英文管理員設定 › 專案');
   assert.match(await text('.adm-nav'), /To do[\s\S]*Workspace settings[\s\S]*Accounts & recovery[\s\S]*Audit & storage[\s\S]*System & backup/, '英文左側目錄：' + await text('.adm-nav'));
