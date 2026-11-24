@@ -10,7 +10,7 @@ import { APP_VERSION, cmpVersion } from './version.js';
 export const BACKUP_FORMAT = 'aigile-backup';
 export const BACKUP_FORMAT_VERSION = 1;
 // 匯出的資料表（順序＝匯入順序）。新增資料表時一定要放進 EXPORT_TABLES 或 SKIP_TABLES（backup-test 會檢查）
-export const EXPORT_TABLES = ['projects', 'project_statuses', 'project_events', 'app_settings', 'participants', 'ai_state', 'messages', 'message_recipients', 'notifications', 'dms',
+export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'project_events', 'app_settings', 'accounts', 'participants', 'project_members', 'ai_state', 'messages', 'message_recipients', 'notifications', 'dms',
   'decision_resolutions', 'cards', 'card_log', 'card_msgs', 'suggestions', 'avatars', 'avatar_proposals',
   'skills', 'skill_allows', 'skill_installs', 'skill_syncs', 'join_requests', 'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages']; // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
@@ -30,7 +30,7 @@ const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s +=
 const unb64 = s => { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
 const toU8 = v => (v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new Uint8Array(v) : Array.isArray(v) ? Uint8Array.from(v) : null);
 
-export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, afterRestore }) {
+export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, membership, afterRestore }) {
   const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '備份與匯入' }); };
   const columnsOf = async t => (await db.all(`PRAGMA table_info(${t})`)).map(c => c.name);
   // 匯入中只認開始匯入的那位（備份的成員寫進來後，最早的人類會變成管理員，不能再用權限模組的管理員判斷）
@@ -111,7 +111,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     if (String(body.appVersion).split('.')[0] !== APP_VERSION.split('.')[0]) throw new ApiError(400, 'BACKUP_MAJOR', `備份是 ${body.appVersion} 版，跟這個站（${APP_VERSION}）的主版本不同，不能直接匯入`);
     if (!state && !(await isEmpty(me))) throw new ApiError(409, 'NOT_EMPTY', '只有空站能匯入：這個站已經有其他成員、訊息、卡片、技能或文件。請在新架的站匯入。');
     if (state && state.by !== me.id) throw new ApiError(409, 'RESTORE_BY_OTHER', '別的管理員正在匯入');
-    const stmts = EXPORT_TABLES.filter(t => t !== 'participants').map(t => [`DELETE FROM ${t}`, []]);
+    const stmts = EXPORT_TABLES.filter(t => !['participants', 'accounts'].includes(t)).map(t => [`DELETE FROM ${t}`, []]);
+    stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
     stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${me.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
     stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: me.name, code: me.code, appVersion: body.appVersion })]]);
@@ -132,6 +133,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     for (const r of body.rows) {
       if (!r || typeof r !== 'object') throw invalid('rows 每一列要是物件');
       if (t === 'participants' && r.id === me.id) continue; // 你自己（同一個站匯回自己）：保留現在的
+      if (t === 'accounts' && r.id === me.account_id) continue;
       if (t === 'app_settings' && (typeof r.key !== 'string' || skipSetting(r.key))) continue;
       const row = {};
       for (const [k, v] of Object.entries(r)) {
@@ -164,9 +166,9 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     const stmts = [["DELETE FROM app_settings WHERE key = 'restore_state'", []]];
     if (target) {
       for (const t of ['credentials', 'devices', 'account_notices']) stmts.push([`UPDATE ${t} SET participant_id = ? WHERE participant_id = ?`, [target.id, me.id]]);
-      stmts.push(['DELETE FROM participants WHERE id = ?', [me.id]]);
+      stmts.push(...membership.forgetStmts([me.id]), ['DELETE FROM participants WHERE id = ?', [me.id]]);
       stmts.push(['UPDATE participants SET token = ?, token_expires_at = ? WHERE id = ?', [me.token, me.token_expires_at || 0, target.id]]); // 你現在的登入碼也跟著過去（不是備份裡的）
-      stmts.push(['UPDATE participants SET is_admin = CASE WHEN id = ? THEN 1 ELSE 0 END', [target.id]]); // 管理員＝備份裡的管理員（也就是你）
+      stmts.push(['UPDATE participants SET is_admin = CASE WHEN id = ? THEN 1 ELSE 0 END', [target.id]], ...membership.syncAdminStmts()); // 管理員＝備份裡的管理員（也就是你）；工作區、平台管理員跟著
       // 其他人類的登入不在備份裡：標「要重設登入」，成員頁與總覽寫出來（他用重設連結登入、或你發了重設連結就清掉）
       stmts.push(['UPDATE participants SET last_seen_at = 0, standby_at = 0 WHERE id != ?', [target.id]]); // 在線、待命是舊站的狀態：這個站還沒人見過他們（不然進不來的人會顯示在線、AI 顯示待命）
       for (const p of rows) if (p.id !== target.id) stmts.push(["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['relogin:' + p.id, nowIso()]]);

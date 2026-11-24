@@ -49,6 +49,7 @@ try {
   console.log('✓ 專案歸屬');
 
   // leader：整份換掉（沒列的專案就沒有 leader）；封存專案的 leader 留著（才能還原），但不算「目前帶的專案」
+  // 是專案角色（#7 起存在 project_members）：指定 leader 等於以專案管理員加入；移出專案就沒有角色
   assert.deepEqual(m.leadersOf(A), [], '一開始沒有 leader');
   await run(m.setLeadersStmts({ [A]: [boss], [B]: [boss, chen] }));
   await m.load(true);
@@ -63,6 +64,14 @@ try {
   await run(m.setLeadersStmts({ [A]: [boss] }));
   await m.load(true);
   assert.deepEqual(m.leadersOf(B), [], '沒列的專案就沒有 leader');
+  assert.deepEqual(m.allProjectsOf(await row(chen)), [B], '指定 leader 時加入專案；不再是 leader 還是專案成員');
+  await run(m.setLeadersStmts({ [B]: [chen] }));
+  await run(m.setProjectsStmts(chen, [], null));
+  await run(m.setProjectsStmts(chen, [B], null));
+  await m.load(true);
+  assert.deepEqual(m.leadersOf(B), [], '移出專案就沒有角色（再加入是專案成員）');
+  await run(m.setProjectsStmts(chen, [], null));
+  await m.load(true);
   console.log('✓ leader');
 
   // 唯讀：只記人類；他名下的 AI 在那個專案跟著唯讀

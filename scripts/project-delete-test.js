@@ -63,7 +63,6 @@ try {
   await db.run("INSERT INTO dms (id, human_id, ai_id, from_id, text, project, request_id, created_at) VALUES ('dm_del', ?, ?, ?, '私訊', ?, 'd1', ?)", id(liu), aiBoth.participantId, id(liu), pid, at);
   await db.run("INSERT INTO join_requests (id, project, participant_id, created_at) VALUES ('jr_del', ?, ?, ?)", pid, id(liu), at);
   await db.run("INSERT INTO app_settings (key, value) VALUES (?, '{\"url\":\"https://example.com/repo\"}')", 'repo:' + pid);
-  await db.run("UPDATE app_settings SET value = json_set(COALESCE(value, '{}'), '$.' || ?, json('[\"' || ? || '\"]')) WHERE key = 'read_only'", pid, id(wang)).catch(() => {});
   assert.ok(await n('SELECT COUNT(*) AS n FROM notifications WHERE message_id = ?', m1.messageId), '有通知');
   const flagWin = () => call(liu.token, `/api/projects/${enc}/delete-preview`);
 
@@ -120,12 +119,13 @@ try {
   assert.equal(await n("SELECT COUNT(*) AS n FROM cards WHERE project = '預設專案'"), 1, '另一個專案的卡留著');
   // 人和 AI 留著、不再屬於這個專案；設定裡也拿掉
   for (const p of [id(liu), id(wang), aiBoth.participantId]) {
-    const row = await db.get('SELECT projects, status FROM participants WHERE id = ?', p);
-    assert.ok(row && row.status === 'active' && !row.projects.split(',').includes(pid), '帳號留著、拿掉專案：' + JSON.stringify(row));
+    const row = await db.get('SELECT status FROM participants WHERE id = ?', p);
+    assert.ok(row && row.status === 'active', '帳號留著：' + JSON.stringify(row));
   }
   // 只屬於這個專案的 AI：跟「刪除 AI」一樣（狀態 deleted、Token 失效、工作記憶清掉）
-  const gone = await db.get('SELECT status, projects FROM participants WHERE id = ?', aiOnly.participantId);
-  assert.deepEqual({ ...gone }, { status: 'deleted', projects: '' }, '只屬於它的 AI 刪了：' + JSON.stringify(gone));
+  assert.equal(await n('SELECT COUNT(*) AS n FROM project_members WHERE project_id = ?', pid), 0, '沒有人還在這個專案（含 leader）');
+  const gone = await db.get('SELECT status FROM participants WHERE id = ?', aiOnly.participantId);
+  assert.deepEqual({ ...gone }, { status: 'deleted' }, '只屬於它的 AI 刪了：' + JSON.stringify(gone));
   assert.equal((await call(aiOnlyTok, '/api/me')).status, 401, '那隻 AI 的 Token 失效');
   assert.ok(!(await call(liu.token, '/api/my-ais')).body.items.some(a => a.participantId === aiOnly.participantId), '我的 AI 清單沒有它');
   assert.deepEqual(r.body.deleted.aisDeleted, ['只在這裡的AI'], '紀錄寫了一起刪的 AI');

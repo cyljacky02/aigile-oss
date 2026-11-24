@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS participants (
   wake_day TEXT NOT NULL DEFAULT '',       -- 叫醒次數算到哪一天（台灣日期 YYYY-MM-DD；migrations/002）
   wake_count INTEGER NOT NULL DEFAULT 0,   -- wake_day 那天叫醒幾次
   wake_at INTEGER NOT NULL DEFAULT 0,      -- 最近一次叫醒（0＝從沒回報過）
+  account_id TEXT,                         -- 人類的帳號（accounts.id）；AI 沒有（migrations/008）
+  workspace_id TEXT,                       -- 所屬工作區；空的＝舊資料還沒轉換（啟動時補）
+  workspace_role TEXT NOT NULL DEFAULT 'member', -- admin（工作區管理員）| member
+  workspace_status TEXT NOT NULL DEFAULT 'active', -- active | removed（已移出工作區）
   projects TEXT NOT NULL DEFAULT ''  -- 所屬專案（逗號分隔，至少一個）
 );
 CREATE TABLE IF NOT EXISTS messages (
@@ -233,6 +237,8 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   archived INTEGER NOT NULL DEFAULT 0,
+  workspace_id TEXT,                   -- 所屬工作區（migrations/008）
+  visibility TEXT NOT NULL DEFAULT 'review', -- 專案可見度：open | review | private（第一階段一律 review，尚未生效）
   created_by TEXT,
   created_at TEXT NOT NULL
 );
@@ -455,3 +461,28 @@ CREATE TABLE IF NOT EXISTS kb_pages (
   deleted_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_kb_pages ON kb_pages (project, status, deleted_at);
+-- 成員與權限（docs/adr/0002；migrations/008）：帳號、工作區、專案成員
+-- 預設工作區：新站「誰可以建立專案」＝所有成員（升級的站由 008 先建成只有管理員）
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,                 -- 第一階段只有 default
+  name TEXT NOT NULL DEFAULT '',       -- 工作區名稱（升級時取群組名稱）
+  create_projects TEXT NOT NULL DEFAULT 'members', -- 誰可以建立專案：members | admins
+  created_at TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO workspaces (id, name, create_projects) VALUES ('default', '', 'members');
+-- 帳號：一個人在平台上的登入身分（人類的 participants.account_id 指過來；第一階段一人一個工作區）
+CREATE TABLE IF NOT EXISTS accounts (
+  id TEXT PRIMARY KEY,                 -- acct_<participant id>
+  platform_role TEXT NOT NULL DEFAULT 'none', -- admin（平台管理員）| none
+  status TEXT NOT NULL DEFAULT 'active', -- active | disabled（停用帳號）
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+-- 專案成員：誰在哪個專案、專案角色（取代 participants.projects 與 project_leaders／read_only 設定）
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id TEXT NOT NULL,
+  participant_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member', -- admin（專案管理員）| member（專案成員）| viewer（唯讀成員；他的 AI 跟著唯讀）
+  PRIMARY KEY (project_id, participant_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_members_participant ON project_members (participant_id);

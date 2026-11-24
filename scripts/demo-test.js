@@ -31,7 +31,7 @@ try {
   assert.equal((await call(boss.token, '/api/messages', 'POST', { requestId: 'r1', project: real, text: '真的訊息' })).status, 201);
   assert.equal((await call(boss.token, '/api/cards', 'POST', { requestId: 'r2', project: real, title: '真的卡' })).status, 201);
   const before = await snapshot();
-  const meBefore = (await db.get('SELECT projects FROM participants WHERE id = ?', boss.participant.participantId)).projects;
+  const meBefore = (await call(boss.token, '/api/me')).body.projects;
 
   // 5. 只有管理員
   assert.equal((await call(chen.token, '/api/admin/demo', 'POST')).status, 403, '非管理員不能載入');
@@ -60,7 +60,7 @@ try {
   const mail = (await call(boss.token, `/api/cards/${cards.find(c => c.title === '報名成功寄確認信').cardId}`)).body;
   assert.ok(mail.messageIds.length >= 4, '對話掛在卡上');
   // 4. 虛構、名字都是示範、不能登入
-  const demoPeople = await db.all("SELECT * FROM participants WHERE projects = ?", pj);
+  const demoPeople = await db.all('SELECT * FROM participants p WHERE EXISTS (SELECT 1 FROM project_members m WHERE m.participant_id = p.id AND m.project_id = ?) AND NOT EXISTS (SELECT 1 FROM project_members m WHERE m.participant_id = p.id AND m.project_id != ?)', pj, pj); // 只在示範專案的人
   assert.equal(demoPeople.length, 3);
   assert.ok(demoPeople.every(p => p.name.startsWith('示範')), '名字都是示範…');
   for (const p of demoPeople.filter(p => p.kind === 'ai')) assert.equal((await call(p.token, '/api/me')).status, 401, '示範 AI 的 Token 已過期');
@@ -72,7 +72,7 @@ try {
   assert.equal(c1.status, 200, JSON.stringify(c1.body));
   assert.equal(c1.body.keptProject, false);
   assert.deepEqual(await snapshot(), before, '清除後跟載入前一樣（真資料沒動）');
-  assert.equal((await db.get('SELECT projects FROM participants WHERE id = ?', boss.participant.participantId)).projects, meBefore, '你的專案回到原樣');
+  assert.deepEqual((await call(boss.token, '/api/me')).body.projects, meBefore, '你的專案回到原樣');
   assert.ok(!(await db.get("SELECT 1 AS x FROM app_settings WHERE key IN ('demo_data', ?, ?, ?)", 'slug:' + pj, 'pcode:' + pj, 'pnomax:' + pj)), '示範的設定也清掉');
   assert.equal((await call(boss.token, '/api/admin/demo', 'DELETE')).status, 404, '沒有示範資料');
 

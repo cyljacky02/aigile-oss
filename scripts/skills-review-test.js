@@ -66,12 +66,12 @@ try {
   assert.equal((await call(chen.token, '/api/skills')).body.projects.find(p => p.id === '預設專案').canUpload, false, '畫面也不給上傳鈕');
   r = await M([{ id: id(wang), readOnlyIn: ['預設專案'] }]);
   assert.notEqual(r.status, 200, 'leader 本來就不能設唯讀（核准端的唯讀檢查只是保險）');
-  // 唯讀的人就算被設成 leader 也不能核准：直接寫設定模擬（平台介面不允許這樣設）
-  await db.run("INSERT INTO app_settings (key, value) VALUES ('read_only', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify({ 預設專案: [id(chen), id(wang)] }));
-  await new Promise(ok => setTimeout(ok, 10_100)); // 唯讀設定有 10 秒快取
+  // leader 被別份程式改成唯讀成員（一個專案只有一個專案角色）就不能核准：直接寫資料表模擬
+  await db.run("UPDATE project_members SET role = 'viewer' WHERE project_id = '預設專案' AND participant_id = ?", id(wang));
+  await new Promise(ok => setTimeout(ok, 10_100)); // 成員資格有 10 秒快取
   r = await call(wang.token, `/api/skills/${pend.skillId}/review`, 'POST', { action: 'approve' });
-  assert.equal(r.body.error?.code, 'READ_ONLY', 'N6 唯讀的 leader 不能核准：' + JSON.stringify(r.body));
-  assert.ok(!(await call(wang.token, `/api/skills/${pend.skillId}`)).body.canReview, '唯讀 leader 畫面不給核准');
+  assert.equal(r.status, 403, 'N6 改成唯讀的 leader 不能核准：' + JSON.stringify(r.body));
+  assert.ok(!(await call(wang.token, `/api/skills/${pend.skillId}`)).body.canReview, '改成唯讀的 leader 畫面不給核准');
 
   // N7：管理員（只在平台）看得到、核准得了第二專案的技能
   const bank = (await up(wu.token, '第二專案', skill('bank-tool', [{ path: 'scripts/b.sh', text: 'echo b\n' }]))).body;

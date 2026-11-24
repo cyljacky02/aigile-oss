@@ -34,7 +34,7 @@ export function deviceLabelAs(prefix, ua = '') {
 }
 
 export function registerLogin(d) {
-  const { route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, setInitialReadOnly, setProjectsStmts, projectListOf,
+  const { route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, setInitialReadOnly, setProjectsStmts, enterWorkspaceStmts, projectListOf,
     adminOf, access, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
     groupName, humanTtlMs, failLimit = 10, captcha = { on: false } } = d;
 
@@ -478,7 +478,7 @@ export function registerLogin(d) {
           try {
             await db.batch([[`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at)
               VALUES (?,?,?,?,?,?,?,?,?,?)`, [pid, 'human', name, roles ? Object.values(roles)[0] || '' : iv.role || '', await newCode(), await tokenKey(newToken()), 0, ts, ts, now]],
-            ...setProjectsStmts(pid, listOf(iv.projects), ts)]);
+            ...enterWorkspaceStmts(pid, ts), ...setProjectsStmts(pid, listOf(iv.projects), ts)]);
           } catch (e) {
             // 檢查名稱到建人之間，名稱被別人用掉（UNIQUE 失敗）→ 把邀請還回去，換個名稱就能重試（原本邀請已用掉、人沒建、回 500）
             await db.run('UPDATE invites SET used_at = NULL WHERE id = ? AND used_at = ? AND used_by IS NULL', iv.id, now);
