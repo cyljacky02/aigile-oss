@@ -47,6 +47,22 @@ try {
   await until(() => js("!!document.querySelector('#inv-form')"), 10000, '被邀請的畫面');
   assert.match(await js("document.querySelector('.inv-meta').textContent"), /預設專案（專案管理員）/, '寫出要加入的專案與專案角色');
 
+  // 已移出的人被邀請回來：連結頁要先用原本的帳號登入（不是設新的帳號密碼），登入後回到工作區
+  const old = (await kit.call(null, '/api/join', 'POST', { name: '趙前同事', role: 'PG' })).body;
+  assert.equal((await kit.call(boss.token, `/api/participants/${old.participant.participantId}/remove`, 'POST')).status, 200);
+  const back = (await kit.call(boss.token, '/api/invites', 'POST', { name: '趙前同事' })).body;
+  await js("localStorage.clear()");
+  await goto(back.url.replace(/^https?:\/\/[^/]+/, kit.BASE), '重新加入的連結');
+  await until(() => js("!!document.querySelector('#inv-form .inv-login')"), 10000, '要先用原本的帳號登入');
+  assert.ok(await js("!document.querySelector('#inv-form [name=passwordAgain]')"), '不是設新的帳號密碼');
+  await js("document.querySelector('#inv-form').requestSubmit(), true");
+  await until(() => js("/帳號密碼，或貼上登入碼/.test(document.querySelector('#inv-error').textContent)"), 8000, '沒填就提醒要登入');
+  await js(`(() => { document.querySelector('#iv-login-code').value = ${q(old.token)}; document.querySelector('#inv-form').requestSubmit(); return true; })()`);
+  await until(() => js("!!document.querySelector('.av-btn')"), 10000, '登入後進到工作區');
+  assert.ok((await kit.call(boss.token, '/api/roster')).body.members.some(p => p.participantId === old.participant.participantId), '回到成員名冊');
+  await goto(kit.BASE + '/', '登出前的頁面');
+  await js("localStorage.clear(), sessionStorage.clear(), true");
+
   // 登入頁設了房間碼：欄位叫房間碼
   await kit.call(boss.token, '/api/workspace/settings', 'PUT', { roomCode: 'abc123' });
   await goto(kit.BASE + '/', '登入頁');

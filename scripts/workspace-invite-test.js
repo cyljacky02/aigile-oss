@@ -1,4 +1,4 @@
-// 驗收測試：邀請與自行加入以工作區為範圍（#14；詞彙見 GLOSSARY「成員與權限」）
+// 驗收測試：邀請與自行加入以工作區為範圍（詞彙見 GLOSSARY「成員與權限」）
 // 1. 工作區管理員發邀請：接受後成為工作區成員（沒帳號就順便建帳號），依預設加入專案、帶專案角色與職稱
 // 2. 專案管理員、一般成員、AI 不能發邀請（也不能看、重發、取消）
 // 3. 自行註冊：關閉時被拒、房間碼錯誤被拒；自行加入者是工作區成員、沒有專案、在名冊上
@@ -111,7 +111,15 @@ try {
   assert.equal(r.body.invite.kind, 'rejoin', '邀請標出是重新加入');
   assert.equal(code(await call(boss.token, '/api/invites', 'POST', { name: '陳昭宇' })), 'INVITE_EXISTS', '已經有有效的邀請就不再發');
   assert.equal((await call(null, '/api/auth/invite/peek', 'POST', { token: tokenOf(r.body.url) })).body.kind, 'rejoin', '被邀請的人看得到是重新加入');
-  const back = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url) });
+  // 已有帳號的人要先用原本的帳號登入才接受：只有連結不會讓任何人登入
+  const linkOnly = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url) });
+  assert.deepEqual([linkOnly.status, code(linkOnly)], [400, 'INVITE_LOGIN_REQUIRED'], '只有連結：要先登入：' + JSON.stringify(linkOnly.body));
+  assert.ok(!linkOnly.body.token, '沒有拿到登入');
+  const otherAccount = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url), code: boss.token });
+  assert.deepEqual([otherAccount.status, code(otherAccount), !!otherAccount.body.token], [400, 'LOGIN_FAILED', false], '用別人的帳號登入不行');
+  assert.equal(code(await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url), code: 'not-a-real-code-xxxxxxxxxxxx' })), 'LOGIN_FAILED', '登入碼不對不行');
+  assert.equal((await call(null, '/api/auth/invite/peek', 'POST', { token: tokenOf(r.body.url) })).body.valid, true, '沒登入成功時邀請照樣有效');
+  const back = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url), code: chen.token }); // 用他自己的登入碼登入
   assert.equal(back.status, 200, '接受邀請：' + JSON.stringify(back.body));
   assert.equal(back.body.participant.participantId, Cn, '回來的是原本的帳號（歷史紀錄接得上）');
   const cBack = await me(back.body.token);

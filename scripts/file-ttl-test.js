@@ -1,4 +1,4 @@
-// 訊息附件保存時間：平台預設（平台設定，存 app_settings 的 file_ttl）＋工作區覆寫（工作區設定，file_ttl_ws:default）（#9）
+// 訊息附件保存時間：平台預設（平台設定，存 app_settings 的 file_ttl）＋工作區覆寫（工作區設定，file_ttl_ws:default）
 // A. GET /api/file-ttl 誰都能讀實際生效的值（工作區紀錄只給工作區管理員）；平台預設只有平台管理員能改（PUT /api/platform/settings），
 //    工作區管理員、其他人類、AI 一律 403，沒登入 401
 // B. 預設 24 小時；主機設了 FILE_TTL_HOURS 就用它當初始值；平台管理員改過就以資料庫為準（之後 FILE_TTL_HOURS 不再影響）

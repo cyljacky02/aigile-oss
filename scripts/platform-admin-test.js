@@ -1,4 +1,4 @@
-// 驗收測試：平台管理員、移出工作區與停用帳號（#9；詞彙見 GLOSSARY「成員與權限」）
+// 驗收測試：平台管理員、移出工作區與停用帳號（詞彙見 GLOSSARY「成員與權限」）
 // 1. 平台管理員可以有多位：平台管理員能升降平台管理員；最後一位受保護；工作區管理員、一般成員、AI 都不能升降
 // 2. 平台管理員對工作區有隱含的工作區管理權（不是工作區管理員、甚至被移出工作區也一樣）；participant 回傳 platformRole
 // 3. 停用／恢復帳號、已停用清單、平台設定、備份與還原只有平台管理員
@@ -105,6 +105,17 @@ try {
   assert.equal(code(await remove(li.token, Cn)), 'NOT_ADMIN', '一般成員不能把人移出工作區');
   assert.equal(code(await remove(chen.token, Cn)), 'SELF', '不能把自己移出');
   assert.equal(code(await remove(chen.token, Wg)), 'CANNOT_MANAGE_ADMIN', '工作區管理員不能移出平台管理員');
+  // 重設登入也一樣：工作區管理員不能拿到平台管理員的登入連結（不能動對方的上層管理權）
+  const reset = (tok, id) => call(tok, `/api/participants/${id}/reset-login`, 'POST', {});
+  const rs = await reset(chen.token, Wg);
+  assert.equal(rs.status, 403, JSON.stringify(rs.body));
+  assert.equal(code(rs), 'CANNOT_MANAGE_ADMIN', '工作區管理員不能重設平台管理員的登入');
+  assert.ok(!JSON.stringify(rs.body).includes('/invite/'), '沒有拿到連結');
+  assert.equal((await me(wang.token)).platformRole, 'admin', '王小美的登入照舊');
+  const rsOk = await reset(wang.token, Bo);
+  assert.equal(rsOk.status, 200, '平台管理員可以重設另一位平台管理員的登入：' + JSON.stringify(rsOk.body));
+  boss.token = (await call(null, '/api/auth/invite', 'POST', { token: rsOk.body.url.split('/invite/')[1] })).body.token;
+  assert.equal((await me(boss.token)).platformRole, 'admin', '林志明用新連結登入');
   assert.equal((await remove(chen.token, liAi.participantId)).status, 404, 'AI 不是用這個移出（主人刪掉它）');
   const rm = await remove(chen.token, Li); // 工作區管理員（不是平台管理員）就能移出
   assert.equal(rm.status, 200, JSON.stringify(rm.body));
@@ -149,6 +160,9 @@ try {
   const login = () => call(null, '/api/auth/password', 'POST', { username: 'zhao.xa', password: 'pass-word-2' });
   assert.equal((await login()).status, 200, '停用前可以登入');
   assert.equal(code(await call(chen.token, `/api/participants/${Zh}/disable`, 'POST')), 'NOT_ADMIN', '工作區管理員不能停用帳號');
+  const self = await call(boss.token, `/api/participants/${Bo}/disable`, 'POST');
+  assert.equal(code(self), 'SELF', '不能停用自己');
+  assert.ok(!/交給|管理員交/.test(self.body.error.message) && /工作區管理員/.test(self.body.error.message), '說法照詞彙表（升別人為工作區管理員，不是「把管理員交給別人」）：' + self.body.error.message);
   const dis = await call(boss.token, `/api/participants/${Zh}/disable`, 'POST');
   assert.equal(dis.status, 200, JSON.stringify(dis.body));
   assert.equal(dis.body.revokedAiTokens, 1);

@@ -3739,7 +3739,7 @@ body.viewer-open .confirm-root:not(.under-viewer) .overlay { z-index: 1001; } /*
 .kb-skill-warn .link { color: inherit; font-weight: 600; text-decoration: underline; }
 /* 英文介面：手機文件頁三個分頁字比較長，允許換行，不被裁掉 */
 @media (max-width: 899px) { #files-pane .modal-actions .seg-scope button { white-space: normal; height: auto; min-height: 30px; line-height: 1.2; padding: 4px 6px; } }
-/* 成員名冊（#13）：篩選、搜尋同一列，窄畫面換行；每個專案一顆小標籤 */
+/* 成員名冊：篩選、搜尋同一列，窄畫面換行；每個專案一顆小標籤 */
 .rs-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .rs-head #rs-q { min-width: 0; flex: 1 1 180px; max-width: 280px; }
 .rs-filter button { white-space: nowrap; }

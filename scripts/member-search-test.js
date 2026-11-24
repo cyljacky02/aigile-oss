@@ -38,7 +38,7 @@ const env = {
   meId: () => 'me', myProjects: () => ['預設專案'], projName: x => x, projectView: () => '預設專案', roOf: () => false,
   sendTarget: () => '預設專案',
 };
-const names = ['roleIn', 'isAdmId', 'ghostAdmin', 'memberIn', 'findQ', 'findHit', 'markQ', 'NO_FIND', 'findPrefs', 'saveFindPrefs', 'findPass', 'mentionScope', 'inScope', 'recentAt', 'noteRecentAt', 'mentionCandidates', 'mentionItemsHtml'];
+const names = ['roleIn', 'isAdmId', 'implicitOnlyAdmin', 'memberIn', 'findQ', 'findHit', 'markQ', 'NO_FIND', 'findPrefs', 'saveFindPrefs', 'findPass', 'mentionScope', 'inScope', 'recentAt', 'noteRecentAt', 'mentionCandidates', 'mentionItemsHtml'];
 const fns = new Function(...Object.keys(env), `${names.map(fnSrc).join('\n')}\nreturn { ${names.join(', ')} };`)(...Object.values(env));
 const ids = list => list.map(p => p.participantId);
 

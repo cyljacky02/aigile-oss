@@ -94,7 +94,7 @@ try {
   await shot('4-電腦-專案');
   await sec('accounts', '.adm-acc [data-pm-reset]');
   const acc = await J("({ reset: document.querySelectorAll('.adm-acc [data-pm-reset]').length, dis: document.querySelectorAll('.adm-acc [data-pm-disable]').length, rm: document.querySelectorAll('.adm-acc [data-pm-remove]').length, adm: document.querySelectorAll('.adm-acc [data-pm-wsrole]').length, admOff: document.querySelectorAll('.adm-acc [data-pm-wsrole][disabled]').length, transfer: document.querySelectorAll('.adm-acc [data-pm-admin]').length, rescue: document.querySelector('#adm-rescue')?.innerText || '' })");
-  assert.deepEqual([acc.reset, acc.dis, acc.rm, acc.adm, acc.admOff, acc.transfer], [2, 0, 0, 0, 0, 0], '帳號與救援：自己以外的人類有重設登入；升降、移出、停用搬到成員名冊（#13）；沒有交接管理員');
+  assert.deepEqual([acc.reset, acc.dis, acc.rm, acc.adm, acc.admOff, acc.transfer], [2, 0, 0, 0, 0, 0], '帳號與救援：自己以外的人類有重設登入；升降、移出、停用搬到成員名冊；沒有交接管理員');
   assert.ok(await js("!!document.querySelector('.adm-main [data-rs-open]')"), '帳號與救援連到成員名冊');
   assert.match(acc.rescue, /APP_URL=https:\/\/你的網址 npm run admin-rescue[\s\S]*npm run admin-rescue -- --local[\s\S]*DATABASE_URL/, '救援指令：Cloudflare、本機／Docker、Postgres');
   assert.ok(await js("document.querySelector('.adm-acc').getBoundingClientRect().right <= document.querySelector('.adm-main').getBoundingClientRect().right + 1"), '1280 帳號表格沒有超出');
@@ -111,8 +111,8 @@ try {
   await shot('7-電腦-平台設定');
   await login(liu.token, '/admin/accounts');
   await until(() => js("!!document.querySelector('.adm-nav [data-adm=\"accounts\"].sel')"), 8000, '重新整理停在帳號與救援');
-  assert.ok(await js("!document.querySelector('.adm-acc [data-pm-cross]') && !/跨專案角色/.test(document.querySelector('.adm-main').innerText)"), '帳號與救援沒有跨專案角色（#11 已取消）');
-  // 停用 → 已停用的帳號在成員名冊「所有帳號」（#13；帳號與救援不再列）
+  assert.ok(await js("!document.querySelector('.adm-acc [data-pm-cross]') && !/跨專案角色/.test(document.querySelector('.adm-main').innerText)"), '帳號與救援沒有跨專案角色（已取消）');
+  // 停用 → 已停用的帳號在成員名冊「所有帳號」（帳號與救援不再列）
   assert.equal((await call(liu.token, `/api/participants/${id(chen)}/disable`, 'POST', {})).status < 300, true, '停用陳大文');
   await login(liu.token, '/admin/accounts');
   await until(() => js("!!document.querySelector('.adm-acc')"), 8000, '帳號與救援');
@@ -194,7 +194,7 @@ try {
   assert.match(await js("document.querySelector('.adm-nav [data-adm=\"projects\"] .adm-t b').textContent"), /^Projects$/, '英文目錄寫複數 Projects');
   assert.ok(!/[㐀-鿿]/.test((await js("document.querySelector('.adm-nav').innerText")).replace(/林志明|王小明|陳大文/g, '')), '英文目錄沒有中文：' + await js("document.querySelector('.adm-nav').innerText"));
   await shot('12-電腦-英文-帳號與救援');
-  // 已停用的帳號在成員名冊「所有帳號」（#13）
+  // 已停用的帳號在成員名冊「所有帳號」
   await click('.adm-main [data-rs-open]');
   const restoreBtn = `document.querySelector('.rs-table [data-pm-enable="${id(chen)}"]')?.textContent`;
   await until(async () => { if ((await js(restoreBtn)) === 'Restore') return true; await click('[data-rs-filter="accounts"]'); return false; }, 8000, '英文的所有帳號').catch(() => {});

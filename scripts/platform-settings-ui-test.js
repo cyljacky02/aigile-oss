@@ -1,4 +1,4 @@
-// 畫面測試：平台設定頁（#9）只有平台管理員看得到且可操作
+// 畫面測試：平台設定頁只有平台管理員看得到且可操作
 // A. 平台管理員：管理員設定左側有「平台設定」；頁面有版本、附件保存時間預設、示範資料、備份；改附件保存預設會存進平台設定
 // B. 工作區管理員（不是平台管理員）：左側沒有「平台設定」，打 /admin/system 只看到待處理；成員名冊有「移出工作區…」、沒有「停用…」
 // C. 工作區設定：附件保存時間可以「跟平台預設」或覆寫
@@ -27,7 +27,7 @@ try {
   assert.ok(!(await nav()).includes('system'), '工作區管理員左側沒有平台設定');
   assert.ok(!(await js("!!document.querySelector('#adm-ttl')")), '打平台設定的網址也看不到平台設定');
   assert.match(await js("document.querySelector('.adm-main h3').innerText"), /待處理/, '退回待處理');
-  await login(chen.token, '/roster'); // 移出、停用的入口在成員名冊（#13）
+  await login(chen.token, '/roster'); // 移出、停用的入口在成員名冊
   await until(() => js(`!!document.querySelector('.rs-table [data-pm-remove="${wang.participant.participantId}"]')`), 10000, '成員名冊');
   assert.ok(await js(`!!document.querySelector('[data-pm-remove="${wang.participant.participantId}"]')`), '有「移出工作區…」');
   assert.equal(await js("document.querySelectorAll('[data-pm-disable]').length"), 0, '沒有「停用…」（停用帳號是平台管理員的事）');

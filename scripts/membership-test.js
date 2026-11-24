@@ -1,4 +1,4 @@
-// 成員資格模組（src/membership.js）的介面契約：寫入語句執行後，讀取看得到；換資料表（#7）後同一份測試要照樣通過
+// 成員資格模組（src/membership.js）的介面契約：寫入語句執行後，讀取看得到；換資料表後同一份測試要照樣通過
 // 只透過模組介面讀寫；participant 列用 API 建，讀整列交給模組（就像 core.js 從成員快取拿到的那列）
 // 用法：node scripts/membership-test.js
 import fs from 'node:fs';
@@ -45,34 +45,34 @@ try {
   await run(m.setProjectsStmts(chen, [], new Date().toISOString()));
   await m.load(true);
   assert.deepEqual(m.allProjectsOf(await row(chen)), [], '可以回到沒有專案');
-  // onlyIf：條件不符就不寫（同一批剛建的人用）
-  await run(m.setProjectsStmts(chen, [A, B], null, { onlyIf: "workspace_role = 'admin'" }));
+  // onlyIfWorkspaceRole：工作區角色不符就不寫（同一批剛改角色的人用）
+  await run(m.setProjectsStmts(chen, [A, B], null, { onlyIfWorkspaceRole: 'admin' }));
   await m.load(true);
   assert.deepEqual(m.allProjectsOf(await row(chen)), [], '不是管理員就不寫');
   console.log('✓ 專案歸屬');
 
   // leader：整份換掉（沒列的專案就沒有 leader）；封存專案的 leader 留著（才能還原），但不算「目前帶的專案」
-  // 是專案角色（#7 起存在 project_members）：指定 leader 等於以專案管理員加入；移出專案就沒有角色
-  assert.deepEqual(m.leadersOf(A), [], '一開始沒有 leader');
-  await run(m.setLeadersStmts({ [A]: [boss], [B]: [boss, chen] }));
+  // 是專案角色（存在 project_members）：指定 leader 等於以專案管理員加入；移出專案就沒有角色
+  assert.deepEqual(m.projectAdminsOf(A), [], '一開始沒有 leader');
+  await run(m.setProjectAdminsStmts({ [A]: [boss], [B]: [boss, chen] }));
   await m.load(true);
-  assert.deepEqual(m.leadersOf(A), [boss]);
-  assert.deepEqual(sorted(m.leadersOf(B)), sorted([boss, chen]));
-  assert.deepEqual(sorted(m.leaderProjectsOf(boss)), sorted([A, B]));
-  assert.deepEqual((await m.loadLeaders())[B].length, 2, 'loadLeaders 回整份對照表');
+  assert.deepEqual(m.projectAdminsOf(A), [boss]);
+  assert.deepEqual(sorted(m.projectAdminsOf(B)), sorted([boss, chen]));
+  assert.deepEqual(sorted(m.managedProjectsOf(boss)), sorted([A, B]));
+  assert.deepEqual((await m.loadProjectAdmins())[B].length, 2, 'loadProjectAdmins 回整份對照表');
   PROJECTS.splice(1, 1);
-  assert.deepEqual(m.leaderProjectsOf(chen), [], '封存專案不算目前帶的');
-  assert.deepEqual(sorted(m.leadersOf(B)), sorted([boss, chen]), '封存專案的 leader 還查得到');
+  assert.deepEqual(m.managedProjectsOf(chen), [], '封存專案不算目前帶的');
+  assert.deepEqual(sorted(m.projectAdminsOf(B)), sorted([boss, chen]), '封存專案的 leader 還查得到');
   PROJECTS.push(B);
-  await run(m.setLeadersStmts({ [A]: [boss] }));
+  await run(m.setProjectAdminsStmts({ [A]: [boss] }));
   await m.load(true);
-  assert.deepEqual(m.leadersOf(B), [], '沒列的專案就沒有 leader');
+  assert.deepEqual(m.projectAdminsOf(B), [], '沒列的專案就沒有 leader');
   assert.deepEqual(m.allProjectsOf(await row(chen)), [B], '指定 leader 時加入專案；不再是 leader 還是專案成員');
-  await run(m.setLeadersStmts({ [B]: [chen] }));
+  await run(m.setProjectAdminsStmts({ [B]: [chen] }));
   await run(m.setProjectsStmts(chen, [], null));
   await run(m.setProjectsStmts(chen, [B], null));
   await m.load(true);
-  assert.deepEqual(m.leadersOf(B), [], '移出專案就沒有角色（再加入是專案成員）');
+  assert.deepEqual(m.projectAdminsOf(B), [], '移出專案就沒有角色（再加入是專案成員）');
   await run(m.setProjectsStmts(chen, [], null));
   await m.load(true);
   console.log('✓ leader');
@@ -109,7 +109,7 @@ try {
   await run(m.addMemberStmts(po, A, 'admin'));
   await m.load(true);
   assert.equal(m.roleOf(po, A), 'admin', '以專案管理員加入');
-  assert.ok(m.leadersOf(A).includes(po));
+  assert.ok(m.projectAdminsOf(A).includes(po));
   await run(m.addMemberStmts(po, A, 'member'));
   await m.load(true);
   assert.equal(m.roleOf(po, A), 'admin', '已在專案：加入不改角色');
@@ -117,7 +117,7 @@ try {
   await m.load(true);
   assert.equal(m.roleOf(po, A), 'viewer', '改成唯讀成員');
   assert.equal(m.isReadOnly(await row(po), A), true);
-  assert.ok(!m.leadersOf(A).includes(po), '不再是專案管理員');
+  assert.ok(!m.projectAdminsOf(A).includes(po), '不再是專案管理員');
   await run(m.setProjectsStmts(po, [], null));
   await m.load(true);
   assert.equal(m.roleOf(po, A), null, '移出就沒有角色');
@@ -130,7 +130,7 @@ try {
   console.log('✓ 直接讀資料庫');
 
   // 永久刪除專案：所有人的歸屬、leader、唯讀都拿掉那個專案，別的專案不動
-  await run(m.setLeadersStmts({ [A]: [boss], [B]: [boss] }));
+  await run(m.setProjectAdminsStmts({ [A]: [boss], [B]: [boss] }));
   await m.load(true);
   const people = await db.all('SELECT * FROM participants');
   await run(await m.removeProjectStmts(B, people, new Date().toISOString()));
@@ -138,8 +138,8 @@ try {
   assert.deepEqual(m.allProjectsOf(await row(ux)), [A]);
   assert.deepEqual(m.allProjectsOf(await row(ai)), [A]);
   assert.deepEqual(m.allProjectsOf(await row(boss)), [A]);
-  assert.deepEqual(m.leadersOf(B), [], 'leader 拿掉');
-  assert.deepEqual(m.leadersOf(A), [boss], '別的專案的 leader 還在');
+  assert.deepEqual(m.projectAdminsOf(B), [], 'leader 拿掉');
+  assert.deepEqual(m.projectAdminsOf(A), [boss], '別的專案的 leader 還在');
   assert.deepEqual(m.readOnlyOf(B), [], '唯讀拿掉');
   assert.deepEqual(await m.fetchMembersOf(B), []);
   console.log('✓ 刪除專案');
