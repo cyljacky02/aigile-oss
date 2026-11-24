@@ -17,7 +17,7 @@ import { registerBackup } from './backup.js'; // 備份匯出與匯入
 import { registerUpdateCheck } from './update.js'; // 管理頁「有新版本」
 import { registerDemo } from './demo.js'; // 示範資料
 import { registerRoster } from './roster.js'; // 成員名冊
-import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
+import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, effectiveProjects, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
 import { createWorkspaceSettings, CREATE_PROJECTS } from './workspace-settings.js'; // 工作區設定（誰可以建立專案）
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
@@ -356,7 +356,10 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 隱含權限：工作區管理員看得到、進得去所有（未封存）專案，但不算成員資格（名單過濾見 access implicitOnlyIn；改成員資格一律用 listOf）
   // 實際的工作區管理權：工作區管理員，或平台管理員（隱含，#9）。跟 access.adminInWorkspace 同一個規則
   const adminInWorkspace = p => isWorkspaceAdmin(p) || membership.isPlatformAdmin(p);
-  const projectsOf = p => (adminInWorkspace(p) ? [...PROJECTS] : membership.projectsOf(p));
+  // 實際能進的專案（規則在權限模組）：AI 不超出所屬人類能進的專案。所屬人類的列看成員快取（AI 發請求時一定先讀好，見 handleInner）；
+  // 快取裡沒有就只看他明確加入的專案（寧可少給）
+  const projectsOf = effectiveProjects({ projects: () => PROJECTS, memberProjectsOf: p => membership.projectsOf(p), implicitAll: adminInWorkspace,
+    ownerOf: ai => peopleCache.map?.get(ai.owner_id) || { id: ai.owner_id, kind: 'human' } });
   // 專案可見度（權限模組 discover_project）：私人專案對看不到的人＝不存在（檢查、錯誤訊息列的專案都不提它）
   // 同步版，用目前的成員快取（非成員看私人專案才要判上層管理員）；me 沒帶＝平台自己，都看得到
   const visibleView = () => access.view({ people: peopleCache.map || new Map() });
@@ -1766,17 +1769,29 @@ ${ending}`;
   const projectsSeenBy = async (ctx, me, extra = {}) => scopeProjects(await projectsResponse(ctx, extra), me);
 
   // 改成員所屬專案（單人或批次）。移出某專案時，他在該專案負責的未結案卡片退回「待處理」、改為未指派。
+  // 人類失去的專案，他名下的 AI 也一起移出（AI 的專案不超出所屬人類；能進的範圍在權限模組本來就這樣算，這裡讓成員清單、卡片也跟著）。
   // changes: [{ id, projects: [...] }]；dryRun 只回影響，不寫入
   async function applyMembership(ctx, me, changes, { dryRun = false, byLeader = false } = {}) {
     const who = pj => (byLeader ? `${me.name}（${nameOf(pj)} 專案管理員）` : me.name);
     await loadProjects(true);
     const people = await peopleMap(ctx, changes.map(ch => String(ch.id)));
-    const plan = [];
+    const listed = new Set(changes.map(ch => String(ch.id))), aiChanges = [];
     for (const ch of changes) {
+      const h = people.get(String(ch.id));
+      if (!h || h.kind !== 'human' || adminInWorkspace(h) || !Array.isArray(ch.projects)) continue; // 有隱含權限的人類：AI 照舊
+      const keep = new Set(ch.projects.map(String));
+      for (const ai of people.values()) {
+        if (ai.kind !== 'ai' || ai.owner_id !== h.id || ai.status !== 'active' || listed.has(ai.id)) continue;
+        const cur = listOf(ai).filter(x => PROJECTS.includes(x));
+        if (cur.some(x => !keep.has(x))) aiChanges.push({ id: ai.id, projects: cur.filter(x => keep.has(x)), followOwner: true });
+      }
+    }
+    const plan = [];
+    for (const ch of [...changes, ...aiChanges]) {
       const target = people.get(String(ch.id));
       if (!target || target.status !== 'active' || target.kind === 'system') throw new ApiError(404, 'NOT_FOUND', `找不到成員 ${ch.id}`);
-      // 人類可以回到「還沒有專案」（例如復原剛才的加入）；AI 至少要一個專案
-      const next = ch.allowEmpty && target.kind === 'human' && Array.isArray(ch.projects) && !ch.projects.length ? [] : readProjects(ch.projects);
+      // 人類可以回到「還沒有專案」（例如復原剛才的加入）；AI 至少要一個專案（跟著所屬人類移出的除外）
+      const next = ch.followOwner ? ch.projects : ch.allowEmpty && target.kind === 'human' && Array.isArray(ch.projects) && !ch.projects.length ? [] : readProjects(ch.projects);
       const cur = listOf(target).filter(x => PROJECTS.includes(x));
       const added = next.filter(x => !cur.includes(x)), removed = cur.filter(x => !next.includes(x));
       if (target.kind === 'ai' && added.length) {
@@ -3998,6 +4013,7 @@ ${ending}`;
         }));
         await membership.loadMembers(); // 成員資格快照（10 秒快取；本份程式改過就重讀）
         const me = r.open ? null : await authenticate(req, url);
+        if (me?.kind === 'ai') await peopleMap(ctx); // AI 能進的專案要看所屬人類（成員快取）
         const routeKey = `${r.method} ${r.pattern}`;
         if (me?.kind === 'human' && DEFAULT_ADMIN && !credOk.has(me.id)) {
           if (!(await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', MUST_KEY(me.id)))) credOk.add(me.id);

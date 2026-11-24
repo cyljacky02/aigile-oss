@@ -113,7 +113,7 @@ try {
   const call = mkApp(db);
   const me = async id => sorted((await call(await testToken(db, id), '/api/me')).body.projects);
   assert.deepEqual(await me('p_cross'), sorted([A, B, C]), '角色 SM 的人：每個專案');
-  assert.deepEqual(await me('p_crossai'), sorted([A, B, C]), '角色 PO 的 AI：每個專案');
+  assert.deepEqual(await me('p_crossai'), [A], '角色 PO 的 AI：轉成每個專案的成員資格，但能進的不超出所屬人類（陳唯讀只在預設專案）');
   assert.deepEqual(await me('p_crossro'), [A], '其他人照舊');
   assert.equal(await crossSetting(db), undefined);
   console.log('✓ 沒有固定名單的舊站：PO／SM 照舊規則轉');

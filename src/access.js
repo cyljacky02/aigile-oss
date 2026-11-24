@@ -28,6 +28,20 @@ export const PROJECT_VISIBILITY = Object.freeze({ OPEN: 'open', REVIEW: 'review'
 export const PROJECT_VISIBILITIES = Object.freeze(Object.values(PROJECT_VISIBILITY));
 const VIS = PROJECT_VISIBILITY;
 
+// 一個人實際能進的（未封存）專案。有隐含權限的人＝所有專案；其他人＝自己的專案成員資格；
+// AI＝它的專案成員資格 ∩ 所屬人類能進的專案（所屬人類不論怎麼失去一個專案，AI 當下就進不去，不靠寫入時的連帶刪除）。
+// deps：projects()（未封存專案）、memberProjectsOf(p)（明確的成員資格）、implicitAll(p)（有隐含權限）、ownerOf(ai)（所屬人類的列）
+export function effectiveProjects({ projects, memberProjectsOf, implicitAll, ownerOf }) {
+  const of = p => {
+    if (implicitAll(p)) return [...projects()];
+    const mine = memberProjectsOf(p);
+    if (p?.kind !== 'ai') return mine;
+    const owner = of(ownerOf(p));
+    return mine.filter(pj => owner.includes(pj));
+  };
+  return of;
+}
+
 // 這一列是不是工作區管理員（啟用中的人類、workspace_role＝admin）。只看這一列，不必讀成員資料
 export const isWorkspaceAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && p.workspace_role === 'admin';
 const byJoined = (a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id));

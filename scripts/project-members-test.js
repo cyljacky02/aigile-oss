@@ -123,8 +123,10 @@ try {
   // 10) 移出：他負責的未結案卡退回；設成唯讀成員也一樣（都先 dryRun 看）
   const card = (await call(chen.token, '/api/cards', 'POST', { requestId: 'c1', project: A, title: '陳負責的卡', ownerId: chen.id, status: '進行中' })).body;
   assert.ok(card.cardId, JSON.stringify(card));
+  const aiCard = (await call(chenAi.token, '/api/cards', 'POST', { requestId: 'c2', project: A, title: 'AI 負責的卡', ownerId: chenAi.participantId, status: '進行中' })).body;
+  assert.ok(aiCard.cardId, JSON.stringify(aiCard));
   r = await setProjectRole(call, wang.token, A, chen.id, 'viewer', { dryRun: true });
-  assert.deepEqual(r.body.returnedCards, [card.cardId], '設唯讀前先看會退回的卡');
+  assert.deepEqual(r.body.returnedCards, [card.cardId, aiCard.cardId], '設唯讀前先看會退回的卡（含他的 AI 的卡）');
   assert.equal(await roleOf(wang.token, A, chen.id), 'member', 'dryRun 不改');
   r = await removeFromProject(call, wang.token, A, chen.id, { dryRun: true });
   assert.deepEqual(r.body.returnedCards, [card.cardId], '移出前先看會退回的卡');
@@ -134,7 +136,21 @@ try {
   const c1 = (await call(boss.token, `/api/cards/${card.cardId}`)).body;
   assert.ok(c1.owner === null && c1.status === '待處理', '他的卡退回待處理、未指派');
   assert.equal(code(await removeFromProject(call, wang.token, A, chen.id)), 'NOT_MEMBER', '已經不在');
-  console.log('✓ 移出專案');
+  // 所屬人類被移出，AI 也跟著失去這個專案：讀不到、寫不進去、不在成員清單、它的卡退回
+  const aiLost = async (pj, label) => {
+    assert.ok(!(await call(chenAi.token, '/api/me')).body.projects.includes(pj), `${label}：AI 的專案不含它`);
+    assert.equal((await msg(chenAi.token, pj)).status, 403, `${label}：AI 不能在那個專案發訊息`);
+    assert.equal(await roleOf(boss.token, pj, chenAi.participantId), undefined, `${label}：AI 不在成員清單`);
+  };
+  await aiLost(A, '移出專案');
+  assert.equal((await call(chenAi.token, `/api/cards/${card.cardId}`)).status, 403, 'AI 讀不到那個專案的卡');
+  const c2 = (await call(boss.token, `/api/cards/${aiCard.cardId}`)).body;
+  assert.ok(c2.owner === null && c2.status === '待處理', 'AI 的卡也退回待處理：' + JSON.stringify(c2));
+  assert.equal((await msg(chenAi.token, B)).status, 201, 'AI 在所屬人類還在的專案照常');
+  // 工作區管理員直接換掉所屬人類的專案清單（陳昭宇不再在第二專案）：AI 一樣失去
+  assert.equal((await call(boss.token, `/api/participants/${chen.id}/projects`, 'PUT', { projects: [A] })).status, 200);
+  await aiLost(B, '換掉專案清單');
+  console.log('✓ 移出專案（所屬人類失去的專案，AI 也失去）');
 
   // 11) 舊的成員矩陣、整批名單端點回 410；專案清單不再有跨專案角色
   assert.equal((await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: wang.id, leaderOf: [A] }] })).status, 410, '成員矩陣已移除');
