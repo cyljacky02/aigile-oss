@@ -152,10 +152,18 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     [`UPDATE participants SET workspace_id = ?, account_id = CASE WHEN kind = 'human' THEN ? ELSE NULL END,
       workspace_role = CASE WHEN kind = 'human' AND is_admin = 1 THEN 'admin' ELSE 'member' END WHERE id = ?`, [DEFAULT_WORKSPACE, accountIdOf(id), id]],
   ];
-  // is_admin 改了（交出管理員、匯入備份）：工作區管理員、平台管理員跟著
-  const syncAdminStmts = () => [
-    ["UPDATE participants SET workspace_role = CASE WHEN kind = 'human' AND is_admin = 1 THEN 'admin' ELSE 'member' END WHERE workspace_id IS NOT NULL", []],
-    ["UPDATE accounts SET platform_role = CASE WHEN EXISTS (SELECT 1 FROM participants p WHERE p.account_id = accounts.id AND p.is_admin = 1) THEN 'admin' ELSE 'none' END", []],
+  // 升降工作區管理員（role：admin | member；只有啟用中的人類能升）。降級在同一句 SQL 裡檢查「還有別的啟用中工作區管理員」，
+  // 沒有就什麼都不改（呼叫端再讀一次看有沒有改到）。第一句先鎖工作區這列：兩位管理員同時互降時排隊，後到的看得到前一位的結果（Postgres）。
+  // is_admin 與平台管理員跟著工作區角色走（第一階段平台管理員＝工作區管理員；#9 分開、#16 拿掉 is_admin）
+  const setWorkspaceRoleStmts = (id, role, at) => [
+    ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    role === 'admin'
+      ? ["UPDATE participants SET workspace_role = 'admin', updated_at = ? WHERE id = ? AND kind = 'human' AND status = 'active' AND workspace_role != 'admin'", [at, id]]
+      : [`UPDATE participants SET workspace_role = 'member', updated_at = ? WHERE id = ? AND workspace_role = 'admin'
+          AND EXISTS (SELECT 1 FROM participants o WHERE o.workspace_id = ? AND o.workspace_role = 'admin' AND o.kind = 'human' AND o.status = 'active' AND o.id != ?)`, [at, id, DEFAULT_WORKSPACE, id]],
+    ["UPDATE participants SET is_admin = CASE WHEN workspace_role = 'admin' THEN 1 ELSE 0 END WHERE id = ?", [id]],
+    [`UPDATE accounts SET platform_role = CASE WHEN EXISTS (SELECT 1 FROM participants p WHERE p.account_id = accounts.id AND p.workspace_role = 'admin') THEN 'admin' ELSE 'none' END
+      WHERE id IN (SELECT account_id FROM participants WHERE id = ?)`, [id]],
   ];
   // 停用／恢復（人類）：帳號狀態跟著
   const accountStatusStmts = (id, status, at) => [['UPDATE accounts SET status = ?, updated_at = ? WHERE id IN (SELECT account_id FROM participants WHERE id = ?)', [status, at, id]]];
@@ -170,7 +178,8 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 所以重跑、兩份程式同時跑都不會重複（project_members、accounts 的主鍵再擋一次）。
   // 舊資料：projects 逗號字串（NULL＝所有未封存專案）、project_leaders → 專案管理員、read_only → 唯讀成員（leader 優先）、
   // is_admin（沒有就最早加入的啟用人類）→ 工作區管理員＋平台管理員、停用 → 停用帳號、已刪除（人類）→ 已移出工作區。
-  // 跨專案角色 → 每個未封存專案的明確成員資格（migrateCrossRoles）。隱形管理員的成員資格原樣保留（#8 才改）。匯入備份中（restore_state）不做，回 false。
+  // 跨專案角色 → 每個未封存專案的明確成員資格（migrateCrossRoles）。隱形管理員（#8）：現任管理員在「沒有職稱（project_roles）也不是 leader」的專案
+  // 移除成員資格，改靠隱含權限（升級前這些專案本來就不列他），其他保留；跨專案角色的轉換也照這個規則。匯入備份中（restore_state）不做，回 false。
   async function migrateLegacy() {
     if (await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
     const base = [
@@ -185,6 +194,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     const projects = await db.all('SELECT id, archived FROM projects');
     const exists = new Set(projects.map(r => r.id)), active = projects.filter(r => !r.archived).map(r => r.id);
     const leaders = (await readJson('project_leaders')) || {}, ro = (await readJson('read_only')) || {}, cr = (await readJson('cross_roles')) || {};
+    const titles = (await readJson('project_roles')) || {};
     const listed = (map, pj, id) => Array.isArray(map?.[pj]) && map[pj].includes(id);
     // 跨專案角色（還沒寫成固定名單的套舊規則）：沒在逗號字串裡也能當 leader、設唯讀 → 以那個角色加入；其他人不在專案裡的角色是移出時沒清掉的，不算
     const isCross = p => crossOf(cr, p);
@@ -195,7 +205,8 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       const list = p.projects === null || p.projects === undefined ? active : [...new Set(String(p.projects).split(',').map(x => x.trim()))].filter(x => exists.has(x));
       const roleIn = pj => (human && listed(leaders, pj, p.id) ? PR.ADMIN : human && listed(ro, pj, p.id) ? PR.VIEWER : PR.MEMBER);
       const extra = human && isCross(p) ? [...exists].filter(pj => !list.includes(pj) && roleIn(pj) !== PR.MEMBER) : [];
-      const rows = [...list, ...extra].map(pj => ({ p: pj, r: roleIn(pj) }));
+      const ghost = pj => admin && !titles[p.id]?.[pj] && roleIn(pj) !== PR.ADMIN; // 隱形管理員的專案：改靠隱含權限
+      const rows = [...list, ...extra].filter(pj => !ghost(pj)).map(pj => ({ p: pj, r: roleIn(pj) }));
       if (rows.length) stmts.push([`INSERT OR IGNORE INTO project_members (project_id, participant_id, role) SELECT json_extract(value, '$.p'), ?, json_extract(value, '$.r') FROM json_each(?) WHERE ${guard}`, [p.id, JSON.stringify(rows), p.id]]);
       if (human) stmts.push([`INSERT OR IGNORE INTO accounts (id, platform_role, status, created_at, updated_at) SELECT ?, ?, ?, ?, ? WHERE ${guard}`, [accountIdOf(p.id), admin ? 'admin' : 'none', p.status === 'disabled' ? 'disabled' : 'active', at, at, p.id]]);
       stmts.push(['UPDATE participants SET workspace_id = ?, account_id = ?, workspace_role = ?, workspace_status = ? WHERE id = ? AND workspace_id IS NULL',
@@ -217,9 +228,13 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     if ((raw === undefined || raw === null) && !legacy) return;
     let cr = {};
     try { cr = JSON.parse(raw || '{}') || {}; } catch {}
-    const ids = (await db.all("SELECT id, kind, status, role, role_key FROM participants WHERE status = 'active' AND kind != 'system' ORDER BY created_at, id")).filter(p => crossOf(cr, p)).map(p => p.id);
+    const people = (await db.all("SELECT id, kind, status, role, role_key, workspace_role FROM participants WHERE status = 'active' AND kind != 'system' ORDER BY created_at, id")).filter(p => crossOf(cr, p));
+    const ids = people.map(p => p.id);
     const active = (await db.all('SELECT id FROM projects WHERE archived = 0')).map(r => r.id);
-    const rows = JSON.stringify(ids.flatMap(id => active.map(p => ({ p, id }))));
+    // 工作區管理員靠隱含權限：只在有職稱的專案成為成員（#8 隱形管理員的規則；是專案管理員的專案本來就有成員資格）
+    const titles = (await readJson('project_roles')) || {};
+    const wsAdmin = p => p.kind === 'human' && p.workspace_role === 'admin';
+    const rows = JSON.stringify(people.flatMap(x => active.filter(pj => !wsAdmin(x) || titles[x.id]?.[pj]).map(p => ({ p, id: x.id }))));
     const still = raw === undefined || raw === null ? '1 = 1' : "EXISTS (SELECT 1 FROM app_settings WHERE key = 'cross_roles')";
     await db.batch([
       [`INSERT OR IGNORE INTO project_members (project_id, participant_id, role) SELECT json_extract(value, '$.p'), json_extract(value, '$.id'), '${PR.MEMBER}' FROM json_each(?) WHERE ${still}`, [rows]],
@@ -240,6 +255,6 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     makeProjectAdminStmts,
     loadReadOnly, isReadOnlyHuman, isReadOnly, readOnlyProjectsOf, readOnlyOf, setReadOnlyStmts, addReadOnly,
     fetchProjectsOf, fetchMembersOf, removeProjectStmts,
-    enterWorkspaceStmts, syncAdminStmts, accountStatusStmts, forgetStmts, migrateLegacy,
+    enterWorkspaceStmts, setWorkspaceRoleStmts, accountStatusStmts, forgetStmts, migrateLegacy,
     loadMembers, refreshOne, load, invalidate };
 }

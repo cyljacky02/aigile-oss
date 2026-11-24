@@ -33,10 +33,11 @@ const rid = () => 'req_c' + (++n);
 (async () => {
   await ready;
   try {
+    const adm = (await call(null, '/api/join', 'POST', { name: '管理者', role: 'PO' })).body; // 第一位＝工作區管理員（所有專案靠隱含權限，所以另外一位當測試主角）
     const boss = (await call(null, '/api/join', 'POST', { name: '林志明', role: 'UX' })).body;
     const amy = (await call(null, '/api/join', 'POST', { name: 'Amy', role: 'PO' })).body;
     // 專案：卡片必填專案；測試成員設成單一專案（平台），AI 沿用所屬人類的專案
-    await call(boss.token, `/api/participants/${boss.participant.participantId}/projects`, 'PUT', { projects: ['預設專案'] });
+    await call(adm.token, `/api/participants/${boss.participant.participantId}/projects`, 'PUT', { projects: ['預設專案'] });
     const r = ROLES.find(x => x.key === 'PG');
     const mk = name => call(boss.token, '/api/my-ais', 'POST', { roleKey: 'PG', role: r.role, name, duties: r.duties,
       style: r.style, autonomy: r.autonomy, mustConfirm: r.mustConfirm, handoff: r.handoff }).then(x => x.body);
@@ -420,7 +421,7 @@ const rid = () => 'req_c' + (++n);
     assert.equal((await call(boss.token, `/api/cards/${st1.cardId}`)).body.staleHint, undefined, '已完成的卡不標過時');
     // ===== 卡片瘦身：已完成＋已驗證滿 7 天自動封存 =====
     // 這段改用 Amy 的帳號，避免的帳號撞到每分鐘請求上限
-    await call(boss.token, `/api/participants/${amy.participant.participantId}/projects`, 'PUT', { projects: ['預設專案'] });
+    await call(adm.token, `/api/participants/${amy.participant.participantId}/projects`, 'PUT', { projects: ['預設專案'] });
     const pc = amy;
     const sqlDb = await peekTestDb(path.join(dataDir, 'switch.db'));
     const ago = d => new Date(Date.now() - d * 86400_000).toISOString();

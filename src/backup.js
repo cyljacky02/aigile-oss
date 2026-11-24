@@ -168,7 +168,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       for (const t of ['credentials', 'devices', 'account_notices']) stmts.push([`UPDATE ${t} SET participant_id = ? WHERE participant_id = ?`, [target.id, me.id]]);
       stmts.push(...membership.forgetStmts([me.id]), ['DELETE FROM participants WHERE id = ?', [me.id]]);
       stmts.push(['UPDATE participants SET token = ?, token_expires_at = ? WHERE id = ?', [me.token, me.token_expires_at || 0, target.id]]); // 你現在的登入碼也跟著過去（不是備份裡的）
-      stmts.push(['UPDATE participants SET is_admin = CASE WHEN id = ? THEN 1 ELSE 0 END', [target.id]], ...membership.syncAdminStmts()); // 管理員＝備份裡的管理員（也就是你）；工作區、平台管理員跟著
+      stmts.push(['UPDATE participants SET is_admin = 1 WHERE id = ?', [target.id]], ...membership.setWorkspaceRoleStmts(target.id, 'admin', nowIso())); // 你＝備份裡的管理員，一定是工作區管理員；備份裡其他管理員照舊
       // 其他人類的登入不在備份裡：標「要重設登入」，成員頁與總覽寫出來（他用重設連結登入、或你發了重設連結就清掉）
       stmts.push(['UPDATE participants SET last_seen_at = 0, standby_at = 0 WHERE id != ?', [target.id]]); // 在線、待命是舊站的狀態：這個站還沒人見過他們（不然進不來的人會顯示在線、AI 顯示待命）
       for (const p of rows) if (p.id !== target.id) stmts.push(["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['relogin:' + p.id, nowIso()]]);

@@ -68,6 +68,7 @@ try {
   console.log('✓ 專案管理員任免專案管理員');
 
   // 5) 不能動工作區管理員；工作區管理員也不能被設成唯讀成員
+  assert.equal((await addToProject(call, boss.token, A, boss.id)).status, 201, '工作區管理員靠隱含權限，不是成員；也可以明確加入專案');
   r = await setProjectRole(call, wang.token, A, boss.id, 'member');
   assert.equal(r.status, 403, JSON.stringify(r.body));
   assert.equal(code(r), 'CANNOT_MANAGE_ADMIN', '專案管理員不能改工作區管理員的專案角色');

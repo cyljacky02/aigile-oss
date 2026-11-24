@@ -8,7 +8,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
-import { setProjectRole } from './test-members.js';
+import { addToProject, setProjectRole } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-ro-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -39,6 +39,7 @@ try {
   assert.equal(r.status, 200);
   assert.deepEqual(r.body.returnedCards.sort(), [card.cardId, aiCard.cardId].sort(), '先列出會退回的卡');
   assert.equal((await RO(chen.token, L, 'viewer')).status, 403, '專案成員不能設');
+  await addToProject(call, boss.token, '預設專案', [L]); // 工作區管理員靠隱含權限，先明確加入才有專案角色可改
   assert.equal(code(await RO(boss.token, L, 'viewer')), 'INVALID_REQUEST', '工作區管理員不能設成唯讀成員');
   assert.equal(code(await RO(boss.token, pgC.participantId, 'viewer')), 'INVALID_REQUEST', 'AI 不能設（跟著所屬人類）');
   r = await RO(boss.token, Cn, 'viewer');

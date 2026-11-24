@@ -4,9 +4,11 @@
 //   can(人, 動作, 範圍)        能不能在這個範圍做某件事；check() 不行就丟 ApiError
 // 範圍：'platform'、'workspace'、{ project: 專案id }；要看對象的動作再帶 target（例：{ project, target }、{ target }）
 //
-// 第一階段之前的規則（行為與舊版完全相同，之後的票只改這個檔案的規則）：
-// - 工作區管理員＝participants.is_admin 標記的那位人類（沒有標記就是最早加入的人類），也是平台管理員
+// 目前的規則（之後的票只改這個檔案的規則）：
+// - 工作區管理員＝participants.workspace_role 是 admin 的啟用中人類，可以有多位（#8）；
+//   平台管理員暫時等同工作區管理員（第一階段只有一個工作區；#9 才改看 accounts.platform_role）
 // - 專案角色存在 project_members：admin＝專案管理員（工作區管理員有隱含權限，取較高者）、member＝專案成員、viewer＝唯讀成員
+// - 隱含權限不算成員資格：工作區管理員在沒加入、也沒有職稱的專案不列為成員（implicitOnlyIn）
 // - 唯讀成員的 AI 跟著唯讀；明確設成唯讀成員時一律不能寫（工作區管理員不能被設成唯讀成員）
 // - AI 不能做任何管理動作
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
@@ -24,10 +26,18 @@ export const PROJECT_VISIBILITY = Object.freeze({ OPEN: 'open', REVIEW: 'review'
 export const PROJECT_VISIBILITIES = Object.freeze(Object.values(PROJECT_VISIBILITY));
 const VIS = PROJECT_VISIBILITY;
 
-// 管理員：participants.is_admin 標記的那位（可以交給別人）。都沒標記（舊備份）才退回最早加入的人類
+// 這一列是不是工作區管理員（啟用中的人類、workspace_role＝admin）。只看這一列，不必讀成員資料
+export const isWorkspaceAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && p.workspace_role === 'admin';
+const byJoined = (a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id));
+// 所有工作區管理員（照加入順序）
+export const adminsOf = people => [...people.values()].filter(isWorkspaceAdmin).sort(byJoined);
+// 顯示用的「管理員」（錯誤訊息的名字、通知對象）：最早加入的工作區管理員。
+// 都沒有（還沒轉換的舊資料、舊備份）才退回 is_admin 標記、最早加入的人類。「能不能」不看這個
 export const adminOf = people => {
+  const admins = adminsOf(people);
+  if (admins.length) return admins[0];
   const hs = [...people.values()].filter(p => p.kind === 'human' && p.status === 'active');
-  return hs.find(p => Number(p.is_admin) === 1) || hs.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id)))[0] || null;
+  return hs.find(p => Number(p.is_admin) === 1) || hs.sort(byJoined)[0] || null;
 };
 
 // 動作表。admin：管理動作（AI 一律不行）；human：check 時先擋 AI（回「僅限人類」）；light：只看唯讀名單，不必讀成員；
@@ -41,9 +51,10 @@ const ACTIONS = {
   // 平台
   manage_platform: { admin: true, rule: platformAdmin }, // 備份與還原、示範資料、更新檢查
   manage_accounts: { admin: true, rule: platformAdmin }, // 停用／恢復帳號、已停用清單
-  assign_platform_admin: { admin: true, rule: platformAdmin }, // 交出管理員
+  assign_platform_admin: { admin: true, rule: platformAdmin }, // 任免平台管理員（#9）
   // 工作區
   manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區（群組）設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
+  assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
   invite: { admin: true, rule: workspaceAdmin },
   reset_login: { admin: true, rule: workspaceAdmin },
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
@@ -88,10 +99,14 @@ const scopeOf = scope => {
 //   loadLeaders(force)       → 讀專案管理員名單（10 秒快取；force 重讀）；leadersOf(pj) → 目前快取裡該專案的專案管理員 id（含封存專案）
 //   loadReadOnly(force)      → 讀唯讀成員名單；isReadOnly(p, pj) → 目前快取裡 p 在 pj 是唯讀成員（AI 跟著所屬人類）
 //   titles()                 → { 成員id: { 專案id: 職稱 } }（目前快取）
+//   memberProjectsOf(p)      → 他明確加入的（未封存）專案（不含隱含權限；沒給就用 projectsOf）
 //   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
 //   visibilityOf(pj)         → 專案可見度（PROJECT_VISIBILITY；沒注入或不認得的值＝審核）
 export function createAccess(deps) {
   const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, leadersOf, isReadOnly, titles } = deps;
+  const memberProjectsOf = deps.memberProjectsOf || projectsOf;
+  // 隱含權限不算成員：工作區管理員在沒加入、也沒有職稱的專案不列為成員（名單、人數、團隊狀態、@所有人都不算）
+  const implicitOnly = (p, pj) => !!pj && isWorkspaceAdmin(p) && !memberProjectsOf(p).includes(pj) && !titles()[p.id]?.[pj];
 
   const readOnlyIn = (p, pj) => !!p && !!pj && isReadOnly(p, pj);
   const readOnlyList = p => projects().filter(pj => readOnlyIn(p, pj));
@@ -100,13 +115,17 @@ export function createAccess(deps) {
   // 判斷視圖：綁定一份成員資料，判斷都是同步的（可以放在 filter 裡）；專案管理員、唯讀成員看目前快取（load() 會先讀好）
   function view({ people = null } = {}) {
     let admin;
+    const needPeople = () => { if (!people) throw new Error('權限判斷需要成員資料（access.load 沒讀成員）'); return people; };
     const adminNow = () => {
-      if (admin === undefined) { if (!people) throw new Error('權限判斷需要成員資料（access.load 沒讀成員）'); admin = adminOf(people); }
+      if (admin === undefined) admin = adminOf(needPeople());
       return admin;
     };
-    const isAdmin = p => !!p && p.kind === 'human' && adminNow()?.id === p.id;
+    const isAdmin = isWorkspaceAdmin;
     const v = {
       people, admin: adminNow, projects, projectsOf, isolatedFrom,
+      admins: () => adminsOf(needPeople()),
+      // 最後一位保護：p 是工作區管理員，而且除了他沒有別的（降級、移出、停用、離開都要先問）
+      lastAdmin: (p, scope = 'workspace') => scopeOf(scope).kind !== 'project' && isAdmin(p) && !adminsOf(needPeople()).some(x => x.id !== p.id),
       active: pj => projects().includes(pj),
       membersCreateProjects: () => !!deps.membersCreateProjects?.(),
       visibilityOf: pj => { const x = deps.visibilityOf?.(pj); return PROJECT_VISIBILITIES.includes(x) ? x : VIS.REVIEW; },
@@ -132,8 +151,7 @@ export function createAccess(deps) {
         if (!me || (def.admin && me.kind !== 'human')) return false; // AI 不能做任何管理動作
         return !!def.rule(v, me, scopeOf(scope));
       },
-      // 隱含權限不算成員：管理員在沒有職稱的專案不列為成員（名單、人數、團隊狀態、@所有人都不算）
-      implicitOnlyIn: (id, pj) => !!pj && isAdmin(people?.get(id)) && !titles()[id]?.[pj],
+      implicitOnlyIn: (id, pj) => implicitOnly(people?.get(id), pj),
     };
     return v;
   }
@@ -183,7 +201,7 @@ export function createAccess(deps) {
   }
 
   return {
-    load, view, check, adminOf, readOnlyIn, readOnlyError, visibilityOf: pj => view().visibilityOf(pj),
+    load, view, check, adminOf, adminsOf, isWorkspaceAdmin, implicitOnly, readOnlyIn, readOnlyError, visibilityOf: pj => view().visibilityOf(pj),
     roleIn: async (ctx, p, scope) => (await load(ctx)).roleIn(p, scope),
     can: async (ctx, me, action, scope) => (await load(ctx, { light: ACTIONS[action]?.light })).can(me, action, scope),
   };
