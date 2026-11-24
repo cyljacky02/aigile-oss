@@ -128,8 +128,10 @@ try {
   // 檔案、文件、知識庫、技能：帶專案的路由一律跟「沒有這個專案」一樣（404）
   const upload = (pj, extra = '') => app(new Request('http://localhost' + encodeURI(`/api/files?name=a.txt&declared=true&project=${pj}${extra}`), { method: 'POST', headers: { Authorization: `Bearer ${chen.token}`, 'Content-Type': 'application/octet-stream' }, body: '你好' }), 'http://localhost')
     .then(async x => ({ status: x.status, body: await x.json().catch(() => ({})) }));
-  assert.equal((await same('上傳檔案', pj => upload(pj))).status, 404);
-  assert.equal((await same('上傳檔案（不發文）', pj => upload(pj, '&post=false'))).status, 404);
+  // AI 用的上傳照舊（跟改版前一樣）：沒有這個專案＝發文時 400；只存檔（post=false）照樣成功。看不到的私人專案跟它一模一樣
+  const up = await same('上傳檔案', pj => upload(pj));
+  assert.deepEqual([up.status, up.body.error?.code], [400, 'INVALID_REQUEST'], '沒有這個專案：400（跟改版前一樣）：' + JSON.stringify(up.body));
+  assert.equal((await same('上傳檔案（不發文）', pj => upload(pj, '&post=false'))).status, 201, '只存檔照樣成功（跟改版前一樣）');
   const probes = [
     ['GET', '/docs'], ['POST', '/docs?name=a.txt&declared=true'], ['GET', '/docs/d_x'], ['PATCH', '/docs/d_x', { name: 'b.txt' }], ['DELETE', '/docs/d_x'],
     ['POST', '/doc-folders', { name: '資料夾' }], ['PATCH', '/doc-folders/f_x', { name: '資料夾' }], ['DELETE', '/doc-folders/f_x'],

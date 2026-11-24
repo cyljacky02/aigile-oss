@@ -3377,10 +3377,11 @@ ${ending}`;
       await audit('reject', me, null, { name: name || null, size, declared: declared ? 1 : 0, detail: code });
       return new ApiError(status, code, message);
     };
-    // 沒有這個專案，或是看不到的私人專案：一樣回 404（先擋，不讀檔、不存檔）
-    { const qp = q.get('project'); if (qp && qp !== 'all' && (!PROJECTS.includes(qp) || !discovers(me, qp))) throw await reject(404, 'NOT_FOUND', '找不到這個專案', Number(req.headers.get('content-length')) || 0); }
+    // AI 用的 API，行為跟改版前一樣：沒有這個專案照舊存檔（post=false 就成功），發文時才 400。
+    // 看不到的私人專案當成沒有這個專案（known 是假），兩者的回應一模一樣
+    const qp = q.get('project'), known = PROJECTS.includes(qp) && discovers(me, qp);
     // ；唯讀擋下也記進稽核（查「AI 上傳 403」時才知道是不是平台擋的）
-    try { const qp = q.get('project'); await assertWritable(me, PROJECTS.includes(qp) ? qp : qp === 'all' ? null : projectsOf(me).length === 1 ? projectsOf(me)[0] : null); }
+    try { await assertWritable(me, known ? qp : qp === 'all' ? null : projectsOf(me).length === 1 ? projectsOf(me)[0] : null); }
     catch (e) { if (e instanceof ApiError && e.status === 403) throw await reject(403, e.code, e.message, Number(req.headers.get('content-length')) || 0); throw e; }
     requireStorage();
     try { bytes = await readBody(req, MAX_FILE_BYTES, `檔案超過 ${MAX_FILE_BYTES / 1048576} MB 上限`, 'FILE_TOO_LARGE'); }
@@ -3398,7 +3399,7 @@ ${ending}`;
     }
 
     // 不屬於的專案先擋（原本存完檔才在發訊息時 403，留下沒掛訊息的檔、也沒稽核）
-    if (PROJECTS.includes(q.get('project')) && !projectsOf(me).includes(q.get('project'))) throw await reject(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案，只能上傳到自己的專案或全部專案（project=all）。');
+    if (known && !projectsOf(me).includes(qp)) throw await reject(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案，只能上傳到自己的專案或全部專案（project=all）。');
     if (!q.get('project') && projectsOf(me).length > 1) throw new ApiError(400, 'PROJECT_REQUIRED', '你屬於多個專案，上傳文件要帶 project（查詢參數）；要發給全部專案請帶 project=all。');
     const id = randId('file');
     const hash = await sha256(bytes);
