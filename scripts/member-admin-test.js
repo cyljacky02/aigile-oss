@@ -2,7 +2,8 @@
 // 1. 登入碼與 AI Token 只存雜湊：資料庫沒有原文、拿雜湊本身登入不算數；原文只在建立／重發／產生當下給一次
 // 2. 舊資料（原文）照樣能用：驗證時順手轉成雜湊；啟動後第一個請求把全部舊的轉掉
 // 3. 停用成員：裝置、登入碼、帳號密碼、他的 AI 全部不能用；名單標已停用；恢復後帳號密碼能登入，AI 要重發
-// 4. 管理員是明確標記：可以交給別人；不再看誰最早加入；舊資料庫升級（migrations/001）把原本的管理員標起來
+// 4. 工作區管理員是明確的角色：可以有多位（升降與最後一位保護見 workspace-admin-test.js）；不再看誰最早加入；
+//    舊資料庫升級（migrations/001）把原本的管理員標起來
 // 用法：node scripts/member-admin-test.js
 import fs from 'node:fs';
 import os from 'node:os';
@@ -107,14 +108,14 @@ try {
   assert.equal((await call(mai2.token, '/api/me')).status, 200, '主人重發後 AI 能用');
   console.log('✓ 停用：所有登入方式失效；恢復後重新登入、AI 重發');
 
-  // ---------- 4. 管理員明確標記 ----------
-  const adminName = async tok => (await call(tok, '/api/projects')).body;
-  assert.equal(Number((await db.get('SELECT is_admin FROM participants WHERE id = ?', B)).is_admin), 1, '第一位是管理員');
-  assert.equal((await call(mdev2, '/api/admin/transfer', 'POST', { toId: M })).status, 403, '不是管理員不能交');
-  assert.equal((await call(bossTok, '/api/admin/transfer', 'POST', { toId: ai.participantId })).status, 404, '不能交給 AI');
-  const tr = await call(bossTok, '/api/admin/transfer', 'POST', { toId: M });
-  assert.equal(tr.status, 200); assert.equal(tr.body.adminName, '陳大文');
-  assert.equal((await call(bossTok, `/api/participants/${M}/disable`, 'POST')).status, 403, '交出去後原本的管理員不能再管');
+  // ---------- 4. 工作區管理員是明確的角色 ----------
+  const role = async tok => (await call(tok, '/api/me')).body.workspaceRole;
+  assert.equal(await role(bossTok), 'admin', '第一位是工作區管理員');
+  assert.equal((await call(bossTok, '/api/admin/transfer', 'POST', { toId: M })).status, 410, '移交管理員拿掉了');
+  assert.equal((await call(mdev2, `/api/participants/${B}/workspace-role`, 'PUT', { role: 'member' })).status, 403, '不是管理員不能降別人');
+  assert.equal((await call(bossTok, `/api/participants/${M}/workspace-role`, 'PUT', { role: 'admin' })).status, 200, '先升別人');
+  assert.equal((await call(bossTok, `/api/participants/${B}/workspace-role`, 'PUT', { role: 'member' })).status, 200, '再降自己');
+  assert.equal((await call(bossTok, `/api/participants/${M}/disable`, 'POST')).status, 403, '降級後原本的管理員不能再管');
   assert.equal((await call(mdev2, '/api/participants/disabled')).status, 200, '新的管理員可以');
   assert.equal((await call(mdev2, `/api/participants/${M}/disable`, 'POST')).status, 400, '管理員不能停用自己');
   // 最早加入的人換了也不影響
@@ -122,8 +123,8 @@ try {
   app = mk();
   assert.equal((await call(mdev2, '/api/participants/disabled')).status, 200, '不再看誰最早加入');
   assert.equal((await call(bossTok, '/api/participants/disabled')).status, 403);
-  void adminName;
-  console.log('✓ 管理員是明確標記、可以交給別人');
+  assert.equal(await role(bossTok), 'member');
+  console.log('✓ 工作區管理員是明確的角色、可以先升別人再降自己');
 
   // 舊資料庫升級：001 把原本的管理員（最早加入的人類）標起來
   {

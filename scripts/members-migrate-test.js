@@ -1,6 +1,7 @@
 // 驗收測試：升級到「成員與權限」新資料模型（migrations/008_members_access.sql，docs/adr/0002 第一階段）
 // 舊站：單一管理員（is_admin）、逗號字串的專案歸屬、app_settings 的 leader／唯讀／跨專案角色／專案角色標籤、
 // 隱形管理員（在專案裡但沒有角色標籤）、已停用、已刪除。用新版打開後，透過 API 看到的成員、專案、權限跟升級前一樣；
+// 隱形管理員只在「沒有職稱也不是 leader」的專案移除成員資格，改靠隱含權限（#8）；
 // 重複啟動不重複轉換；新站有預設工作區，第一位管理員是平台管理員兼工作區管理員。
 // SQLite 與 Postgres（設了 AIGILE_TEST_PG_URL）都跑。用法：node scripts/members-migrate-test.js
 import fs from 'node:fs';
@@ -14,7 +15,7 @@ import { testToken } from './test-token.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-mmig-'));
 const file = path.join(dir, 'switch.db');
-const A = '預設專案', B = '第二專案', OLD = 'p_old';
+const A = '預設專案', B = '第二專案', C = '第三專案', OLD = 'p_old';
 const mkApp = (db, config = {}) => {
   const app = createApp({ db, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', ...config } });
   return async (token, p, method = 'GET', body) => {
@@ -34,14 +35,15 @@ const n = async (db, sql, ...a) => Number((await db.get(sql, ...a)).n);
     'ALTER TABLE projects DROP COLUMN workspace_id', 'ALTER TABLE projects DROP COLUMN visibility',
     "DELETE FROM schema_migrations WHERE name = '008_members_access.sql'"]) await old.run(sql);
   await old.run('INSERT INTO projects (id, name, archived, created_at) VALUES (?, ?, 1, ?)', OLD, '舊專案', '2026-01-01T00:00:02.000Z');
+  await old.run('INSERT INTO projects (id, name, archived, created_at) VALUES (?, ?, 0, ?)', C, C, '2026-01-01T00:00:03.000Z');
   const person = (id, kind, name, at, projects, extra = {}) => {
     const row = { id, kind, name, role: '', code: id.slice(2, 6).toUpperCase(), token: 'h:old_' + id, created_at: at, updated_at: at, projects, ...extra };
     const cols = Object.keys(row);
     return old.run(`INSERT INTO participants (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, ...cols.map(c => row[c]));
   };
   // 最早加入的不是管理員：管理員看 is_admin，不是看誰最早
-  await person('p_lead', 'human', '李帶頭', '2026-01-02T00:00:00.000Z', `${A},${OLD}`, { role: 'PG' });
-  await person('p_boss', 'human', '林老闆', '2026-01-03T00:00:00.000Z', `${A},${B},${OLD}`, { role: 'PO', is_admin: 1 });
+  await person('p_lead', 'human', '李帶頭', '2026-01-02T00:00:00.000Z', `${A},${C},${OLD}`, { role: 'PG' });
+  await person('p_boss', 'human', '林老闆', '2026-01-03T00:00:00.000Z', `${A},${B},${C},${OLD}`, { role: 'PO', is_admin: 1 });
   await person('p_ro', 'human', '陳唯讀', '2026-01-04T00:00:00.000Z', `${A},${B}`, { role: 'QA' });
   await person('p_ai', 'ai', '陳的PG', '2026-01-05T00:00:00.000Z', B, { owner_id: 'p_ro', role: '程式開發', role_key: 'PG' });
   await person('p_cross', 'human', '王跨專', '2026-01-06T00:00:00.000Z', `${A},${B}`, { role: 'SM' });
@@ -49,10 +51,10 @@ const n = async (db, sql, ...a) => Number((await db.get(sql, ...a)).n);
   await person('p_gone', 'human', '錢已刪', '2026-01-08T00:00:00.000Z', B, { status: 'deleted' });
   await person('p_new', 'human', '孫新人', '2026-01-09T00:00:00.000Z', '');
   const set = (k, v) => old.run('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', k, JSON.stringify(v));
-  await set('project_leaders', { [A]: ['p_lead'], [OLD]: ['p_lead'] });
+  await set('project_leaders', { [A]: ['p_lead'], [C]: ['p_boss'], [OLD]: ['p_lead'] }); // 管理員在第三專案是 leader（沒有標籤）
   await set('read_only', { [B]: ['p_ro'] });
   await set('cross_roles', { add: ['p_cross'], remove: [], frozen: '2026-01-01T00:00:00.000Z' });
-  // 專案角色標籤；管理員只在預設專案有標籤 → 在第二專案是「隱形」的
+  // 專案角色標籤；管理員只在預設專案有標籤 → 在第二專案是「隱形」的（第三專案是 leader，不算隱形）
   await set('project_roles', { p_boss: { [A]: 'PO' }, p_lead: { [A]: 'PG', [OLD]: 'PG' }, p_ro: { [A]: 'QA', [B]: 'QA' }, p_cross: { [A]: 'SM', [B]: 'SM' } });
   await old.run("INSERT INTO app_settings (key, value) VALUES ('group_name', '舊群組')");
   await old.close();
@@ -67,6 +69,7 @@ async function seesSameAsBefore(db, call, label) {
   assert.equal(pr.body.adminId, 'p_boss', `${label}：管理員照舊（看 is_admin，不是最早加入的人）`);
   assert.deepEqual(pr.body.leaders[A], ['p_lead'], `${label}：leader 照舊`);
   assert.deepEqual(pr.body.leaders[B] || [], [], `${label}：沒有 leader 的專案照舊沒有`);
+  assert.deepEqual(pr.body.leaders[C], ['p_boss'], `${label}：管理員在第三專案照舊是 leader`);
   assert.deepEqual(pr.body.archivedLeaders, { [OLD]: ['p_lead'] }, `${label}：封存專案的 leader 照舊（才能還原）`);
   assert.deepEqual(pr.body.readOnly[B], ['p_ro'], `${label}：唯讀照舊`);
   assert.deepEqual(pr.body.readOnly[A] || [], [], `${label}：別的專案不唯讀`);
@@ -74,18 +77,25 @@ async function seesSameAsBefore(db, call, label) {
   const count = id => pr.body.items.find(x => x.id === id).memberCount;
   assert.equal(count(A), 4, `${label}：預設專案 4 人（管理員有角色標籤、停用的不算）`);
   assert.equal(count(B), 3, `${label}：第二專案 3 人（隱形管理員、已刪除的不算）`);
+  assert.equal(count(C), 2, `${label}：第三專案 2 人（管理員是 leader，保留成員資格）`);
 
   const people = new Map((await call(tok.p_boss, '/api/participants')).body.items.map(p => [p.participantId, p]));
   const projectsOf = id => sorted(people.get(id).projects);
-  assert.deepEqual(projectsOf('p_boss'), sorted([A, B]), `${label}：隱形管理員的成員資格先原樣保留`);
-  assert.deepEqual(projectsOf('p_lead'), [A], label);
+  assert.deepEqual(projectsOf('p_boss'), sorted([A, B, C]), `${label}：管理員看得到所有專案（隱含權限）`);
+  assert.deepEqual(sorted(people.get('p_boss').memberProjects), sorted([A, C]), `${label}：隱形管理員只在有職稱或是 leader 的專案是成員`);
+  assert.deepEqual(projectsOf('p_lead'), sorted([A, C]), label);
   assert.deepEqual(projectsOf('p_ro'), sorted([A, B]), label);
   assert.deepEqual(projectsOf('p_ai'), [B], label);
   assert.deepEqual(projectsOf('p_cross'), sorted([A, B]), label);
   assert.deepEqual(projectsOf('p_new'), [], `${label}：沒有專案的人照舊沒有`);
   assert.ok(!people.has('p_off') && !people.has('p_gone'), `${label}：停用、已刪除的不在成員清單`);
   assert.deepEqual([...people.values()].filter(p => p.isAdmin).map(p => p.participantId), ['p_boss'], `${label}：只有一位管理員`);
-  assert.deepEqual(people.get('p_boss').projectRoles, { [A]: 'PO', [B]: '' }, `${label}：角色標籤照舊`);
+  assert.deepEqual(people.get('p_boss').projectRoles, { [A]: 'PO', [B]: '', [C]: '' }, `${label}：角色標籤照舊`);
+  const listed = async pj => (await call(tok.p_lead, `/api/participants?project=${pj}`)).body.items.map(p => p.participantId);
+  assert.ok((await listed(A)).includes('p_boss'), `${label}：有職稱的專案照舊列管理員`);
+  assert.ok(!(await listed(B)).includes('p_boss'), `${label}：隱形的專案照舊不列`);
+  assert.ok((await listed(C)).includes('p_boss'), `${label}：是 leader 的專案列為成員`);
+  assert.equal((await call(tok.p_boss, `/api/projects/${B}/join-settings`, 'PUT', { open: false, note: '' })).status, 200, `${label}：管理員靠隱含權限照樣管得了第二專案`);
   const disabled = (await call(tok.p_boss, '/api/participants/disabled')).body.items.map(p => p.participantId);
   assert.deepEqual(disabled, ['p_off'], `${label}：停用的人照舊列在已停用`);
 
@@ -130,7 +140,10 @@ try {
   assert.equal(await role(OLD, 'p_lead'), 'admin', '封存專案的 leader 也是');
   assert.equal(await role(B, 'p_ro'), 'viewer', '唯讀＝唯讀成員');
   assert.equal(await role(A, 'p_ro'), 'member');
-  assert.equal(await role(B, 'p_boss'), 'member', '隱形管理員的成員資格先保留');
+  assert.equal(await role(B, 'p_boss'), undefined, '隱形管理員：沒有職稱也不是 leader 的專案移除成員資格');
+  assert.equal(await role(A, 'p_boss'), 'member', '有職稱的專案保留');
+  assert.equal(await role(C, 'p_boss'), 'admin', '是 leader 的專案保留（專案管理員）');
+  assert.equal(await role(OLD, 'p_boss'), undefined, '封存的專案也一樣');
   assert.ok((await db.all('SELECT workspace_id, visibility FROM projects')).every(r => r.workspace_id === 'default' && r.visibility === 'review'), '專案都在預設工作區、可見度先存審核');
   console.log('✓ 新表的內容');
 
@@ -158,7 +171,7 @@ try {
   const who = async id => ({ ...(await fdb.get('SELECT p.workspace_id, p.workspace_role, a.platform_role FROM participants p JOIN accounts a ON a.id = p.account_id WHERE p.id = ?', id)) });
   assert.deepEqual(await who(first), { workspace_id: 'default', workspace_role: 'admin', platform_role: 'admin' }, '第一位：平台管理員兼工作區管理員');
   assert.deepEqual(await who(second), { workspace_id: 'default', workspace_role: 'member', platform_role: 'none' }, '之後的人：一般成員');
-  assert.equal(await n(fdb, 'SELECT COUNT(*) AS n FROM project_members WHERE participant_id = ?', first), 2, '第一位在所有專案');
+  assert.equal(await n(fdb, 'SELECT COUNT(*) AS n FROM project_members WHERE participant_id = ?', first), 0, '第一位靠隱含權限，不加入專案');
   assert.equal(await n(fdb, 'SELECT COUNT(*) AS n FROM project_members WHERE participant_id = ?', second), 0, '之後的人沒有專案');
   console.log('✓ 新站（第一位自己註冊）');
 } finally {
@@ -173,7 +186,7 @@ try {
   assert.equal((await call(null, '/api/health')).status, 200);
   const r = await adb.get("SELECT p.workspace_id, p.workspace_role, a.platform_role FROM participants p JOIN accounts a ON a.id = p.account_id WHERE p.kind = 'human'");
   assert.deepEqual({ ...r }, { workspace_id: 'default', workspace_role: 'admin', platform_role: 'admin' }, '預設管理員：平台管理員兼工作區管理員');
-  assert.equal(await n(adb, 'SELECT COUNT(*) AS n FROM project_members'), 1, '預設管理員在自動建的預設專案');
+  assert.equal(await n(adb, 'SELECT COUNT(*) AS n FROM project_members'), 0, '預設管理員靠隱含權限，不加入專案');
   console.log('✓ 新站（預設管理員）');
   console.log('members-migrate-test：全部通過');
 } finally {

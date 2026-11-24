@@ -1,5 +1,5 @@
 // 畫面測試（真的瀏覽器）：管理員沒有專案角色時，名片顯示「管理員」，不露出舊的跨專案角色；一般成員照舊（搜尋成員、跨專案訊息用同一個函式）
-// 退回：管理員看得到、管得了所有專案，但在沒有角色的專案不算成員——
+// 退回：工作區管理員看得到、管得了所有專案（隱含權限），但在沒加入、也沒有角色的專案不算成員——
 //   成員名單、人數、交接對象、團隊狀態、@ 選人都不列，@所有人不通知；名單上方一行灰字說明；有角色的專案照舊
 //   修正前：新建的 testing 在「成員與權限」列出管理員（未設定、1 人）
 // 伺服器端（第一次上線不幫管理員帶角色）在 roles-test.js。需要 Chrome 或 Edge；找不到就略過。用法：node scripts/admin-card-ui-test.js
@@ -27,6 +27,8 @@ try {
 
   // ---- ：新建專案 testing，管理員沒角色 → 不算成員 ----
   const pj = (await kit.call(boss.token, '/api/projects', 'POST', { name: 'testing' })).body.id;
+  // 工作區管理員不必加入專案（隱含權限）：建立者先退出 testing，在這裡就只有隱含權限
+  assert.equal((await kit.call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: bossId, projects: [] }] })).status, 200, '管理員退出 testing');
   await kit.call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: mateId, projects: ['預設專案', '第二專案', pj] }] });
   await kit.call(boss.token, `/api/participants/${mateId}/project-roles`, 'PUT', { roles: { [pj]: 'BA' } });
   const wang = (await kit.call(null, '/api/join', 'POST', { name: '王小明', role: 'UX' })).body, wangId = wang.participant.participantId;

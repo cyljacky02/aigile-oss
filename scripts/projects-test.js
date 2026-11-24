@@ -171,11 +171,11 @@ const msg = (tok, text, extra = {}) => call(tok, '/api/messages', 'POST', { requ
     assert.equal((await put(lone.token, loneId, ['預設專案', '第二專案'])).body.error?.code, 'NOT_ADMIN', '一般成員不能自己加入專案');
     // ④ 移出前預告退回幾張卡；移出後卡片退回待處理、未指派
     const oc = (await call(boss.token, '/api/cards', 'POST', { requestId: 'req_mv1', title: '小明PG 的平台卡', project: '預設專案', ownerId: loneAi.participantId, status: '進行中' })).body;
-    const dry = (await call(boss.token, '/api/projects/預設專案/members', 'PUT', { dryRun: true, memberIds: pr.items.length && (await call(boss.token, '/api/participants')).body.items.filter(p => (p.projects || []).includes('預設專案') && p.participantId !== loneId).map(p => p.participantId) })).body;
+    const dry = (await call(boss.token, '/api/projects/預設專案/members', 'PUT', { dryRun: true, memberIds: pr.items.length && (await call(boss.token, '/api/participants')).body.items.filter(p => (p.memberProjects || p.projects || []).includes('預設專案') && p.participantId !== loneId).map(p => p.participantId) })).body;
     assert.equal(dry.error?.code, 'NEEDS_ONE_PROJECT', '只屬於這個專案的人不能直接移出');
     await put(boss.token, loneId, ['預設專案', '第二專案']);
     await put(boss.token, loneAi.participantId, ['預設專案', '第二專案']);
-    const keep = (await call(boss.token, '/api/participants')).body.items.filter(p => (p.projects || []).includes('預設專案') && p.participantId !== loneAi.participantId).map(p => p.participantId);
+    const keep = (await call(boss.token, '/api/participants')).body.items.filter(p => (p.memberProjects || p.projects || []).includes('預設專案') && p.participantId !== loneAi.participantId).map(p => p.participantId); // 管理員的 projects 含隱含權限，成員資格看 memberProjects
     const dry2 = (await call(boss.token, '/api/projects/預設專案/members', 'PUT', { dryRun: true, memberIds: keep })).body;
     assert.deepEqual(dry2.impact.map(x => [x.name, x.returnedCards]), [['小明PG', [oc.cardId]]], '預告：1 張卡會退回待處理');
     assert.equal((await call(boss.token, `/api/cards/${oc.cardId}`)).body.owner?.participantId, loneAi.participantId, 'dryRun 不改資料');

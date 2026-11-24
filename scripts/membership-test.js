@@ -25,12 +25,15 @@ const sorted = l => [...l].sort();
 const run = stmts => db.batch(stmts);
 
 try {
-  const boss = (await call(null, '/api/join', 'POST', { name: '林志明', role: 'PG' })).body.participant.participantId; // 第一位：所有專案
+  const boss = (await call(null, '/api/join', 'POST', { name: '林志明', role: 'PG' })).body.participant.participantId; // 第一位：工作區管理員（專案靠隱含權限，不是成員資格）
   const chen = (await call(null, '/api/join', 'POST', { name: '陳昭宇', role: 'QA' })).body.participant.participantId; // 沒有專案
   await m.load(true);
 
   // 專案歸屬：寫入後讀得到；封存的專案只在 allProjectsOf
-  assert.deepEqual(sorted(m.projectsOf(await row(boss))), sorted([A, B]), '第一位在所有專案');
+  assert.deepEqual(m.projectsOf(await row(boss)), [], '第一位管理員不自動加入專案（隱含權限不算成員資格）');
+  await run(m.setProjectsStmts(boss, [A, B], new Date().toISOString()));
+  await m.load(true);
+  assert.deepEqual(sorted(m.projectsOf(await row(boss))), sorted([A, B]), '加入所有專案');
   assert.deepEqual(m.projectsOf(await row(chen)), [], '後來的人沒有專案');
   await run(m.setProjectsStmts(chen, [B, A], new Date().toISOString()));
   await m.load(true);
@@ -42,7 +45,7 @@ try {
   await run(m.setProjectsStmts(chen, [], new Date().toISOString()));
   await m.load(true);
   assert.deepEqual(m.allProjectsOf(await row(chen)), [], '可以回到沒有專案');
-  // onlyIf：條件不符就不寫（加入群組時「第一位才在所有專案」用）
+  // onlyIf：條件不符就不寫（同一批剛建的人用）
   await run(m.setProjectsStmts(chen, [A, B], null, { onlyIf: 'is_admin = 1' }));
   await m.load(true);
   assert.deepEqual(m.allProjectsOf(await row(chen)), [], '不是管理員就不寫');

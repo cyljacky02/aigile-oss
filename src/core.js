@@ -16,7 +16,7 @@ import { registerKbPages } from './kb-pages.js'; // 知識頁、整理卡
 import { registerBackup } from './backup.js'; // 備份匯出與匯入
 import { registerUpdateCheck } from './update.js'; // 管理頁「有新版本」
 import { registerDemo } from './demo.js'; // 示範資料
-import { createAccess, ACCESS_ROLE } from './access.js'; // 權限模組
+import { createAccess, ACCESS_ROLE, isWorkspaceAdmin } from './access.js'; // 權限模組
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -353,8 +353,10 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // projectsOf＝目前所屬（未封存）專案；listOf＝含封存專案的原始清單
   const membership = createMembership({ db, PROJECTS, nowIso, onChange: () => invalidatePeople() });
   // 「能不能」的判斷（唯讀、leader、管理員…）不在這裡，走權限模組 access（見「專案與成員管理」）
-  const { projectsOf, allProjectsOf: listOf, setProjectsStmts, loadLeaders, leadersOf, loadReadOnly, readOnlyOf,
+  const { allProjectsOf: listOf, setProjectsStmts, loadLeaders, leadersOf, loadReadOnly, readOnlyOf,
     loadCrossRoles, isCrossRole: crossRole } = membership;
+  // 隱含權限：工作區管理員看得到、進得去所有（未封存）專案，但不算成員資格（名單過濾見 access implicitOnlyIn；改成員資格一律用 listOf）
+  const projectsOf = p => (isWorkspaceAdmin(p) ? [...PROJECTS] : membership.projectsOf(p));
   function readProjects(raw) {
     if (!Array.isArray(raw)) throw invalid('projects 需為陣列，例如 ["預設專案"]');
     const list = [...new Set(raw.map(x => String(x).trim()))];
@@ -401,7 +403,11 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const out = { participantId: p.id, name: p.status === 'deleted' ? p.name + '（已刪除）' : p.name, role: p.role, roleKey: p.role_key || null, avatar: p.avatar || null, avatarImg: p.avatar_v || null, shortCode: p.code, memberType: p.kind, projects: projectsOf(p) };
     if (p.status === 'deleted') out.deleted = true; // 已刪除成員的舊訊息仍顯示原名稱，前端加註（已刪除）
     if (p.kind === 'human' && p.status === 'disabled') out.disabled = true;
-    if (Number(p.is_admin) === 1 && p.kind === 'human') out.isAdmin = true;
+    out.workspaceRole = isWorkspaceAdmin(p) ? 'admin' : 'member';
+    if (out.workspaceRole === 'admin') {
+      out.isAdmin = true; // 舊欄位：等同工作區管理員（將移除）
+      out.memberProjects = membership.projectsOf(p); // projects 含隱含權限的專案；這裡只列他明確加入的
+    }
     if (p.kind === 'ai') {
       out.ownerParticipantId = p.owner_id;
       out.ownerName = people.get(p.owner_id)?.name ?? null;
@@ -961,8 +967,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
         [`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, is_admin)
           SELECT ?,?,?,?,?,?,?,?,?,?,1 WHERE NOT EXISTS (SELECT 1 FROM participants WHERE kind = 'human' AND status = 'active')`,
         [id, 'human', '管理員', '', await newCode(), await tokenKey(newToken()), Date.now() + HUMAN_TOKEN_TTL_MS, ts, ts, 0]],
-        ...membership.enterWorkspaceStmts(id, ts), // 預設工作區、帳號：平台管理員兼工作區管理員
-        ...setProjectsStmts(id, [...PROJECTS], ts), // 在所有專案（上一句沒建人就什麼都不寫）
+        ...membership.enterWorkspaceStmts(id, ts), // 預設工作區、帳號：平台管理員兼工作區管理員（所有專案靠隱含權限，不加入）
         ['INSERT INTO credentials (participant_id, username, pwd_hash, updated_at) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM participants WHERE id = ?)', [id, 'admin', await hashPassword(ADMIN_PASSWORD), Date.now(), id]],
         ["INSERT INTO app_settings (key, value) SELECT ?, '1' WHERE EXISTS (SELECT 1 FROM participants WHERE id = ?) ON CONFLICT(key) DO UPDATE SET value = '1'", [MUST_KEY(id), id]],
         ["INSERT INTO app_settings (key, value) SELECT 'setup_wizard', 'pending' WHERE EXISTS (SELECT 1 FROM participants WHERE id = ?) ON CONFLICT(key) DO NOTHING", [id]],
@@ -1001,14 +1006,13 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const token = newToken();
     const ts = nowIso();
     invalidatePeople();
-    // 新加入的人類：群組裡第一位（建立者）預設所有專案；之後加入的預設沒有專案，只看得到「全部專案」，等被指派
-    // 「是不是第一位」在同一條 INSERT 裡判斷，兩人同時建群只有一位拿到所有專案
+    // 新加入的人類：群組裡第一位（建立者）是工作區管理員，所有專案靠隱含權限；之後加入的預設沒有專案，只看得到「全部專案」，等被指派
+    // 「是不是第一位」在同一條 INSERT 裡判斷，兩人同時建群只有一位是管理員
     await db.batch([[`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, is_admin)
       SELECT ?,?,?,?,?,?,?,?,?,?,
         CASE WHEN EXISTS (SELECT 1 FROM participants WHERE kind = 'human' AND status = 'active') THEN 0 ELSE 1 END`, // 群組第一位＝管理員
     [id, 'human', name, role, await newCode(), await tokenKey(token), Date.now() + HUMAN_TOKEN_TTL_MS, ts, ts, Date.now()]],
-    ...membership.enterWorkspaceStmts(id, ts), // 預設工作區、帳號（第一位＝平台管理員兼工作區管理員）
-    ...setProjectsStmts(id, [...PROJECTS], ts, { onlyIf: 'is_admin = 1' })]); // 第一位在所有專案；同一批，一起成功或一起失敗
+    ...membership.enterWorkspaceStmts(id, ts)]); // 預設工作區、帳號（第一位＝平台管理員兼工作區管理員）；同一批，一起成功或一起失敗
     if (jb) jb.n++; // 成功建立才算一次
     if (cred) {
       try { await login.saveCred(id, cred.username, cred.password); }
@@ -1543,7 +1547,7 @@ ${ending}`;
   // 權限判斷全部走權限模組（src/access.js）：誰是什麼角色、能不能做什麼；它要讀的成員資料都來自成員資格模組（src/membership.js）
   const access = createAccess({
     ApiError, requireHuman, nameOf: id => nameOf(id), people: ctx => peopleMap(ctx), projects: () => PROJECTS, projectsOf, isolatedFrom,
-    isCrossRole: p => membership.isCrossRole(p), titles: () => projRoles,
+    isCrossRole: p => membership.isCrossRole(p), titles: () => projRoles, memberProjectsOf: p => membership.projectsOf(p),
     loadLeaders: force => membership.loadLeaders(force), leadersOf: pj => membership.leadersOf(pj),
     loadReadOnly: force => membership.loadReadOnly(force), isReadOnly: (p, pj) => membership.isReadOnly(p, pj),
   });
@@ -1707,7 +1711,7 @@ ${ending}`;
     return projectRows.map(r => ({ id: r.id, name: r.name, slug: slugs[r.id], code: projCodes[r.id] || null, archived: !!r.archived, createdAt: r.created_at, repo: repos[r.id] || null, // ；C-xxx 網址英文名
       roles: (rdefs[r.id] || []).map(d => ({ ...d, createdByName: people.get(d.createdBy)?.name || null, inUse: inUse(r.id, d) })), // 本專案角色
       dm: dms[r.id] ? { ...dms[r.id], byName: people.get(dms[r.id].by)?.name || null } : { on: false, by: null, at: null, byName: null },
-      memberCount: [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && listOf(p).includes(r.id) && !v.implicitOnlyIn(p.id, r.id)).length,
+      memberCount: [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && (listOf(p).includes(r.id) || projectsOf(p).includes(r.id)) && !v.implicitOnlyIn(p.id, r.id)).length, // 工作區管理員：加入或有職稱才算
       openCards: counts.get(r.id) || 0, statuses: book.list(r.id) })); // 看板狀態（順序＝看板欄順序）
   }
   async function projectsResponse(ctx, extra = {}) {
@@ -1748,7 +1752,7 @@ ${ending}`;
       if (target.kind === 'ai' && added.length) {
         // AI 的專案不能超出所屬人類；所屬人類同一批被加入也算
         const owner = people.get(target.owner_id);
-        const ownerNext = changes.find(c => String(c.id) === target.owner_id)?.projects ?? listOf(owner);
+        const ownerNext = isWorkspaceAdmin(owner) ? [...PROJECTS] : changes.find(c => String(c.id) === target.owner_id)?.projects ?? listOf(owner); // 工作區管理員：隱含權限算在內
         const outside = added.filter(x => !ownerNext.includes(x));
         if (outside.length) throw new ApiError(400, 'OWNER_NOT_IN_PROJECT', `${target.name} 的所屬人類 ${owner?.name || ''} 不在「${outside.map(nameOf).join('、')}」，AI 的專案不能超出所屬人類。`);
       }
@@ -2912,13 +2916,21 @@ ${ending}`;
     if (t.id === me.id) throw new ApiError(400, 'SELF', '不能停用自己；要離開請先把管理員交給別人。');
     return t;
   }
+  const lastAdminError = () => new ApiError(409, 'LAST_WORKSPACE_ADMIN', '這是最後一位工作區管理員：請先把另一位成員升為工作區管理員。');
+  // 最後一位工作區管理員不能被降級、停用、自己離開（讀最新的成員資料）
+  async function assertNotLastAdmin(ctx, p) {
+    invalidatePeople();
+    if (access.view({ people: await peopleMap(ctx) }).lastAdmin(p)) throw lastAdminError();
+  }
   route('POST', '/api/participants/:id/disable', async ({ ctx, me, params }) => {
     const t = await humanTarget(ctx, me, params.id);
     if (t.status === 'disabled') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyDisabled: true };
+    await assertNotLastAdmin(ctx, t);
     const now = Date.now(), at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
     await db.batch([
-      ["UPDATE participants SET status = 'disabled', token = ?, is_admin = 0, updated_at = ?, version = version + 1 WHERE id = ?", [await tokenKey(newToken()), at, t.id]],
-      ...membership.accountStatusStmts(t.id, 'disabled', at), ...membership.syncAdminStmts(),
+      ...(isWorkspaceAdmin(t) ? membership.setWorkspaceRoleStmts(t.id, 'member', at) : []), // 停用的人不再是工作區管理員
+      ["UPDATE participants SET status = 'disabled', token = ?, updated_at = ?, version = version + 1 WHERE id = ?", [await tokenKey(newToken()), at, t.id]],
+      ...membership.accountStatusStmts(t.id, 'disabled', at),
       ['UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL', [now, t.id]],
       ['DELETE FROM pair_codes WHERE participant_id = ?', [t.id]],
       ...await Promise.all(ais.map(async a => ['UPDATE participants SET token = ?, token_expires_at = 1, updated_at = ? WHERE id = ?', [await tokenKey(newToken()), at, a.id]])),
@@ -2943,21 +2955,35 @@ ${ending}`;
     const people = await peopleMap(ctx);
     return { items: (await db.all("SELECT * FROM participants WHERE kind = 'human' AND status = 'disabled' ORDER BY updated_at DESC")).map(p => publicParticipant(p, people)) };
   });
-  // 把管理員交給另一位人類（立刻生效；交出去的人變一般成員）
-  route('POST', '/api/admin/transfer', async ({ ctx, me, req }) => {
-    await access.check(ctx, me, 'assign_platform_admin', 'platform', { what: '交出管理員' });
-    const toId = String((await readJson(req)).toId || '');
-    const to = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human' AND status = 'active'", toId);
-    if (!to) throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員（只能交給還在群組的人類）');
-    if (to.id === me.id) throw new ApiError(400, 'SAME_ADMIN', '你已經是管理員了。');
-    await db.batch([
-      ['UPDATE participants SET is_admin = 0 WHERE is_admin = 1', []],
-      ['UPDATE participants SET is_admin = 1, updated_at = ? WHERE id = ?', [nowIso(), to.id]],
-      ...membership.syncAdminStmts(), // 工作區管理員、平台管理員跟著
-    ]);
-    invalidatePeople();
-    console.log(`群組管理員：${me.name} → ${to.name}`);
-    return { adminId: to.id, adminName: to.name };
+  // 移交管理員拿掉了：工作區可以有多位管理員，「先升別人、再降自己」
+  route('POST', '/api/admin/transfer', async () => {
+    throw new ApiError(410, 'GONE', '移交管理員已拿掉：請先把對方升為工作區管理員，再把自己降為成員（PUT /api/participants/:id/workspace-role）。');
+  });
+  // 升降工作區管理員（只有工作區管理員；AI 不行）。role：admin | member。立刻生效；不能降最後一位
+  route('PUT', '/api/participants/:id/workspace-role', async ({ ctx, me, req, params }) => {
+    await access.check(ctx, me, 'assign_workspace_admin', 'workspace', { what: '升降工作區管理員' });
+    const role = (await readJson(req)).role;
+    if (role !== 'admin' && role !== 'member') throw invalid('role 只能是 admin（工作區管理員）或 member（成員）');
+    const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human' AND status = 'active'", params.id);
+    if (!t) throw new ApiError(404, 'NOT_WORKSPACE_MEMBER', '找不到這位工作區成員（只能升降啟用中的人類）');
+    if (role === 'member') await assertNotLastAdmin(ctx, t);
+    if ((role === 'admin') !== isWorkspaceAdmin(t)) {
+      const at = nowIso(), stmts = membership.setWorkspaceRoleStmts(t.id, role, at);
+      if (role === 'member') {
+        // 降級後沒有隱含權限：他的 AI 所在的專案，他自己要是成員（AI 的專案不超出所屬人類）。只在真的降了才寫
+        await membership.loadMembers(true);
+        const ais = [...(await peopleMap(ctx)).values()].filter(p => p.kind === 'ai' && p.owner_id === t.id && p.status !== 'deleted');
+        const keep = [...new Set([...listOf(t), ...ais.flatMap(a => listOf(a))])];
+        if (keep.length > listOf(t).length) stmts.push(...setProjectsStmts(t.id, keep, null, { onlyIf: "workspace_role = 'member'" }));
+      }
+      await db.batch(stmts);
+      invalidatePeople();
+      await membership.loadMembers(true);
+    }
+    const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
+    if ((role === 'admin') !== isWorkspaceAdmin(after)) throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
+    if (after.workspace_role !== t.workspace_role) console.log(`工作區管理員：${me.name} 把 ${t.name} ${role === 'admin' ? '升為工作區管理員' : '降為成員'}`);
+    return { participant: publicParticipant(after, await peopleMap(ctx)) };
   });
   route('GET', '/api/participants', async ({ ctx, me, url }) => {
     await loadCrossRoles(); await loadProjectRoles();
@@ -3766,12 +3792,14 @@ ${ending}`;
     return { messageId: m.id, resolvedBy: r.resolved_by, resolvedAt: r.resolved_at };
   });
 
-  route('POST', '/api/leave', async ({ me }) => {
+  route('POST', '/api/leave', async ({ ctx, me }) => {
     requireHuman(me);
+    await assertNotLastAdmin(ctx, me); // 最後一位工作區管理員要先升別人
     invalidatePeople();
     const at = nowIso();
     // 比照刪除 AI：一併登出所有裝置、清掉本人與他的 AI 的待處理通知（不留殘留資料）
     await db.batch([
+      ...(isWorkspaceAdmin(me) ? membership.setWorkspaceRoleStmts(me.id, 'member', at) : []), // 離開的人不再是工作區管理員
       ["UPDATE participants SET status = 'disabled', updated_at = ? WHERE id = ? OR owner_id = ?", [at, me.id, me.id]],
       ['UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL', [Date.now(), me.id]],
       ["UPDATE notifications SET status = 'acked', acked_at = ? WHERE status = 'pending' AND recipient_id IN (SELECT id FROM participants WHERE id = ? OR owner_id = ?)", [at, me.id, me.id]],
@@ -3842,6 +3870,7 @@ ${ending}`;
       for (const [k, x] of Object.entries(v)) o[k] = walk(x);
       if (o.participantId && o.participantId !== me.id) {
         if (Array.isArray(o.projects)) o.projects = o.projects.filter(p => mine.has(p));
+        if (Array.isArray(o.memberProjects)) o.memberProjects = o.memberProjects.filter(p => mine.has(p));
         if (o.projectRoles && typeof o.projectRoles === 'object') o.projectRoles = Object.fromEntries(Object.entries(o.projectRoles).filter(([k]) => mine.has(k)));
       }
       return o;
