@@ -3,7 +3,7 @@
 // 成功後一律由 issueDevice 發這台裝置的登入（dv_ 開頭，資料庫只存雜湊）。之後要接公司 SSO（OIDC／SAML），
 // 加一個 provider（例如 sso: { verify }）就好，裝置清單、登出、重設登入都不用改。
 // AI 的 Token 不經過這裡，維持原樣。
-// 再加帳號密碼（人類自己設）與主機救援連結（只救管理員，只能在主機用 npm run admin-rescue 產生）。
+// 再加帳號密碼（人類自己設）與主機救援連結（只救平台管理員，只能在主機用 npm run admin-rescue 產生）。
 import { hashPassword, verifyPassword, normUsername, validUsername, USERNAME_RULE, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
 import { ACCESS_ROLE } from './access.js';
 
@@ -551,7 +551,7 @@ export function registerLogin(d) {
         return p;
       },
     },
-    // 主機救援連結：一次性、15 分鐘、只給管理員
+    // 主機救援連結：一次性、15 分鐘、只給平台管理員（產生後才被降級或停用的也不放行）
     rescue: {
       label: '主機救援連結',
       device: RESCUE_DEVICE,

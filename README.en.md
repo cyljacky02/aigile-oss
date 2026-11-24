@@ -219,7 +219,7 @@ First login and setup are the same as above.
 - **Admin settings**: everything only the admin can do is under "⚙️ Admin settings" in the avatar menu (`/admin`): To do (join requests, skills awaiting approval, invites about to expire), Workspace settings, Projects, Invites, Accounts & recovery, Audit & storage, and Platform settings (platform admins only: updates, backup and import, the default attachment retention, demo data). Workspace settings can override the attachment retention. On a computer it has a sidebar; on a phone it is a list you tap into. "👥 Member management" keeps only members, roles and skills; old links such as `/members?tab=projects` redirect automatically.
 - **Turn off AI tools that cannot run here**: some computers block certain CLIs. Under "Admin settings › Workspace settings", "AI tools that can connect" turns Claude Code, Codex, Antigravity CLI, Copilot CLI and Other on or off one by one (one setting for the whole site; at least one stays on). A tool that is off is hidden from "My AIs › Connect", and the API will not hand out its onboarding text or one-line start; AIs already connected with it keep working. Changes are recorded in the workspace change log.
 - **`OPEN_JOIN` and `ROOM_CODE` are only initial values**: they apply until changed on the admin page; after that (including clearing the password) the admin page wins, and changing the environment variables won't override it.
-- A site that already has members never creates `admin` again. Forgot your password but still signed in on one device? On that device, open "Personal settings › Account & sign-in" and click "Forgot current password?" to set a new one (all other devices are signed out). If you cannot sign in at all, members ask an admin to "Reset sign-in"; admins use `npm run admin-rescue` (below).
+- A site that already has members never creates `admin` again. Forgot your password but still signed in on one device? On that device, open "Personal settings › Account & sign-in" and click "Forgot current password?" to set a new one (all other devices are signed out). If you cannot sign in at all, members ask an admin to "Reset sign-in"; platform admins use `npm run admin-rescue` (below).
 
 </details>
 
@@ -308,7 +308,7 @@ npm run deploy                                # builds the release notes and scr
 
 - Update: `git pull`, then `npm run deploy`; it first runs `npm run cf:db:migrate`, which applies all pending database upgrades in one go (a fresh D1 just gets the tables), then deploys. To upgrade the database only, run `npm run cf:db:migrate`; if it fails it stops and says which step, and re-running continues from there.
 - Emulate Workers locally: `npm run cf:db:migrate -- --local`, then `npm run cf:dev`.
-- Admin forgot the password: `APP_URL=https://your-site npm run admin-rescue` creates a one-time login link (valid 15 minutes).
+- Platform admin forgot the password: `APP_URL=https://your-site npm run admin-rescue` creates a one-time login link (valid 15 minutes). With one platform admin it goes to them; with several, name one (`npm run admin-rescue -- --name <name>`), otherwise it only lists the platform admins and creates no link. For a local or Docker install add `--local`.
 
 </details>
 
