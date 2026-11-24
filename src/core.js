@@ -1353,7 +1353,7 @@ ${mcp ? `1. 用 aigile_me 核對 participantId 是 ${ai.id}，不一致立刻停
 
 **卡片**
 - 只在接下任務、受阻或解除、要人類拍板（建決策卡）、完成（不要自己標已驗證）、交接時動卡片。
-- 各專案的狀態名稱可能不同，規則只看類別；清單在 ${mcp ? 'aigile_cards' : 'GET /api/cards'} 回的 statuses。
+- 各專案的狀態名稱可能不同，規則只看類別；清單在 GET /api/projects 每項的 statuses。
 - 發 [接單]／[進度] 帶 cardId＝認領（你是負責人卡會改到「進行中」類別）；回應有 cardClaim＝別人在做，先協調或 takeover 接手；交接用四欄。相關訊息都帶 cardId。
 - 完成與交接的順序：先發 [完成]（附交付內容或 40 碼 SHA），再呼叫 ${mcp ? 'aigile_card_handover' : 'POST /api/cards/:id/handover'} 交給驗收的人；平台會代你發 [交接] 並 @ 對方。[完成] 不會把卡改到已完成類別。
 - 交付物是只在你本機的檔案時：把內容全文貼在 [完成] 訊息裡，驗收的人讀不到你的檔案。
