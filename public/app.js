@@ -257,7 +257,7 @@
     try {
       if (!joinCred.check()) return; // 帳號密碼一定要設，之後用它登入
       const rc = $('#join-form [name=roomCode]');
-      if (!$('#room-code-field').hidden && !rc.value.trim()) { $('#join-error').textContent = '請輸入群組密碼'; rc.setAttribute('aria-invalid', 'true'); rc.focus(); return; } // 沒填就先擋，不送出去被當成猜錯
+      if (!$('#room-code-field').hidden && !rc.value.trim()) { $('#join-error').textContent = '請輸入房間碼'; rc.setAttribute('aria-invalid', 'true'); rc.focus(); return; } // 沒填就先擋，不送出去被當成猜錯
       rc.removeAttribute('aria-invalid');
       const t = ts.tokens.join;
       const r = await api('/api/join', { method: 'POST', body: { ...Object.fromEntries(new FormData(e.target)), ...(t ? { turnstileToken: t } : {}) } }).finally(() => { if (t) tsReset('join'); });
@@ -353,16 +353,16 @@
     let d;
     try { d = await api('/api/auth/invite/peek', { method: 'POST', body: { token: tok } }); } catch { d = { valid: false }; }
     if (!d.valid) return inviteGone(d.adminName);
-    const reset = d.kind === 'reset';
+    const reset = d.kind === 'reset', rejoin = d.kind === 'rejoin';
     card.innerHTML = `<p class="inv-from"><b>${esc(d.inviterName || '')}</b> 邀請你加入</p>
       <h1 class="inv-group">${esc(d.groupName)}</h1>
-      <dl class="inv-meta"><dt>專案</dt><dd>${d.projects.length ? d.projects.map(p => esc(p.name)).join('、') : '<span class="muted">還沒有（加入後由管理員指派）</span>'}</dd>
+      <dl class="inv-meta"><dt>專案</dt><dd>${d.projects.length ? (d.presets || d.projects).map(p => esc(p.name) + (p.role && p.role !== 'member' ? `（${PROJ_ROLE[p.role] || ''}）` : '')).join('、') : '<span class="muted">還沒有（加入後由管理員指派）</span>'}</dd>
         <dt>角色</dt><dd>${esc(d.role || '—')}</dd></dl>
       <form id="inv-form" class="join-pane" novalidate>
-        <label>你的名字<input name="name" value="${esc(d.name)}" maxlength="40" required autocomplete="nickname" ${reset ? 'readonly' : ''}></label>
-        <p class="muted small">${reset ? '這是重設登入的連結：按「加入」後，這台裝置會以你原本的身分登入。' : '確認名字沒錯就按「加入」，這台裝置會記住你。'}</p>
+        <label>你的名字<input name="name" value="${esc(d.name)}" maxlength="40" required autocomplete="nickname" ${reset || rejoin ? 'readonly' : ''}></label>
+        <p class="muted small">${reset ? '這是重設登入的連結：按「加入」後，這台裝置會以你原本的身分登入。' : rejoin ? '你之前被移出這個工作區：按「加入」後，會用你原本的帳號回到工作區。' : '確認名字沒錯就按「加入」，這台裝置會記住你。'}</p>
         <fieldset class="inv-pwd"><legend>設帳號密碼</legend>
-          <p class="muted small">${reset ? '設一組新的帳號密碼（原本有設的會換成這組），' : ''}之後換裝置、清掉瀏覽器都用這組登入。</p>
+          <p class="muted small">${reset || rejoin ? '設一組新的帳號密碼（原本有設的會換成這組），' : ''}之後換裝置、清掉瀏覽器都用這組登入。</p>
           ${credFieldsHtml('iv')}
         </fieldset>
         <p id="inv-error" class="error" role="alert"></p>
@@ -746,7 +746,7 @@
       let html = '';
       if (st.step === 0) html = `<label class="field">群組名稱<input id="sw-group" maxlength="30" value="${esc(group.name || '')}"></label><p class="field-hint">顯示在登入頁、側欄與分頁標題。</p>${btns('group', '儲存，下一步')}`;
       else if (st.step === 1) html = pj ? `<label class="field">專案名稱<input id="sw-pj-name" maxlength="20" value="${esc(window.aigileI18n?.lang === 'en' && pj.name === '預設專案' ? 'Default project' : pj.name)}"></label>${slugFieldHtml('sw-pj-slug', realSlug(pj))}<p class="field-hint">卡片編號會用網址英文名的字母開頭，例如網址英文名 web → 卡號 WEB-12。</p>${btns('project', '儲存，下一步')}` : `<p class="muted">還沒有專案。</p>${btns('', '')}`;
-      else if (st.step === 2) html = `<div class="switch-row sw-oj"><div><b id="sw-oj-t">開放自己註冊</b><span class="small muted">${health.openJoin ? `打開中：把網址 <code>${esc(location.origin)}</code> 傳給成員就能註冊。註冊的人一開始沒有專案，可以申請加入開放的專案，或由你在「成員管理」指派。` : '關閉中：只能用下面的邀請連結加入。'}</span></div><button type="button" class="switch" role="switch" aria-checked="${!!health.openJoin}" aria-labelledby="sw-oj-t" data-sw="openjoin"><span></span></button></div>
+      else if (st.step === 2) html = `<div class="switch-row sw-oj"><div><b id="sw-oj-t">開放自行註冊</b><span class="small muted">${health.openJoin ? `打開中：把網址 <code>${esc(location.origin)}</code> 傳給成員就能註冊。註冊的人一開始沒有專案，可以申請加入開放的專案，或由你在「成員管理」指派。` : '關閉中：只能用下面的邀請連結加入。'}</span></div><button type="button" class="switch" role="switch" aria-checked="${!!health.openJoin}" aria-labelledby="sw-oj-t" data-sw="openjoin"><span></span></button></div>
         ${pj ? `<div class="switch-row sw-pj-join"><div><b id="sw-pjj-t">新成員可以申請加入「${esc(pj.name)}」</b><span class="small muted">${swJoinOpen(pj) ? '打開中：自己註冊的人會在主畫面看到這個專案、按「申請加入」，你核准後就加入。' : '關閉中：註冊的人看不到這個專案，要你在「成員管理」把人加進來。'}</span></div><button type="button" class="switch" role="switch" aria-checked="${swJoinOpen(pj)}" aria-labelledby="sw-pjj-t" data-sw="pjjoin"><span></span></button></div>` : ''}
         <div class="sw-inv" data-msg-host><label class="field">邀請成員（產生一次性連結，直接加進「${esc(pj?.name || '')}」）<input id="sw-inv-name" maxlength="40" placeholder="成員名字"></label><button type="button" class="btn" data-sw="invite">產生邀請連結</button></div>
         ${st.invites.length ? `<ul class="sw-links">${st.invites.map((v, i) => `<li><b>${esc(v.name)}</b><code>${esc(v.url)}</code><button type="button" class="btn small" data-sw-copy="${i}">複製連結</button></li>`).join('')}</ul>` : ''}${btns('next', '下一步')}`;
@@ -9285,7 +9285,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     });
     for (const id of pick) permAdd(state.participants.get(id), pj);
   }
-  // 工作區設定（誰可以建立專案、開放註冊、群組密碼）與工作區異動紀錄：存資料庫、立刻生效；群組密碼只顯示有沒有設
+  // 工作區設定（誰可以建立專案、開放註冊、房間碼）與工作區異動紀錄：存資料庫、立刻生效；房間碼只顯示有沒有設
   async function loadGroupSettings() {
     perm.gsLoading = true;
     try {
@@ -9302,10 +9302,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const env = k => gs.source?.[k] === 'env' ? '<span class="pm-sub">目前用的是安裝時的設定；在這裡改過就以這裡為準</span>' : '';
     const log = (perm.gsEvents || []).map(e => `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(e.text)}</li>`).join('') || '<li class="muted small">還沒有紀錄</li>';
     return `<div class="pm-card pm-join-set">
-        <div class="pm-gs-row"><div class="pm-gs-t"><b id="pm-oj-t">開放自己註冊</b><span class="pm-sub">${gs.openJoin ? '知道網址的人都能註冊；註冊的人沒有專案，要你指派' : '關閉中：只能用邀請連結加入'}</span>${env('openJoin')}</div>
+        <div class="pm-gs-row"><div class="pm-gs-t"><b id="pm-oj-t">開放自行註冊</b><span class="pm-sub">${gs.openJoin ? '知道網址的人都能註冊；註冊的人沒有專案，要你指派' : '關閉中：只能用邀請連結加入'}</span>${env('openJoin')}</div>
           <button type="button" class="switch" role="switch" aria-checked="${gs.openJoin}" aria-labelledby="pm-oj-t" data-pp="openjoin"><span></span></button></div>
-        <div class="pm-gs-row pm-gs-code"><div class="pm-gs-t"><b><label for="pm-room-code">群組密碼</label></b><span class="pm-sub">${gs.roomCodeSet ? '<b>已設定</b>：註冊時要輸入；設好後看不到原文，忘了就重設' : '未設定：註冊不用密碼。公開部署建議設一組'}</span>${env('roomCode')}</div>
-          <div class="pm-gs-ctl"><input id="pm-room-code" type="password" maxlength="64" autocomplete="new-password" placeholder="${gs.roomCodeSet ? '輸入新密碼' : '4～64 字'}"><button type="button" class="btn small primary" data-pp="roomcode">${gs.roomCodeSet ? '更換' : '設定'}</button>${gs.roomCodeSet ? '<button type="button" class="btn small" data-pp="roomclear">清除</button>' : ''}</div></div>
+        <div class="pm-gs-row pm-gs-code"><div class="pm-gs-t"><b><label for="pm-room-code">房間碼</label></b><span class="pm-sub">${gs.roomCodeSet ? '<b>已設定</b>：註冊時要輸入；設好後看不到原文，忘了就重設' : '未設定：註冊不用房間碼。公開部署建議設一組'}</span>${env('roomCode')}</div>
+          <div class="pm-gs-ctl"><input id="pm-room-code" type="password" maxlength="64" autocomplete="new-password" placeholder="${gs.roomCodeSet ? '輸入新的房間碼' : '4～64 字'}"><button type="button" class="btn small primary" data-pp="roomcode">${gs.roomCodeSet ? '更換' : '設定'}</button>${gs.roomCodeSet ? '<button type="button" class="btn small" data-pp="roomclear">清除</button>' : ''}</div></div>
         <details class="audit pm-gs-log"${perm.gsLogOpen ? ' open' : ''}><summary>工作區異動紀錄</summary><ul class="pa-log">${log}</ul></details>
       </div>`;
   }
@@ -9315,7 +9315,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     perm.gsLogOpen = !!$('.pm-gs-log')?.open;
     await loadGroupSettings();
   }
-  // 工作區設定＝工作區名稱＋誰可以建立專案＋可連線的 AI 工具＋怎麼加入（開放註冊、群組密碼）＋工作區異動紀錄＋附件保存期限
+  // 工作區設定＝工作區名稱＋誰可以建立專案＋可連線的 AI 工具＋怎麼加入（開放註冊、房間碼）＋工作區異動紀錄＋附件保存期限
   // （附件保存期限是工作區覆寫；平台預設在「平台設定」）
   function permGroupHtml() {
     return `<div class="pm-projs">
@@ -10192,16 +10192,16 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (pp.value === perm.gs?.createProjects) return;
       return saveGroupSettings({ createProjects: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能建立專案' : '已儲存：只有管理員能建立專案');
     }
-    if (a === 'openjoin') { const on = pp.getAttribute('aria-checked') !== 'true'; return saveGroupSettings({ openJoin: on }, on ? '已開放自己註冊' : '已關閉開放註冊，只能用邀請連結加入'); }
+    if (a === 'openjoin') { const on = pp.getAttribute('aria-checked') !== 'true'; return saveGroupSettings({ openJoin: on }, on ? '已開放自行註冊' : '已關閉自行註冊，只能用邀請連結加入'); }
     if (a === 'roomcode') {
       const inp = $('#pm-room-code'), code = inp.value;
-      if (code.length < 4 || /\s/.test(code)) { toast('群組密碼需為 4～64 字，不可有空白'); return inp.focus(); }
+      if (code.length < 4 || /\s/.test(code)) { toast('房間碼需為 4～64 字，不可有空白'); return inp.focus(); }
       inp.value = '';
-      return saveGroupSettings({ roomCode: code }, '群組密碼已更新，之後註冊要輸入新密碼');
+      return saveGroupSettings({ roomCode: code }, '房間碼已更新，之後註冊要輸入新的房間碼');
     }
     if (a === 'roomclear') {
-      if (!await confirmDialog({ title: '清除群組密碼？', confirmText: '清除', message: '清除後，開放註冊打開時，知道網址的人不用密碼就能註冊。' })) return;
-      return saveGroupSettings({ roomCode: '' }, '已清除群組密碼');
+      if (!await confirmDialog({ title: '清除房間碼？', confirmText: '清除', message: '清除後，開放自行註冊時，知道網址的人不用房間碼就能註冊。' })) return;
+      return saveGroupSettings({ roomCode: '' }, '已清除房間碼');
     }
     try {
       if (a === 'log') {
@@ -10663,9 +10663,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   function openInvite() {
     const body = openModal('＋ 邀請', `<form id="inv-new" class="stack">
         <label class="field">名字<input name="name" required maxlength="40" autocomplete="off" placeholder="例如：王小明"></label>
-        <fieldset class="field inv-projs"><legend class="field-label">專案與角色</legend>
-          ${PROJECTS.map(pj => `<div class="inv-proj-row"><label class="chk"><input type="checkbox" name="projects" value="${esc(pj)}"> ${esc(projName(pj))}</label><label class="chk inv-ro"><input type="checkbox" data-inv-ro="${esc(pj)}" disabled> 👁 唯讀</label>${roleSelectHtml('', `data-inv-role="${esc(pj)}" disabled`, { pj, ai: false, label: `在${projName(pj)}的角色` })}</div>`).join('')}
-          <span class="muted small">每個專案各自一個角色；不勾＝還沒有專案，之後再指派</span></fieldset>
+        <fieldset class="field inv-projs"><legend class="field-label">專案、專案角色與職稱</legend>
+          ${PROJECTS.map(pj => `<div class="inv-proj-row"><label class="chk"><input type="checkbox" name="projects" value="${esc(pj)}"> ${esc(projName(pj))}</label><select class="inv-prole" data-inv-prole="${esc(pj)}" aria-label="在${esc(projName(pj))}的專案角色" disabled>${Object.entries(PROJ_ROLE).map(([k, t]) => `<option value="${k}"${k === 'member' ? ' selected' : ''}>${t}</option>`).join('')}</select>${roleSelectHtml('', `data-inv-role="${esc(pj)}" disabled`, { pj, ai: false, label: `在${projName(pj)}的職稱` })}</div>`).join('')}
+          <span class="muted small">勾的專案接受邀請後就加入：專案角色決定權限，職稱只是頭銜；不勾＝還沒有專案，之後再加入</span></fieldset>
         <fieldset class="field inv-ttl"><legend class="field-label">有效時間</legend>
           <div class="inv-ttl-opts">${INV_TTLS.map(([k, t]) => `<label class="chk"><input type="radio" name="ttl" value="${k}"${k === '24h' ? ' checked' : ''}> ${t}${k === '24h' ? '（預設）' : ''}</label>`).join('')}</div>
           <span class="muted small">只能用一次；對方用掉或你作廢就失效。</span>
@@ -10676,7 +10676,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     body.querySelector('#inv-new').addEventListener('change', async e => {
       if (e.target.name === 'ttl') { body.querySelector('#inv-ttl-warn').hidden = e.target.value !== '7d'; return; }
       const cb = e.target.closest('input[name="projects"]');
-      if (cb) { const s = body.querySelector(`[data-inv-role="${CSS.escape(cb.value)}"]`); s.disabled = !cb.checked; const ro = body.querySelector(`[data-inv-ro="${CSS.escape(cb.value)}"]`); if (ro) { ro.disabled = !cb.checked; if (!cb.checked) ro.checked = false; } return; }
+      if (cb) { const s = body.querySelector(`[data-inv-role="${CSS.escape(cb.value)}"]`); s.disabled = !cb.checked; const pr = body.querySelector(`[data-inv-prole="${CSS.escape(cb.value)}"]`); if (pr) { pr.disabled = !cb.checked; if (!cb.checked) pr.value = 'member'; } return; }
       const s = e.target.closest('[data-inv-role]');
       if (!s) return;
       const v = await pickRole(s, s.dataset.v || '');
@@ -10688,10 +10688,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       e.preventDefault();
       const f = new FormData(e.target);
       const projects = f.getAll('projects');
-      const roles = Object.fromEntries(projects.map(pj => [pj, body.querySelector(`[data-inv-role="${CSS.escape(pj)}"]`)?.value || '']).filter(([, v]) => v && v !== '__other'));
+      // 每個勾的專案：{ project, role（專案角色）, title（職稱） }
+      const presets = projects.map(pj => { const t = body.querySelector(`[data-inv-role="${CSS.escape(pj)}"]`)?.value || ''; return { project: pj, role: body.querySelector(`[data-inv-prole="${CSS.escape(pj)}"]`)?.value || 'member', title: t === '__other' ? '' : t }; });
       try {
-        const readOnly = projects.filter(pj => body.querySelector(`[data-inv-ro="${CSS.escape(pj)}"]`)?.checked);
-        const out = await api('/api/invites', { method: 'POST', body: { name: f.get('name').trim(), projects, roles, readOnly, ttl: f.get('ttl') || '24h' } });
+        const out = await api('/api/invites', { method: 'POST', body: { name: f.get('name').trim(), projects: presets, ttl: f.get('ttl') || '24h' } });
         showInviteLink(out);
         if (state.page === 'perm') loadInvites();
       } catch (err) { body.querySelector('#inv-new-err').textContent = err.message; }
@@ -10898,12 +10898,12 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const cls = { 有效: 'green', 已使用: 'blue', 已過期: 'grey', 已取消: 'grey' };
     const st = iv => iv.status === '有效' ? `有效 · 剩 ${invLeftShort(Date.parse(iv.expiresAt) - Date.now())}${iv.ttl === '7d' ? '（7 天）' : ''}`
       : iv.status === '已使用' ? `已使用 · ${iv.usedByName ? iv.usedByName + ' · ' : ''}${fmtDate(iv.usedAt).split(' ')[0]}` : iv.status === '已取消' ? '已作廢' : iv.status;
-    const projText = iv => iv.projects.map(x => projName(x) + (iv.roles?.[x] ? ` · ${iv.roles[x]}` : '')).join('、') + (!iv.roles && iv.role ? ` · ${iv.role}` : '') || (iv.kind === 'reset' ? '—' : '還沒有專案');
+    const projText = iv => (iv.presets || []).map(x => [projName(x.project), PROJ_ROLE[x.role], x.title].filter(Boolean).join(' · ')).join('、') || (iv.kind === 'reset' ? '—' : '還沒有專案');
     const acts = iv => iv.status === '有效' ? `<button type="button" class="btn small" data-pm-inv-regen="${esc(iv.id)}">重新產生</button><button type="button" class="btn small" data-pm-inv-cancel="${esc(iv.id)}">作廢</button>`
       : iv.status === '已使用' ? '' : `<button type="button" class="btn small primary" data-pm-inv-regen="${esc(iv.id)}">重發</button>`;
     return `<div class="pm-projs"><div class="pm-card"><div class="pm-card-head"><strong>最近 7 天的邀請</strong><span class="muted small">連結只能用一次，有效時間在產生時選（預設 24 小時）；過期可以「重發」，不需要就「作廢」</span><span class="grow"></span><button type="button" class="link small" data-pm-inv-reload>重新整理</button><button type="button" class="btn primary small" data-pm-invite>＋ 邀請新的人</button></div>
       ${perm.invites.length ? `<table class="pm-table pm-itable"><thead><tr><th scope="col">名字</th><th scope="col" class="c-proj">專案與角色</th><th scope="col" class="c-st">狀態</th><th scope="col" class="c-iact"><span class="sr-only">動作</span></th></tr></thead><tbody>
-        ${perm.invites.map(iv => `<tr class="pm-irow"><td class="c-name"><b>${esc(iv.name)}</b>${iv.kind === 'reset' ? '<span class="pill-tag yellow">重設登入</span>' : ''}</td><td class="c-proj">${esc(projText(iv))}</td><td class="c-st"><span class="inv-st ${cls[iv.status]}">${esc(st(iv))}</span></td><td class="c-iact">${acts(iv)}</td></tr>`).join('')}</tbody></table>`
+        ${perm.invites.map(iv => `<tr class="pm-irow"><td class="c-name"><b>${esc(iv.name)}</b>${iv.kind === 'reset' ? '<span class="pill-tag yellow">重設登入</span>' : iv.kind === 'rejoin' ? '<span class="pill-tag blue">重新加入</span>' : ''}</td><td class="c-proj">${esc(projText(iv))}</td><td class="c-st"><span class="inv-st ${cls[iv.status]}">${esc(st(iv))}</span></td><td class="c-iact">${acts(iv)}</td></tr>`).join('')}</tbody></table>`
         : '<p class="muted small pm-pad">最近 7 天沒有邀請。按「＋ 邀請新的人」邀請新成員。</p>'}</div></div>`;
   }
   async function resetLogin(p) {

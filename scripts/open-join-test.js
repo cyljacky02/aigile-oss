@@ -19,13 +19,15 @@ const mk = async (name, config) => {
   };
 };
 try {
-  // 1. 沒設 OPEN_JOIN＝開放；第一位是管理員、在所有專案
+  // 1. 沒設 OPEN_JOIN＝開放；第一位（平台還沒有平台管理員）是平台管理員兼工作區管理員，靠隱含權限進得了所有專案
   const call = await mk('open.db', {});
   assert.equal((await call(null, '/api/health')).status, 200);
   const first = await call(null, '/api/join', 'POST', { name: '林志明', role: 'PO' });
   assert.equal(first.status, 201, JSON.stringify(first.body));
   const boss = first.body;
-  assert.ok((await call(boss.token, '/api/me')).body.projects.includes('預設專案'), '第一位在所有專案');
+  const bossMe = (await call(boss.token, '/api/me')).body;
+  assert.deepEqual([bossMe.platformRole, bossMe.workspaceRole], ['admin', 'admin'], '第一位是平台管理員兼工作區管理員');
+  assert.ok(bossMe.projects.includes('預設專案'), '第一位進得了所有專案');
   assert.equal((await call(null, '/api/health')).body.openJoin, true, '沒設 OPEN_JOIN：網頁看到的是開放註冊');
 
   // 管理員在預設專案發訊息、建卡，另發一則「全部專案」公告
@@ -57,10 +59,10 @@ try {
 
   // 4. ROOM_CODE：每個人註冊都要輸入
   const coded = await mk('coded.db', { roomCode: 'abc123' });
-  assert.equal((await coded(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body.error?.code, 'ROOM_CODE_REQUIRED', '第一位也要代碼（沒填：請輸入群組密碼）');
+  assert.equal((await coded(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body.error?.code, 'ROOM_CODE_REQUIRED', '第一位也要房間碼（沒填：請輸入房間碼）');
   assert.equal((await coded(null, '/api/join', 'POST', { name: '林志明', role: 'PO', roomCode: 'abc123' })).status, 201);
   assert.equal((await coded(null, '/api/join', 'POST', { name: '王小明', role: 'UX' })).body.error?.code, 'ROOM_CODE_REQUIRED', '第二位沒代碼擋');
-  assert.equal((await coded(null, '/api/join', 'POST', { name: '王小明', role: 'UX', roomCode: 'nope' })).status, 403, '代碼錯：群組密碼錯誤');
+  assert.equal((await coded(null, '/api/join', 'POST', { name: '王小明', role: 'UX', roomCode: 'nope' })).status, 403, '代碼錯：房間碼錯誤');
   assert.equal((await coded(null, '/api/join', 'POST', { name: '王小明', role: 'UX', roomCode: 'abc123' })).status, 201, '第二位有代碼可以');
   console.log('open-join-test：全部通過');
 } catch (e) {

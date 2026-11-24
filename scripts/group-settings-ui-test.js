@@ -1,4 +1,4 @@
-// 管理頁「專案」分頁的加入設定（真的瀏覽器）：切換開放註冊、設定／清除群組密碼，立刻生效並留在群組異動紀錄
+// 管理頁「專案」分頁的加入設定（真的瀏覽器）：切換開放註冊、設定／清除房間碼，立刻生效並留在群組異動紀錄
 // 1280 與 375 都能操作、不橫向捲動（第一次設定引導第 3 步的開關在 setup-wizard-ui-test）
 // 用法：node scripts/group-settings-ui-test.js（找不到 Chrome／Edge 就略過）
 import assert from 'node:assert';
@@ -21,7 +21,7 @@ try {
   // 1280：關閉開放註冊 → 立刻擋註冊
   await open(1280);
   assert.equal(await sw(), 'true', '預設開放');
-  assert.match(await js("document.querySelector('.pm-join-set').textContent"), /未設定/, '群組密碼未設定');
+  assert.match(await js("document.querySelector('.pm-join-set').textContent"), /未設定/, '房間碼未設定');
   await click('.pm-join-set [data-pp="openjoin"]');
   await until(async () => (await sw()) === 'false', 8000, '開關切到關');
   assert.equal((await health()).openJoin, false);
@@ -29,7 +29,7 @@ try {
   await click('.pm-join-set [data-pp="openjoin"]');
   await until(async () => (await sw()) === 'true', 8000, '開回來');
 
-  // 設定群組密碼：輸入框清空、顯示已設定；註冊要密碼
+  // 設定房間碼：輸入框清空、顯示已設定；註冊要密碼
   await js("document.querySelector('#pm-room-code').value = 'abc'; true");
   await click('[data-pp="roomcode"]');
   await sleep(300);
@@ -46,9 +46,9 @@ try {
   // 異動紀錄
   await click('.pm-gs-log summary');
   const log = await js("document.querySelector('.pm-gs-log').textContent");
-  for (const k of ['關閉開放註冊', '開放自己註冊', '設定群組密碼']) assert.ok(log.includes(k), `紀錄有「${k}」：` + log);
+  for (const k of ['關閉自行註冊', '開放自行註冊', '設定房間碼']) assert.ok(log.includes(k), `紀錄有「${k}」：` + log);
 
-  // 375：清除群組密碼（確認框）；不橫向捲動
+  // 375：清除房間碼（確認框）；不橫向捲動
   await open(375);
   const fit = await js("document.documentElement.scrollWidth <= innerWidth + 1");
   assert.ok(fit, '375 不橫向捲動');
