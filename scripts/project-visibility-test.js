@@ -10,7 +10,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
-import { addToProject, setProjectRole, listProjectMembers } from './test-members.js';
+import { addToProject, setProjectRole, removeFromProject, listProjectMembers } from './test-members.js';
 import { testToken } from './test-token.js';
 import { toPrePhase1 } from './legacy-db.js';
 
@@ -222,6 +222,11 @@ try {
     assert.ok(seen.items.some(p => p.id === R) && seen.items.some(p => p.id === S), '封存的開放、審核專案照樣看得到（不因為有一個看不到的私人封存專案就全部藏起來）：' + JSON.stringify(seen.items.map(p => p.id)));
     assert.ok(JSON.stringify((await call(all.token, '/api/messages?limit=100')).body.items.map(m => m.text)).includes('RRR'), '封存的開放專案的訊息照樣看得到');
     assert.ok((await call(wang.token, '/api/projects')).body.items.some(p => p.id === Q), '專案管理員看得到自己封存的私人專案');
+    // 改成員：看不到的封存私人專案跟沒有這個專案一樣（先判斷看不看得到，才說「已封存」）
+    for (const [label, req] of [['加入成員', pj => addToProject(call, all.token, pj, all.id)], ['設專案角色', pj => setProjectRole(call, all.token, pj, all.id, 'member')], ['移出成員', pj => removeFromProject(call, all.token, pj, all.id)]]) {
+      const a = await req(Q), b = await req('沒有這專案');
+      assert.deepEqual([a.status, a.body.error?.code, a.body.error?.message], [b.status, b.body.error?.code, b.body.error?.message], `${label}：看不到的封存私人專案跟不存在的一樣：` + JSON.stringify(a.body));
+    }
     console.log('✓ 管理專案的路由、錯誤訊息不提到私人專案；封存的私人專案對在所有專案的人也看不到');
   }
 

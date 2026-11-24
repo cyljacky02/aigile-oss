@@ -1894,10 +1894,11 @@ ${ending}`;
   const PROJECT_ROLES = Object.values(PROJECT_ROLE);
   const PROJECT_ROLE_NAME = { [PROJECT_ROLE.ADMIN]: '專案管理員', [PROJECT_ROLE.MEMBER]: '專案成員', [PROJECT_ROLE.VIEWER]: '唯讀成員' };
   const readProjectRole = v => { if (!PROJECT_ROLES.includes(v)) throw invalid('role 需為 admin（專案管理員）、member（專案成員）或 viewer（唯讀成員）'); return v; };
-  async function memberProject(id, { archivedOk = false } = {}) {
+  // 私人專案對看不到的人＝沒有這個專案：先判斷看不看得到（含封存的），才說「已封存」
+  async function memberProject(id, me, { archivedOk = false } = {}) {
     await loadProjects(true);
     const row = projectRows.find(r => r.id === id);
-    if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    if (!row || (row.archived ? hiddenArchived(me).includes(row.id) : !discovers(me, row.id))) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
     if (row.archived && !archivedOk) throw new ApiError(409, 'PROJECT_ARCHIVED', '專案已封存，請先還原再調整成員');
     return row;
   }
@@ -1931,7 +1932,7 @@ ${ending}`;
   }
   // 列出：看得到這個專案的人（專案裡的人、管得了這個專案的人）
   route('GET', '/api/projects/:id/members', async ({ ctx, me, params }) => {
-    const row = await memberProject(params.id, { archivedOk: true });
+    const row = await memberProject(params.id, me, { archivedOk: true });
     const v = await access.load(ctx);
     if (!v.can(me, 'discover_project', { project: row.id })) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案'); // 私人專案對看不到的人＝沒有這個專案
     if (!listOf(me).includes(row.id) && !v.can(me, 'see_project', { project: row.id }) && !v.can(me, 'manage_project', { project: row.id })) throw new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
@@ -1939,7 +1940,7 @@ ${ending}`;
   });
   // 加入：participantIds（或 participantId）＋ role（預設專案成員）；AI 的所屬人類要已在專案（或同一次加入）
   route('POST', '/api/projects/:id/members', async ({ ctx, me, req, params }) => {
-    const row = await memberProject(params.id);
+    const row = await memberProject(params.id, me);
     const v = await access.check(ctx, me, 'manage_project_members', { project: row.id }, { what: '加入專案成員' });
     const body = await readJson(req);
     const role = body.role === undefined ? PROJECT_ROLE.MEMBER : readProjectRole(body.role);
@@ -1965,7 +1966,7 @@ ${ending}`;
   });
   // 設定專案角色（要已在專案）。改成唯讀成員：他和名下 AI 在這個專案負責的未結案卡退回待處理（dryRun 先看）
   route('PUT', '/api/projects/:id/members/:pid', async ({ ctx, me, req, params }) => {
-    const row = await memberProject(params.id);
+    const row = await memberProject(params.id, me);
     const v = await access.check(ctx, me, 'manage_project_members', { project: row.id }, { what: '設定專案角色' });
     const body = await readJson(req);
     const role = readProjectRole(body.role), dryRun = body.dryRun === true;
@@ -1994,7 +1995,7 @@ ${ending}`;
   });
   // 移出：他在這個專案負責的未結案卡退回待處理、職稱清掉（dryRun 先看）；封存專案的成員資格不動
   route('DELETE', '/api/projects/:id/members/:pid', async ({ ctx, me, req, params }) => {
-    const row = await memberProject(params.id);
+    const row = await memberProject(params.id, me);
     const v = await access.check(ctx, me, 'manage_project_members', { project: row.id }, { what: '移出專案成員' });
     const dryRun = (await readJson(req)).dryRun === true;
     const p = memberTarget(v, params.pid);
