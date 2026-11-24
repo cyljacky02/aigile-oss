@@ -226,7 +226,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     || !(ask === false || (reasons.length === 1 && reasons[0] === 'reply') || FYI_PREFIX.test(text || ''));
   const AI_TOKEN_TTL_MS = (Number(config.aiTokenTtlHours) || 168) * 3600_000; // 預設 7 天
   const HUMAN_TOKEN_TTL_MS = (Number(config.humanTokenTtlHours) || 720) * 3600_000;
-  // 訊息附件保存時間：管理員在「管理員設定 › 稽核與儲存」調整，存 app_settings 的 file_ttl＝{ hours, log }（不改資料表）。
+  // 訊息附件保存時間：平台管理員在「管理員設定 › 平台設定」調整預設，存 app_settings 的 file_ttl＝{ hours, log }（不改資料表）；工作區可以覆寫（wsTtlCfg）。
   // 沒改過就用主機的 FILE_TTL_HOURS（沒設＝24 小時）；改過一次就以這裡為準。只影響之後上傳的檔：到期時間在上傳時就寫進 files.expires_at
   const FILE_TTL_DEFAULT_H = Number(config.fileTtlHours) > 0 ? Number(config.fileTtlHours) : 24;
   const FILE_TTL_CHOICES = [1, 6, 24, 72, 168, 720]; // 1、6、24 小時，3、7、30 天

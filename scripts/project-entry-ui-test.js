@@ -152,7 +152,7 @@ try {
   assert.match(av, /perm=👥Member managementmembers, AI duties, skills/, '英文頭像選單：' + av);
   await click('#av-menu [data-av="pm-projects"]');
   await until(() => js("!!document.querySelector('.adm-main .pm-ptable')"), 8000, '英文管理員設定 › 專案');
-  assert.match(await text('.adm-nav'), /To do[\s\S]*Workspace settings[\s\S]*Accounts & recovery[\s\S]*Audit & storage[\s\S]*System & backup/, '英文左側目錄：' + await text('.adm-nav'));
+  assert.match(await text('.adm-nav'), /To do[\s\S]*Workspace settings[\s\S]*Accounts & recovery[\s\S]*Audit & storage[\s\S]*Platform settings/, '英文左側目錄：' + await text('.adm-nav'));
   assert.match(await crumbs(), /Admin settings/, '英文麵包屑：' + await crumbs());
   console.log('project-entry-ui-test：全部通過');
 } catch (e) {

@@ -123,7 +123,7 @@ Full protocol: [docs/ai-integration.md](docs/ai-integration.md) (Chinese). Every
 | <img alt="Team status" src="docs/images/readme/team.en.png"><br>**Team status**: who is online and which card each AI is on; assignments unread for 20+ minutes are listed as "Not responded" | <img alt="Skill library" src="docs/images/readme/skills.en.png"><br>**Skill library**: upload skills or skill packs and choose which roles or AIs get them |
 | <img alt="Mobile" src="docs/images/readme/mobile.en.png"><br>**Works on your phone**: messages, "Needs your attention", one-click answers | <img alt="First-time setup" src="docs/images/readme/wizard.en.png"><br>**First-time setup**: group name, project, invite members, first AI — four steps |
 
-Want to see it in use first? After logging in, click "Load demo data" in the setup guide or under "Admin settings › System & backup", and clear it with one click when you're done.
+Want to see it in use first? After logging in, click "Load demo data" in the setup guide or under "Admin settings › Platform settings", and clear it with one click when you're done.
 
 <details>
 <summary><b>All features</b></summary>
@@ -137,7 +137,7 @@ Want to see it in use first? After logging in, click "Load demo data" in the set
 | Team status | Online state, current work and token expiry of every member, plus how many times each AI was woken today (flagged above 15); assignments unread for 20+ minutes are flagged "no response yet" |
 | My AIs | 15 role templates pre-fill the six setup questions; copy the onboarding text for each tool, reissue tokens, standing permissions (deploys) |
 | Skills | Upload skills (`SKILL.md`) or skill packs (Claude Code plugins), target roles or specific AIs; packs with scripts need approval and the owner's consent. Admins and project leads can select **+ Add skill** to choose a project, preview one of the seven built-in bilingual templates, and apply it. When a template changes, the app prompts users to review the update before applying it to the project skill |
-| Docs | Message attachments (deleted after 24 hours by default; the admin can change this in Admin settings › Audit & storage) and a long-term project docs area (stored in R2) |
+| Docs | Message attachments (deleted after 24 hours by default; a platform admin sets the default in Admin settings › Platform settings, and a workspace admin can override it in Workspace settings) and a long-term project docs area (stored in R2) |
 | Knowledge base | You choose which docs go in: their text is extracted so people and AIs can search the originals, and a curator AI turns them into knowledge pages with sources. See "Knowledge base" below |
 | Direct messages | Humans can DM their own AIs |
 | Demo data | Load a fictional demo project (cards, human–AI conversation, a decision card) in one click, and clear it in one click without touching real data |
@@ -216,7 +216,7 @@ First login and setup are the same as above.
 - **Login**: the login page defaults to username and password; on a new device you can also use "Other ways to sign in" — pair a device (6 digits generated on a signed-in device) or a login code. Usernames are 4–30 characters (letters, digits, `. _ -`), passwords at least 8; `admin` is reserved for the default admin.
 - **Set a group password for public deployments**: once set, everyone must enter it to sign up. To allow invite links only, turn off open sign-up.
 - **Change it on the admin page, no redeploy**: "Admin settings › Workspace settings" renames the workspace, sets who can create projects (all members or admins only; whoever creates a project becomes its project admin; new installs default to all members, sites upgraded from an older version default to admins only), toggles open sign-up, sets or clears the group password and changes attachment retention. Changes are stored in the database, take effect immediately and are recorded in the workspace change log. The group password is stored only as a hash; you can't see it after saving — just reset it if forgotten.
-- **Admin settings**: everything only the admin can do is under "⚙️ Admin settings" in the avatar menu (`/admin`): To do (join requests, skills awaiting approval, invites about to expire), Workspace settings, Projects, Invites, Accounts & recovery, Audit & storage (including attachment retention), and System & backup. On a computer it has a sidebar; on a phone it is a list you tap into. "👥 Member management" keeps only members, roles and skills; old links such as `/members?tab=projects` redirect automatically.
+- **Admin settings**: everything only the admin can do is under "⚙️ Admin settings" in the avatar menu (`/admin`): To do (join requests, skills awaiting approval, invites about to expire), Workspace settings, Projects, Invites, Accounts & recovery, Audit & storage, and Platform settings (platform admins only: updates, backup and import, the default attachment retention, demo data). Workspace settings can override the attachment retention. On a computer it has a sidebar; on a phone it is a list you tap into. "👥 Member management" keeps only members, roles and skills; old links such as `/members?tab=projects` redirect automatically.
 - **Turn off AI tools that cannot run here**: some computers block certain CLIs. Under "Admin settings › Workspace settings", "AI tools that can connect" turns Claude Code, Codex, Antigravity CLI, Copilot CLI and Other on or off one by one (one setting for the whole site; at least one stays on). A tool that is off is hidden from "My AIs › Connect", and the API will not hand out its onboarding text or one-line start; AIs already connected with it keep working. Changes are recorded in the workspace change log.
 - **`OPEN_JOIN` and `ROOM_CODE` are only initial values**: they apply until changed on the admin page; after that (including clearing the password) the admin page wins, and changing the environment variables won't override it.
 - A site that already has members never creates `admin` again. Forgot your password but still signed in on one device? On that device, open "Personal settings › Account & sign-in" and click "Forgot current password?" to set a new one (all other devices are signed out). If you cannot sign in at all, members ask an admin to "Reset sign-in"; admins use `npm run admin-rescue` (below).
@@ -245,7 +245,7 @@ First login and setup are the same as above.
 | `AI_TOKEN_TTL_HOURS` | `168` | ✓ | ✓ | AI token lifetime (hours) |
 | `HUMAN_TOKEN_TTL_HOURS` | `720` | ✓ | ✓ | Login lifetime per human device, extended while in use |
 | `TOKEN_WARN_HOURS` | `24` | ✓ | ✓ | How long before expiry a token is marked "expiring soon" |
-| `FILE_TTL_HOURS` | `24` | ✓ | ✓ | Initial retention for message attachments (hours). Once the admin changes it in Admin settings › Audit & storage, that setting wins and later changes to this variable have no effect; a change only applies to files uploaded afterwards |
+| `FILE_TTL_HOURS` | `24` | ✓ | ✓ | Initial retention for message attachments (hours). Once a platform admin changes it in Admin settings › Platform settings, that setting wins (Workspace settings can still override it) and later changes to this variable have no effect; a change only applies to files uploaded afterwards |
 | `FILE_MAX_TOTAL_MB` | `4096` | ✓ | | Total size of message attachments |
 | `DOC_MAX_TOTAL_MB` | `9216` | ✓ | ✓ | Total size of the project docs area |
 | `DOC_MAX_FILE_MB` | `20` | ✓ | ✓ | Max size of one file in the project docs area |
@@ -377,7 +377,7 @@ It checks that the target is empty (stops if it already has data), copies everyt
 <details>
 <summary><b>Show details</b></summary>
 
-Admins, in "Admin settings › System & backup":
+Platform admins, in "Admin settings › Platform settings":
 
 - **Download backup**: members, projects, messages, DMs, cards, decisions, skills and settings in one JSON file (with the version number). Optionally include message attachments and project docs (with the text extracted for the knowledge base); skill packs and knowledge pages are always included. Data is read in batches and works both locally and on Workers.
 - **Nothing used for login is included**: member and AI tokens, password hashes, device logins, login codes, invite and rescue links, AI onboarding links.
@@ -391,7 +391,7 @@ Admins, in "Admin settings › System & backup":
 <details>
 <summary><b>Show details</b></summary>
 
-To see what it looks like: in first-time setup or "Admin settings › System & backup", click "Load demo data". It creates a demo project with:
+To see what it looks like: in first-time setup or "Admin settings › Platform settings", click "Load demo data". It creates a demo project with:
 
 - three demo members (one human, two AIs, all named "Demo-…", unable to log in)
 - cards in different states (To do, In progress, Awaiting confirmation, Blocked, Done)
