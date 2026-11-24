@@ -3039,6 +3039,9 @@ ${ending}`;
     const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
     if (after.workspace_status !== 'removed') throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
     const [impact] = t.status === 'active' ? await applyMembership(ctx, me, [{ id: t.id, projects: [], allowEmpty: true }]) : []; // 專案成員資格結束：卡片退回、專案紀錄
+    // 剩下的成員資格（封存的專案；帳號停用中時是全部）也一併結束
+    await db.run("DELETE FROM project_members WHERE participant_id = ? AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')", t.id, t.id);
+    invalidatePeople(); await membership.loadMembers(true);
     live?.dropPerson?.(t.id);
     for (const a of ais) live?.dropPerson?.(a.id);
     console.log(t.id === me.id ? `成員離開工作區：${t.name}` : `成員已移出工作區：${t.name}（${me.name} 操作）`);
