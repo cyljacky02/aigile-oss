@@ -8,6 +8,7 @@
 import assert from 'node:assert';
 import { startKit, findBrowser, until } from './browser-kit.js';
 import { SKILL_TEMPLATES, templateIn } from '../src/skill-templates.js';
+import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('kb-setup-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('kbsetup');
@@ -18,7 +19,7 @@ try {
   const liu = await join('林志明', 'PO'), lead = await join('林小安', 'SM');
   const id = x => x.participant.participantId;
   await call(liu.token, `/api/participants/${id(lead)}/projects`, 'PUT', { projects: ['預設專案'] });
-  await call(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(lead), leaderOf: ['預設專案'] }] });
+  await makeProjectAdmin(call, liu.token, id(lead), ['預設專案']);
   const mkAi = async name => (await call(liu.token, '/api/my-ais', 'POST', { projects: ['預設專案'], roleKey: 'PO', role: '產品負責', name, duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body;
   const kbAi = await mkAi('整理助手'), other = await mkAi('另一隻');
   const state = async () => Object.fromEntries((await call(lead.token, `${KB}/settings`)).body.candidates.map(c => [c.name, c.kbSkill]));

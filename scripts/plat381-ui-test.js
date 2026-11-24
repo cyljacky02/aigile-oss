@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
 import { startKit, findBrowser, until, sleep } from './browser-kit.js';
+import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('plat381-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('o381');
@@ -23,7 +24,7 @@ try {
   assert.equal(np.status, 201, JSON.stringify(np.body));
   const TP = np.body.id;
   await call(liu.token, `/api/participants/${id(wang)}/projects`, 'PUT', { projects: ['預設專案', TP] });
-  assert.equal((await call(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(wang), leaderOf: ['預設專案', TP] }] })).status, 200, 'wang 當預設專案、測試專案 leader');
+  assert.equal((await makeProjectAdmin(call, liu.token, id(wang), ['預設專案', TP])).status, 200, 'wang 當預設專案、測試專案 leader');
 
   // ---------- A 後端權限 ----------
   assert.equal((await call(wang.token, '/api/projects/預設專案', 'PATCH', { name: '預設專案二' })).status, 200, 'leader 能改自己專案的名稱');
@@ -82,14 +83,14 @@ try {
     // ---------- C leader 的專案管理頁 ----------
     await click('#av-menu [data-av="lead-projects"]');
     await until(() => js("location.pathname === '/projects' && !!document.querySelector('.pm-ptable')"), 8000, L + '專案管理頁');
-    assert.match(await txt('.work-title'), /📁 專案管理 你是 leader 的專案 · 新增、永久刪除專案請找管理員 劉昱志/, L + '標題與副標');
+    assert.match(await txt('.work-title'), /📁 專案管理 你是專案管理員的專案 · 新增、永久刪除專案請找管理員 劉昱志/, L + '標題與副標');
     assert.deepEqual(await J("[...document.querySelectorAll('.pm-prow .c-pname b')].map(b => b.textContent)"), ['預設專案', '測試專案'], L + '只列自己當 leader 的專案');
     assert.equal(await js("!!document.querySelector('[data-pm-newproj], .adm-nav')"), false, L + '沒有新增專案、沒有管理員設定左欄');
     assert.match(await js("document.querySelector('#crumbs')?.textContent || ''"), /專案管理/, L + '麵包屑');
     await click('[data-pm-more="預設專案"]');
     await until(() => js("!!document.querySelector('.pm-more-menu')"), 5000, L + '⋯ 選單');
     const mi = await J("[...document.querySelectorAll('.pm-more-menu [role=menuitem]')].map(b => b.innerText.replace(/\\s+/g, ' ').trim())");
-    assert.deepEqual(mi.map(x => x.replace(/^\S+\s*/, '').split(' ')[0]), ['改名', '程式庫與分支', '成員與本專案角色', '看板狀態', '異動紀錄', '封存專案', '永久刪除'], L + '⋯ 選單：' + mi.join(' / '));
+    assert.deepEqual(mi.map(x => x.replace(/^\S+\s*/, '').split(' ')[0]), ['改名', '程式庫與分支', '成員與專案角色', '看板狀態', '異動紀錄', '封存專案', '永久刪除'], L + '⋯ 選單：' + mi.join(' / '));
     assert.match(mi[6], /只有管理員/, L + '永久刪除寫只有管理員');
     assert.equal(await js("document.querySelector('.pm-more-menu [data-pp=\"archive\"]').classList.contains('danger')"), false, L + '封存可還原，用一般色（UX #6479）');
     assert.equal(await js("document.querySelector('.pm-more-menu [data-pp=\"noop\"]').getAttribute('aria-disabled')"), 'true', L + '永久刪除灰掉');
@@ -167,7 +168,7 @@ try {
   await login(wang.token, '/projects');
   await until(() => js("document.documentElement.lang === 'en' && !!document.querySelector('.pm-ptable')"), 10000, '英文專案管理頁');
   const enP = await txt('#page-work');
-  assert.match(enP, /Projects you lead · ask the admin 劉昱志 to add or permanently delete projects/, '英文副標：' + enP.slice(0, 200));
+  assert.match(enP, /Projects you administer · ask the admin 劉昱志 to add or permanently delete projects/, '英文副標：' + enP.slice(0, 200));
   assert.match(enP, /Projects you lead · 2/, '英文卡片標題（跟要你處理同一個說法，UX #6595）');
   await click('[data-pm-more="預設專案"]');
   await until(() => js("!!document.querySelector('.pm-more-menu')"), 5000, '英文 ⋯ 選單');

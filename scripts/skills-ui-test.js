@@ -46,7 +46,7 @@ try {
   for (const k of ['ma-row', 'data-act="menu"', '複製接入文字', '重發 Token', '技能庫 ›', '＋ 新增 AI', 'data-ma-skills', '🗑 刪除這隻 AI', 'skillsWaiting']) assert.ok(js.includes(k), '我的 AI 有 ' + k);
   assert.ok(!/C-\d+）：/.test(js), '拿掉專案連結串');
   assert.ok(!/let (autoStandbyConsent|convoMode)/.test(js), '自動待命、對話接續改成每個 AI 自己的');
-  assert.ok(js.includes("[['members', '成員'], ['roles', '角色'], ['skills', '技能']]"), 'leader 有技能分頁');
+  assert.ok(js.includes("[['members', '成員'], ['roles', 'AI 職務'], ['skills', '技能']]"), 'leader 有技能分頁');
   assert.ok(js.includes('看過全文與差異，核准上架'), '核准按鈕寫明要看全文與差異');
   // 技能分頁照 UX 稿 v74（篩選、技能卡、黃條、抽屜、空專案）；清單只讀一支 API
   for (const k of ['sk-chip', 'sk-card', 'sk-meter', 'sk-alert', '看腳本並核准', 'sk-empty', 'sk-drawer', '完整規則', '＋ 新增技能', '上傳新版本', '下架']) assert.ok(js.includes(k), 'UI 有 ' + k);

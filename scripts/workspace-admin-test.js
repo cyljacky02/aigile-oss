@@ -88,8 +88,8 @@ try {
   assert.equal((await say(chen.token, B)).status, 201, '能在第二專案發訊息');
   assert.equal((await call(chen.token, `/api/projects/${B}/statuses`)).status, 200, '能看第二專案的看板狀態');
   assert.equal((await call(chen.token, `/api/projects/${B}/join-settings`, 'PUT', { open: true, note: '' })).status, 200, '能管理第二專案');
-  assert.ok(!(await listed(wang.token, B)).includes(Cn), '不出現在第二專案的成員清單');
-  assert.ok(!(await listed(wang.token, B)).includes(Bo), '第一位管理員也一樣（沒有加入任何專案）');
+  assert.ok(!(await listed(boss.token, B)).includes(Cn), '不出現在第二專案的成員清單');
+  assert.ok(!(await listed(boss.token, B)).includes(Bo), '第一位管理員也一樣（沒有加入任何專案）');
   assert.equal(await memberCount(chen.token, B), 0, '第二專案人數不算有隱含權限的管理員');
   assert.ok((await listed(wang.token, A)).includes(Cn), '有加入的專案照舊列');
   assert.ok(!(await listed(wang.token, A)).includes(Bo), '沒加入的專案不列');
@@ -106,7 +106,7 @@ try {
   assert.equal(code(await call(boss.token, '/api/participants/disabled')), 'NOT_ADMIN', '降級後不能做管理動作');
   assert.equal(code(await setRole(boss.token, Bo, 'admin')), 'NOT_ADMIN', '降級後不能自己升回來');
   assert.deepEqual((await me(boss.token)).projects, [B], '降級後沒有隱含權限；他的 AI 在的專案，他也成為成員（AI 不超出所屬人類）');
-  assert.ok((await listed(wang.token, B)).includes(Bo), '所以列在第二專案');
+  assert.ok((await listed(chen.token, B)).includes(Bo), '所以列在第二專案');
   assert.equal(code(await say(boss.token, A)), 'PROJECT_FORBIDDEN', '降級後不能進沒加入的預設專案');
   assert.equal((await say(bossAi.token, B)).status, 201, '他的 AI 照常工作');
   assert.equal(code(await setRole(chen.token, Cn, 'member')), 'LAST_WORKSPACE_ADMIN', '現在陳昭宇是最後一位');

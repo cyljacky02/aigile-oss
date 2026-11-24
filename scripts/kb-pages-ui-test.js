@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
 import { startKit, findBrowser, until, sleep } from './browser-kit.js';
+import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('kb-pages-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('p391');
@@ -21,7 +22,7 @@ try {
   const liu = await join('林志明', 'PO'), lead = await join('林小安', 'SM'), chen = await join('陳大文', 'PG');
   const id = x => x.participant.participantId;
   for (const p of [lead, chen]) await call(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: ['預設專案'] });
-  await call(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(lead), leaderOf: ['預設專案'] }] });
+  await makeProjectAdmin(call, liu.token, id(lead), ['預設專案']);
   const mkAi = async name => (await call(liu.token, '/api/my-ais', 'POST', { projects: ['預設專案'], roleKey: 'PO', role: '產品負責', name, duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body;
   const kbAi = await mkAi('整理助手'), other = await mkAi('另一隻');
   const aiTok = kit.aiToken(kbAi.participantId);

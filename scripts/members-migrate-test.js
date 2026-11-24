@@ -73,11 +73,11 @@ async function seesSameAsBefore(db, call, label) {
   assert.deepEqual(pr.body.archivedLeaders, { [OLD]: ['p_lead'] }, `${label}：封存專案的 leader 照舊（才能還原）`);
   assert.deepEqual(pr.body.readOnly[B], ['p_ro'], `${label}：唯讀照舊`);
   assert.deepEqual(pr.body.readOnly[A] || [], [], `${label}：別的專案不唯讀`);
-  assert.deepEqual(pr.body.crossRoleIds, ['p_cross'], `${label}：跨專案角色照舊`);
+  assert.equal(pr.body.crossRoleIds, undefined, `${label}：跨專案角色已取消（轉成各專案的成員資格）`);
   const count = id => pr.body.items.find(x => x.id === id).memberCount;
   assert.equal(count(A), 4, `${label}：預設專案 4 人（管理員有角色標籤、停用的不算）`);
   assert.equal(count(B), 3, `${label}：第二專案 3 人（隱形管理員、已刪除的不算）`);
-  assert.equal(count(C), 2, `${label}：第三專案 2 人（管理員是 leader，保留成員資格）`);
+  assert.equal(count(C), 3, `${label}：第三專案 3 人（管理員是 leader，保留成員資格；跨專案角色在每個專案）`);
 
   const people = new Map((await call(tok.p_boss, '/api/participants')).body.items.map(p => [p.participantId, p]));
   const projectsOf = id => sorted(people.get(id).projects);
@@ -86,7 +86,7 @@ async function seesSameAsBefore(db, call, label) {
   assert.deepEqual(projectsOf('p_lead'), sorted([A, C]), label);
   assert.deepEqual(projectsOf('p_ro'), sorted([A, B]), label);
   assert.deepEqual(projectsOf('p_ai'), [B], label);
-  assert.deepEqual(projectsOf('p_cross'), sorted([A, B]), label);
+  assert.deepEqual(projectsOf('p_cross'), sorted([A, B, C]), `${label}：跨專案角色轉成每個未封存專案的成員`);
   assert.deepEqual(projectsOf('p_new'), [], `${label}：沒有專案的人照舊沒有`);
   assert.ok(!people.has('p_off') && !people.has('p_gone'), `${label}：停用、已刪除的不在成員清單`);
   assert.deepEqual([...people.values()].filter(p => p.isAdmin).map(p => p.participantId), ['p_boss'], `${label}：只有一位管理員`);

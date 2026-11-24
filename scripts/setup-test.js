@@ -9,6 +9,7 @@ import assert from 'node:assert';
 import { fileURLToPath } from 'node:url';
 import { ROLES } from '../src/roles.js';
 import { peekTestDb } from './test-db.js';
+import { makeProjectAdmin } from './test-members.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3998;
@@ -56,7 +57,7 @@ const sections = t => [...t.matchAll(/^## ([零一二三四五六七八九十]+)
     let r = await call(boss.token, '/api/projects/預設專案/repo', 'PUT', { url: 'https://github.com/example/project', branch: 'main' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.deepEqual(r.body.items.find(p => p.id === '預設專案').repo, { url: 'https://github.com/example/project', branch: 'main' });
-    await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: kid, leaderOf: ['預設專案'] }] });
+    await makeProjectAdmin(call, boss.token, kid, ['預設專案']);
     r = await call(mate.token, '/api/projects/預設專案/repo', 'PUT', { url: 'https://github.com/example/project', branch: 'dev' });
     assert.equal(r.status, 200, 'leader 能改自己的專案：' + JSON.stringify(r.body));
     assert.equal((await call(mate.token, '/api/projects/第二專案/repo', 'PUT', { url: 'https://github.com/x/y' })).status, 403, 'leader 不能改別的專案');

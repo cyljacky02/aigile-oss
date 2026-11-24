@@ -45,7 +45,7 @@ const ago = min => new Date(Date.now() - min * 60_000).toISOString();
 try {
   const boss = (await call(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body; // 管理員
   const wang = (await call(null, '/api/join', 'POST', { name: '王小明', role: 'UX' })).body;
-  await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: wang.participant.participantId, projects: ['預設專案'] }] });
+  await call(boss.token, `/api/participants/${wang.participant.participantId}/projects`, 'PUT', { projects: ['預設專案'] });
   const mkAi = async (owner, name, roleKey) => { const a = (await call(owner.token, '/api/my-ais', 'POST', { projects: ['預設專案'], roleKey, role: roleKey, name, duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body; assert.ok(a.participantId, JSON.stringify(a)); const row = await db.get('SELECT token, code FROM participants WHERE id = ?', a.participantId); return { id: a.participantId, tok: a.token, ag: `${roleKey}_${row.code}`, name }; };
   const pg1 = await mkAi(boss, 'PG一號', 'PG'), pg2 = await mkAi(boss, 'PG二號', 'PG'), po = await mkAi(boss, '平台PO', 'PO');
   const wpg = await mkAi(wang, '王的PG', 'PG');

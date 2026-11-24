@@ -102,25 +102,26 @@ try {
   assert.deepEqual(m.readOnlyProjectsOf(await row(ux)), [B], '整份換掉');
   console.log('✓ 唯讀');
 
-  // 跨專案角色：先在草稿上改（還沒存就不生效），存了才算；之後加入的 PO 不會自動跨專案
-  await m.loadCrossRoles(true);
-  assert.equal(m.isCrossRole(await row(boss)), false);
-  const draft = m.crossRoles();
-  m.setCrossRole(draft, await row(boss), true);
-  assert.equal(m.isCrossRole(await row(boss), draft), true, '草稿上開了');
-  assert.equal(m.isCrossRole(await row(boss)), false, '還沒存');
-  await run(m.setCrossRolesStmts(draft));
+  // 單一成員的專案角色：以某個角色加入（已在就不動）、改角色；AI 的唯讀跟著所屬人類
+  const po = (await call(null, '/api/join', 'POST', { name: '王經理', role: 'PO' })).body.participant.participantId; // 沒有專案
   await m.load(true);
-  assert.equal(m.isCrossRole(await row(boss)), true, '存了就生效');
-  const po = (await call(null, '/api/join', 'POST', { name: '王經理', role: 'PO' })).body.participant.participantId;
+  assert.equal(m.roleOf(po, A), null, '不在專案');
+  await run(m.addMemberStmts(po, A, 'admin'));
   await m.load(true);
-  assert.equal(m.isCrossRole(await row(po)), false, '新加入的 PO 不自動跨專案');
-  const off = m.crossRoles();
-  m.setCrossRole(off, await row(boss), false);
-  await run(m.setCrossRolesStmts(off));
+  assert.equal(m.roleOf(po, A), 'admin', '以專案管理員加入');
+  assert.ok(m.leadersOf(A).includes(po));
+  await run(m.addMemberStmts(po, A, 'member'));
   await m.load(true);
-  assert.equal(m.isCrossRole(await row(boss)), false, '關掉');
-  console.log('✓ 跨專案角色');
+  assert.equal(m.roleOf(po, A), 'admin', '已在專案：加入不改角色');
+  await run(m.setMemberRoleStmts(po, A, 'viewer'));
+  await m.load(true);
+  assert.equal(m.roleOf(po, A), 'viewer', '改成唯讀成員');
+  assert.equal(m.isReadOnly(await row(po), A), true);
+  assert.ok(!m.leadersOf(A).includes(po), '不再是專案管理員');
+  await run(m.setProjectsStmts(po, [], null));
+  await m.load(true);
+  assert.equal(m.roleOf(po, A), null, '移出就沒有角色');
+  console.log('✓ 單一成員的專案角色');
 
   // 直接讀資料庫（不看快取）
   assert.deepEqual(sorted(await m.fetchProjectsOf(ux)), sorted([A, B]));

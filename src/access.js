@@ -7,9 +7,9 @@
 // 目前的規則（之後的票只改這個檔案的規則）：
 // - 工作區管理員＝participants.workspace_role 是 admin 的啟用中人類，可以有多位（#8）；
 //   平台管理員暫時等同工作區管理員（第一階段只有一個工作區；#9 才改看 accounts.platform_role）
-// - 專案管理員＝該專案的 leader（project_members.role＝admin），或有隱含權限的工作區管理員
+// - 專案角色存在 project_members：admin＝專案管理員（工作區管理員有隱含權限，取較高者）、member＝專案成員、viewer＝唯讀成員
 // - 隱含權限不算成員資格：工作區管理員在沒加入、也沒有職稱的專案不列為成員（implicitOnlyIn）
-// - 唯讀成員＝app_settings.read_only 列的人類，他名下的 AI 跟著唯讀；明確設成唯讀時一律不能寫（不看其他角色）
+// - 唯讀成員的 AI 跟著唯讀；明確設成唯讀成員時一律不能寫（工作區管理員不能被設成唯讀成員）
 // - AI 不能做任何管理動作
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
 // 資料都由呼叫端注入（成員資料歸成員資格模組管），這裡只做判斷。
@@ -35,7 +35,7 @@ export const adminOf = people => {
 };
 
 // 動作表。admin：管理動作（AI 一律不行）；human：check 時先擋 AI（回「僅限人類」）；light：只看唯讀名單，不必讀成員；
-// leads：看 leader 名單，check 時重讀（別份程式剛改過也算數）
+// leads：看專案管理員名單，check 時重讀（別份程式剛改過也算數）
 // rule(v, me, s)：v 是 load() 的判斷視圖，s 是整理過的範圍 { kind, project, target }
 const platformAdmin = (v, me) => v.roleIn(me, 'platform') === R.PLATFORM_ADMIN;
 const workspaceAdmin = (v, me) => v.roleIn(me, 'workspace') === R.WORKSPACE_ADMIN;
@@ -51,8 +51,7 @@ const ACTIONS = {
   assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
   invite: { admin: true, rule: workspaceAdmin },
   reset_login: { admin: true, rule: workspaceAdmin },
-  assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬專案、某專案成員名單、跨專案角色
-  assign_project_admin: { admin: true, rule: workspaceAdmin }, // 指定 leader
+  assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
   create_project: { admin: true, fresh: true, rule: (v, me) => workspaceAdmin(v, me) || (v.membersCreateProjects() && v.roleIn(me, 'workspace') === R.MEMBER) }, // fresh：check 時重讀工作區設定
   // 專案（只有工作區管理員）
   delete_project: { admin: true, rule: workspaceAdmin },
@@ -61,14 +60,15 @@ const ACTIONS = {
   // 專案（專案管理員）
   manage_project: { admin: true, human: true, leads: true, rule: (v, me, s) => v.roleIn(me, s) === R.PROJECT_ADMIN }, // 改名、封存、還原、看板狀態、知識庫、技能審核、加入申請（封存的專案也算）
   configure_project: { admin: true, leads: true, rule: activeProjectAdmin }, // 程式庫、私訊開關、AI 職務
-  manage_project_members: { admin: true, leads: true, rule: activeProjectAdmin }, // 成員與權限頁：加入／移出、唯讀、職稱
+  manage_project_members: { admin: true, leads: true, rule: activeProjectAdmin }, // 專案成員：從工作區成員挑人加入、移出、設專案成員／唯讀成員
+  assign_project_admin: { admin: true, leads: true, rule: activeProjectAdmin }, // 任免專案管理員：工作區管理員，以及該專案的專案管理員
   set_title: { admin: true, leads: true, rule: (v, me, s) => activeProjectAdmin(v, me, s) || (!!s.target && s.target.id === me.id) },
   // 一般
   write: { light: true, rule: (v, me, s) => !v.readOnlyAt(me, s.project) },
   see_project: { light: true, rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project) },
   see_project_events: { rule: (v, me, s) => v.projectsOf(me).includes(s.project) || workspaceAdmin(v, me) },
-  see_member: { rule: (v, me, { target: p }) => !v.isolatedFrom(me) || p.id === me.id || v.crossRole(p) || v.projectsOf(p).some(x => v.projectsOf(me).includes(x))
-    || (p.kind === 'human' && !v.projectsOf(p).length && v.projects().some(pj => v.leads(me, pj))) }, // 專案 leader 另外看得到「還沒有任何專案」的人類，才能把新成員加進自己的專案
+  see_member: { rule: (v, me, { target: p }) => !v.isolatedFrom(me) || p.id === me.id || v.projectsOf(p).some(x => v.projectsOf(me).includes(x))
+    || (p.kind === 'human' && !v.projectsOf(p).length && v.projects().some(pj => v.leads(me, pj))) }, // 專案管理員另外看得到「還沒有任何專案」的人類，才能把新成員加進自己的專案
   see_ai_state: { light: true, rule: (v, me, { target }) => v.projectsOf(target).some(p => v.projectsOf(me).includes(p)) }, // 工作記憶：至少一個共同專案
 };
 export const ACCESS_ACTIONS = Object.freeze(Object.keys(ACTIONS));
@@ -85,23 +85,22 @@ const scopeOf = scope => {
 //   projects()               → 未封存的專案 id
 //   projectsOf(p)            → 他所在、未封存的專案
 //   isolatedFrom(p)          → 不在所有專案（看不到別專案的東西）
-//   isCrossRole(p)           → 跨專案角色
-//   loadLeaders(force)       → 讀 leader 名單（10 秒快取；force 重讀）；leadersOf(pj) → 目前快取裡該專案的 leader id（含封存專案）
-//   loadReadOnly(force)      → 讀唯讀名單；isReadOnly(p, pj) → 目前快取裡 p 在 pj 唯讀（AI 跟著所屬人類）
+//   loadLeaders(force)       → 讀專案管理員名單（10 秒快取；force 重讀）；leadersOf(pj) → 目前快取裡該專案的專案管理員 id（含封存專案）
+//   loadReadOnly(force)      → 讀唯讀成員名單；isReadOnly(p, pj) → 目前快取裡 p 在 pj 是唯讀成員（AI 跟著所屬人類）
 //   titles()                 → { 成員id: { 專案id: 職稱 } }（目前快取）
 //   memberProjectsOf(p)      → 他明確加入的（未封存）專案（不含隱含權限；沒給就用 projectsOf）
 //   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
 export function createAccess(deps) {
-  const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, isCrossRole, leadersOf, isReadOnly, titles } = deps;
+  const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, leadersOf, isReadOnly, titles } = deps;
   const memberProjectsOf = deps.memberProjectsOf || projectsOf;
   // 隱含權限不算成員：工作區管理員在沒加入、也沒有職稱的專案不列為成員（名單、人數、團隊狀態、@所有人都不算）
   const implicitOnly = (p, pj) => !!pj && isWorkspaceAdmin(p) && !memberProjectsOf(p).includes(pj) && !titles()[p.id]?.[pj];
 
   const readOnlyIn = (p, pj) => !!p && !!pj && isReadOnly(p, pj);
   const readOnlyList = p => projects().filter(pj => readOnlyIn(p, pj));
-  const readOnlyError = (p, pj) => new ApiError(403, 'READ_ONLY', `${p?.kind === 'ai' ? '你的所屬人類' : '你'}在「${nameOf(pj)}」是唯讀，只能看，不能發訊息、回覆、建卡、改卡、交接、上傳或私訊。需要權限請找管理員或該專案 leader。AI 收到這個就停下、在本機對話告訴所屬人類，不要重試。`);
+  const readOnlyError = (p, pj) => new ApiError(403, 'READ_ONLY', `${p?.kind === 'ai' ? '你的所屬人類' : '你'}在「${nameOf(pj)}」是唯讀成員，只能看，不能發訊息、回覆、建卡、改卡、交接、上傳或私訊。需要權限請找管理員或該專案的專案管理員。AI 收到這個就停下、在本機對話告訴所屬人類，不要重試。`);
 
-  // 判斷視圖：綁定一份成員資料，判斷都是同步的（可以放在 filter 裡）；leader、唯讀看目前快取（load() 會先讀好）
+  // 判斷視圖：綁定一份成員資料，判斷都是同步的（可以放在 filter 裡）；專案管理員、唯讀成員看目前快取（load() 會先讀好）
   function view({ people = null } = {}) {
     let admin;
     const needPeople = () => { if (!people) throw new Error('權限判斷需要成員資料（access.load 沒讀成員）'); return people; };
@@ -111,7 +110,7 @@ export function createAccess(deps) {
     };
     const isAdmin = isWorkspaceAdmin;
     const v = {
-      people, admin: adminNow, projects, projectsOf, isolatedFrom, crossRole: isCrossRole,
+      people, admin: adminNow, projects, projectsOf, isolatedFrom,
       admins: () => adminsOf(needPeople()),
       // 最後一位保護：p 是工作區管理員，而且除了他沒有別的（降級、移出、停用、離開都要先問）
       lastAdmin: (p, scope = 'workspace') => scopeOf(scope).kind !== 'project' && isAdmin(p) && !adminsOf(needPeople()).some(x => x.id !== p.id),
@@ -124,7 +123,7 @@ export function createAccess(deps) {
         const s = scopeOf(scope);
         if (s.kind === 'platform') return isAdmin(p) ? R.PLATFORM_ADMIN : null;
         if (s.kind === 'workspace') return isAdmin(p) ? R.WORKSPACE_ADMIN : p.status === 'active' && (p.kind === 'human' || p.kind === 'ai') ? R.MEMBER : null;
-        if (isAdmin(p) || v.leads(p, s.project)) return R.PROJECT_ADMIN; // 隱含權限、leader
+        if (isAdmin(p) || v.leads(p, s.project)) return R.PROJECT_ADMIN; // 隱含權限、專案管理員
         if (!projectsOf(p).includes(s.project)) return null;
         return readOnlyIn(p, s.project) ? R.VIEWER : R.PROJECT_MEMBER;
       },
@@ -156,8 +155,8 @@ export function createAccess(deps) {
     switch (action) {
       case 'write': return readOnlyError(me, s.project || readOnlyList(me)[0]);
       case 'manage_project': case 'configure_project': case 'manage_project_members':
-        return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）或這個專案的 leader 能${what || '管理這個專案'}。`);
-      case 'set_title': return new ApiError(403, 'NOT_PROJECT_LEADER', `只有管理員、「${nameOf(s.project)}」的 leader 或 ${s.target?.name || ''} 本人能改他在這個專案的角色。`);
+        return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）或這個專案的專案管理員能${what || '管理這個專案'}。`);
+      case 'set_title': return new ApiError(403, 'NOT_PROJECT_LEADER', `只有管理員、「${nameOf(s.project)}」的專案管理員或 ${s.target?.name || ''} 本人能改他在這個專案的職稱。`);
       case 'see_project': return new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
       case 'see_ai_state': return new ApiError(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。');
       case 'see_member': return new ApiError(404, 'NOT_FOUND', `找不到成員 ${s.target?.id || ''}`);

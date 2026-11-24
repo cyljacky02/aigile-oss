@@ -7,7 +7,7 @@
 import { ROLES, SETTING_FIELDS } from './roles.js';
 import { registerCards, teamCards, workFrom, autoArchive, claimsOf, CLAIM_LOG } from './cards.js';
 import { createStatuses, registerStatusRoutes, firstStatusSql, readStatusList } from './statuses.js'; // 專案看板狀態
-import { createMembership, DEFAULT_WORKSPACE } from './membership.js'; // 成員資格：誰在哪些專案、leader、唯讀、跨專案角色
+import { createMembership, DEFAULT_WORKSPACE, PROJECT_ROLE } from './membership.js'; // 成員資格：誰在哪些專案、專案角色
 import { registerLogin } from './login.js';
 import { registerSkills, KEYISH } from './skills.js'; // 角色技能庫
 import { registerJoin, joinOpen } from './join.js'; // 申請加入專案
@@ -350,12 +350,11 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 卡號（MAIN-12 或舊的 C-xxx）→ seq；找不到回 null
   const seqOfCardId = async id => { const m = /^C-(\d+)$/i.exec(String(id || '').trim()); return m ? Number(m[1]) - 100 : cardSeqByKey(id); };
   const invalidateProjects = () => { projectsAt = 0; };
-  // 成員資格（誰在哪些專案、leader、唯讀、跨專案角色）的讀寫都走 src/membership.js；這裡沿用原本的名字
+  // 成員資格（誰在哪些專案、專案角色）的讀寫都走 src/membership.js；這裡沿用原本的名字
   // projectsOf＝目前所屬（未封存）專案；listOf＝含封存專案的原始清單
   const membership = createMembership({ db, PROJECTS, nowIso, onChange: () => invalidatePeople() });
   // 「能不能」的判斷（唯讀、leader、管理員…）不在這裡，走權限模組 access（見「專案與成員管理」）
-  const { allProjectsOf: listOf, setProjectsStmts, loadLeaders, leadersOf, loadReadOnly, readOnlyOf,
-    loadCrossRoles, isCrossRole: crossRole } = membership;
+  const { allProjectsOf: listOf, setProjectsStmts, loadLeaders, leadersOf, loadReadOnly, readOnlyOf } = membership;
   // 隱含權限：工作區管理員看得到、進得去所有（未封存）專案，但不算成員資格（名單過濾見 access implicitOnlyIn；改成員資格一律用 listOf）
   const projectsOf = p => (isWorkspaceAdmin(p) ? [...PROJECTS] : membership.projectsOf(p));
   function readProjects(raw) {
@@ -1550,14 +1549,14 @@ ${ending}`;
   const access = createAccess({
     loadWorkspace: force => workspace.load(force), membersCreateProjects: () => workspace.membersCreateProjects(),
     ApiError, requireHuman, nameOf: id => nameOf(id), people: ctx => peopleMap(ctx), projects: () => PROJECTS, projectsOf, isolatedFrom,
-    isCrossRole: p => membership.isCrossRole(p), titles: () => projRoles, memberProjectsOf: p => membership.projectsOf(p),
+    titles: () => projRoles, memberProjectsOf: p => membership.projectsOf(p),
     loadLeaders: force => membership.loadLeaders(force), leadersOf: pj => membership.leadersOf(pj),
     loadReadOnly: force => membership.loadReadOnly(force), isReadOnly: (p, pj) => membership.isReadOnly(p, pj),
   });
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
   const assertWritable = (me, pj) => access.check({}, me, 'write', { project: pj || null });
-  // 人類在每個專案各自的角色（AI 角色、跨專案角色不變）。沒有紀錄＝「未設定」
+  // 人類在每個專案各自的職稱（存在 project_roles，API 欄位名稱是 projectRoles）。沒有紀錄＝「未設定」
   const ROLE_CHOICES = ['PO', 'PG', 'UX', 'QA', 'BA', 'SM', 'Sponsor', 'BU'];
   let projRoles = {}, projRolesAt = 0;
   async function loadProjectRoles(force = false) {
@@ -1718,11 +1717,9 @@ ${ending}`;
       openCards: counts.get(r.id) || 0, statuses: book.list(r.id) })); // 看板狀態（順序＝看板欄順序）
   }
   async function projectsResponse(ctx, extra = {}) {
-    await loadCrossRoles();
     await loadLeaders();
     const people = await peopleMap(ctx);
     const admin = adminOf(people);
-    const crossRoleIds = [...people.values()].filter(p => crossRole(p)).map(p => p.id);
     const leaders = Object.fromEntries(PROJECTS.map(pj => [pj, leadersOf(pj).filter(id => people.get(id)?.status === 'active')]));
     await loadReadOnly();
     const readOnly = Object.fromEntries(PROJECTS.map(pj => [pj, readOnlyOf(pj).filter(id => people.get(id)?.status === 'active')]));
@@ -1731,15 +1728,15 @@ ${ending}`;
     const join = Object.fromEntries(PROJECTS.map(pj => [pj, { open: joinOpen(js, pj), note: js[pj]?.note || '', pending: pend.find(x => x.project === pj)?.n || 0 }]));
     const items = await projectViews(ctx);
     const archivedLeaders = Object.fromEntries(items.filter(p => p.archived).map(p => [p.id, leadersOf(p.id).filter(id => people.get(id)?.status === 'active')])); // PLAT-381：leader 要能還原自己封存的專案
-    return { items, adminId: admin?.id || null, adminName: admin?.name || null, crossRoleIds, leaders, archivedLeaders, readOnly, join, ...extra };
+    // 專案管理員 projectAdmins／archivedProjectAdmins、唯讀成員 viewers；leaders／archivedLeaders／readOnly 是舊名（同內容，保留一版）
+    return { items, adminId: admin?.id || null, adminName: admin?.name || null, projectAdmins: leaders, archivedProjectAdmins: archivedLeaders, viewers: readOnly, leaders, archivedLeaders, readOnly, join, ...extra };
   }
 
   // 改成員所屬專案（單人或批次）。移出某專案時，他在該專案負責的未結案卡片退回「待處理」、改為未指派。
   // changes: [{ id, projects: [...] }]；dryRun 只回影響，不寫入
-  async function applyMembership(ctx, me, changes, { dryRun = false, ov = null, byLeader = false } = {}) {
-    const who = pj => (byLeader ? `${me.name}（${nameOf(pj)} leader）` : me.name);
+  async function applyMembership(ctx, me, changes, { dryRun = false, byLeader = false } = {}) {
+    const who = pj => (byLeader ? `${me.name}（${nameOf(pj)} 專案管理員）` : me.name);
     await loadProjects(true);
-    ov = ov || await loadCrossRoles();
     const people = await peopleMap(ctx, changes.map(ch => String(ch.id)));
     const plan = [];
     for (const ch of changes) {
@@ -1749,9 +1746,6 @@ ${ending}`;
       const next = ch.allowEmpty && target.kind === 'human' && Array.isArray(ch.projects) && !ch.projects.length ? [] : readProjects(ch.projects);
       const cur = listOf(target).filter(x => PROJECTS.includes(x));
       const added = next.filter(x => !cur.includes(x)), removed = cur.filter(x => !next.includes(x));
-      if (crossRole(target, ov) && removed.length) {
-        throw new ApiError(400, 'CROSS_ROLE_FIXED', `${target.name} 是跨專案角色（PO／SM），固定屬於所有專案，不能移出「${removed.map(nameOf).join('、')}」。`);
-      }
       if (target.kind === 'ai' && added.length) {
         // AI 的專案不能超出所屬人類；所屬人類同一批被加入也算
         const owner = people.get(target.owner_id);
@@ -1768,7 +1762,7 @@ ${ending}`;
     if (dryRun || !plan.length) return impact;
     const at = nowIso(), stmts = [], book = await statuses.load(ctx);
     for (const x of plan) {
-      stmts.push(...setProjectsStmts(x.target.id, x.next, at));
+      stmts.push(...setProjectsStmts(x.target.id, [...x.next, ...listOf(x.target).filter(pj => !PROJECTS.includes(pj))], at)); // 封存專案的成員資格不動
       for (const c of x.cards) {
         stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE seq = ?`, [at, c.seq]]);
         stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [c.seq, at, me.id, '網頁', `${x.target.name} 已移出「${nameOf(c.project)}」，改為未指派（${backToTodo(book, c)}）`]]);
@@ -1824,186 +1818,127 @@ ${ending}`;
     if (events.length) { await saveProjectRoles(next); await db.batch(events); }
     return { participantId: target.id, projectRoles: projectRolesOf(target) };
   });
-  // 批次：某專案的成員名單（專案管理畫面的「儲存」）；memberIds 以外的人移出此專案
-  route('PUT', '/api/projects/:id/members', async ({ ctx, me, req, params }) => {
-    await access.check(ctx, me, 'assign_members', 'workspace');
+  // ---------- 專案成員（GLOSSARY「成員與權限」）：專案角色 admin＝專案管理員、member＝專案成員、viewer＝唯讀成員 ----------
+  // 專案管理員（含工作區管理員的隱含權限）從工作區成員挑人加入、移出、設定專案角色、任免其他專案管理員；
+  // 不能把工作區以外的人加進來（邀請進工作區是工作區管理員的事），也不能動工作區管理員（對方的上層管理權）。
+  // 舊的成員矩陣（PUT /api/members/matrix）、整批名單（PUT /api/projects/:id/members）、跨專案角色已移除，回 410。
+  const PROJECT_ROLES = Object.values(PROJECT_ROLE);
+  const PROJECT_ROLE_NAME = { [PROJECT_ROLE.ADMIN]: '專案管理員', [PROJECT_ROLE.MEMBER]: '專案成員', [PROJECT_ROLE.VIEWER]: '唯讀成員' };
+  const readProjectRole = v => { if (!PROJECT_ROLES.includes(v)) throw invalid('role 需為 admin（專案管理員）、member（專案成員）或 viewer（唯讀成員）'); return v; };
+  async function memberProject(id, { archivedOk = false } = {}) {
     await loadProjects(true);
-    const row = projectRows.find(r => r.id === params.id);
+    const row = projectRows.find(r => r.id === id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    if (row.archived) throw new ApiError(409, 'PROJECT_ARCHIVED', '專案已封存，請先還原再調整成員');
-    const body = await readJson(req);
-    if (!Array.isArray(body.memberIds)) throw invalid('memberIds 需為陣列');
-    const want = new Set(body.memberIds.map(String));
-    const changes = [];
-    for (const p of (await peopleMap(ctx)).values()) {
-      if (p.status !== 'active' || p.kind === 'system') continue;
-      const cur = listOf(p).filter(x => PROJECTS.includes(x));
-      const has = cur.includes(row.id);
-      if (has === want.has(p.id)) continue;
-      const next = has ? cur.filter(x => x !== row.id) : PROJECTS.filter(x => cur.includes(x) || x === row.id);
-      if (!next.length) throw new ApiError(400, 'NEEDS_ONE_PROJECT', `${p.name} 只屬於這個專案，移出後就沒有任何專案；請先把他加入別的專案。`);
-      changes.push({ id: p.id, projects: next });
-    }
-    const impact = await applyMembership(ctx, me, changes, { dryRun: body.dryRun === true });
-    return projectsResponse(ctx, { dryRun: body.dryRun === true, impact });
+    if (row.archived && !archivedOk) throw new ApiError(409, 'PROJECT_ARCHIVED', '專案已封存，請先還原再調整成員');
+    return row;
+  }
+  const wsAdminIn = (v, p) => v.roleIn(p, 'workspace') === ACCESS_ROLE.WORKSPACE_ADMIN;
+  // 要動的人：要是工作區成員（啟用中、沒被移出工作區）
+  function memberTarget(v, id) {
+    const p = v.people.get(String(id));
+    if (!p || p.kind === 'system') throw new ApiError(404, 'NOT_FOUND', `找不到成員 ${id}`);
+    if (p.status !== 'active' || (p.workspace_status && p.workspace_status !== 'active')) throw new ApiError(400, 'NOT_WORKSPACE_MEMBER', `${p.name} 不是工作區成員，不能加入專案；要先由工作區管理員邀請他加入工作區。`);
+    return p;
+  }
+  // 工作區管理員在專案裡的角色只有工作區管理員能動
+  function upperAdminGuard(v, me, p) {
+    if (wsAdminIn(v, p) && !wsAdminIn(v, me)) throw new ApiError(403, 'CANNOT_MANAGE_ADMIN', `${p.name} 是工作區管理員，只有工作區管理員能調整他在專案裡的角色。`);
+  }
+  // AI 只能是專案成員（唯讀跟著所屬人類）；工作區管理員有隱含權限，不能設成唯讀成員
+  function roleAllowed(v, p, role) {
+    if (p.kind === 'ai' && role !== PROJECT_ROLE.MEMBER) throw invalid('AI 只能是專案成員；它在專案裡唯不唯讀跟著所屬人類');
+    if (role === PROJECT_ROLE.VIEWER && wsAdminIn(v, p)) throw invalid('工作區管理員不能設成唯讀成員');
+  }
+  // AI 在專案裡的角色：所屬人類是唯讀成員就是唯讀成員
+  const memberRoleOf = (p, pj) => (p.kind === 'ai' ? (membership.isReadOnly(p, pj) ? PROJECT_ROLE.VIEWER : PROJECT_ROLE.MEMBER) : membership.roleOf(p.id, pj));
+  async function membersOf(ctx, row) {
+    await loadProjectRoles();
+    const v = await access.load(ctx), people = v.people;
+    const members = [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && listOf(p).includes(row.id) && !v.implicitOnlyIn(p.id, row.id))
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+      .map(p => ({ participantId: p.id, name: p.name, memberType: p.kind, role: memberRoleOf(p, row.id), title: p.kind === 'human' ? projRoles[p.id]?.[row.id] || '' : p.role || '',
+        ...(p.kind === 'ai' ? { ownerParticipantId: p.owner_id } : {}) }));
+    return { project: row.id, members };
+  }
+  // 列出：看得到這個專案的人（專案裡的人、管得了這個專案的人）
+  route('GET', '/api/projects/:id/members', async ({ ctx, me, params }) => {
+    const row = await memberProject(params.id, { archivedOk: true });
+    const v = await access.load(ctx);
+    if (!listOf(me).includes(row.id) && !v.can(me, 'see_project', { project: row.id }) && !v.can(me, 'manage_project', { project: row.id })) throw new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
+    return membersOf(ctx, row);
   });
-
-  // 「成員與權限」一次儲存所有專案。changes: [{ id, projects?, crossRole? }]；跨專案角色打開＝自動在所有專案
-  route('PUT', '/api/members/matrix', async ({ ctx, me, req }) => {
-    await loadProjects(true);
-    await loadCrossRoles(true);
-    const acc = await access.load(ctx, { fresh: true }), people = acc.people;
-    const admin = adminOf(people), isAdmin = acc.can(me, 'assign_members', 'workspace');
-    const canManage = pj => acc.can(me, 'manage_project_members', { project: pj }); // 管理員，或這個（未封存）專案的 leader
-    const isWorkspaceAdmin = p => acc.roleIn(p, 'workspace') === ACCESS_ROLE.WORKSPACE_ADMIN;
-    const myLead = isAdmin ? [] : PROJECTS.filter(canManage);
-    // 非管理員要是某個專案的 leader 才能用，而且只能改那些專案的欄（伺服器檢查，不只靠畫面）
-    if (!isAdmin && !myLead.length) throw new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${admin?.name || '未設定'}）或專案 leader 能管理成員。`);
+  // 加入：participantIds（或 participantId）＋ role（預設專案成員）；AI 的所屬人類要已在專案（或同一次加入）
+  route('POST', '/api/projects/:id/members', async ({ ctx, me, req, params }) => {
+    const row = await memberProject(params.id);
+    const v = await access.check(ctx, me, 'manage_project_members', { project: row.id }, { what: '加入專案成員' });
     const body = await readJson(req);
-    if (!Array.isArray(body.changes)) throw invalid('changes 需為陣列');
-    const person = id => { const p = people.get(String(id)); if (!p || p.status !== 'active' || p.kind === 'system') throw new ApiError(404, 'NOT_FOUND', `找不到成員 ${id}`); return p; };
-    const forbid = msg => new ApiError(403, 'NOT_PROJECT_LEADER', msg);
-    const ov = membership.crossRoles(); // 草稿：這次的修改先套在這裡，檢查完才存
-    const crossChanges = [];
-    for (const ch of body.changes) {
-      if (typeof ch.crossRole !== 'boolean') continue;
-      const p = person(ch.id);
-      if (crossRole(p, ov) === ch.crossRole) continue;
-      if (!isAdmin) throw forbid('只有管理員能設定跨專案角色。');
-      if (!ch.crossRole && p.id === me.id) throw new ApiError(400, 'ADMIN_CROSS_ROLE', '管理員本人不能關掉自己的跨專案角色（避免沒人能管專案）。');
-      membership.setCrossRole(ov, p, ch.crossRole);
-      crossChanges.push({ participantId: p.id, name: p.name, crossRole: ch.crossRole });
-    }
-    const memberChanges = [];
-    for (const ch of body.changes) {
-      if (ch.projects === undefined && ch.crossRole !== true) continue;
-      const p = person(ch.id);
-      const cur = listOf(p).filter(x => PROJECTS.includes(x));
-      if (crossRole(p, ov)) {
-        if (!isAdmin && Array.isArray(ch.projects) && PROJECTS.some(x => !ch.projects.includes(x))) throw forbid(`${p.name} 是跨專案角色，leader 不能改。`);
-        memberChanges.push({ id: p.id, projects: ch.crossRole === true || !Array.isArray(ch.projects) ? [...PROJECTS] : ch.projects }); continue; // 跨專案角色只移出某專案 → CROSS_ROLE_FIXED
-      }
-      if (Array.isArray(ch.projects) && !ch.projects.length && p.kind !== 'human') throw new ApiError(400, 'NEEDS_ONE_PROJECT', `${p.name} 至少要屬於一個專案。`);
-      const next = ch.projects ?? cur;
-      if (!isAdmin) {
-        const touched = [...next.filter(x => !cur.includes(x)), ...cur.filter(x => !next.includes(x))];
-        const outside = touched.filter(x => !canManage(x));
-        if (outside.length) throw forbid(`你不是「${outside.map(nameOf).join('、')}」的 leader，不能改那些專案的成員。`);
-        if (isWorkspaceAdmin(p)) throw forbid('leader 不能改管理員。');
-        if (p.id === me.id && cur.some(x => !next.includes(x))) throw forbid('leader 不能把自己移出專案。');
-      }
-      memberChanges.push({ id: p.id, projects: next, allowEmpty: true });
-    }
-    // leader 指定（只有管理員）：leaderOf＝這位成員要當 leader 的專案；只能人類、要先在那個專案
-    const nextLeaders = Object.fromEntries(PROJECTS.map(pj => [pj, leadersOf(pj)]));
-    const leaderChanges = [];
-    const projAfter = id => memberChanges.find(c => c.id === id)?.projects ?? listOf(people.get(id)).filter(x => PROJECTS.includes(x));
-    for (const ch of body.changes) {
-      if (!Array.isArray(ch.leaderOf)) continue;
-      if (!acc.can(me, 'assign_project_admin', 'workspace')) throw forbid('只有管理員能指定 leader。');
-      const p = person(ch.id), want = ch.leaderOf.map(String);
-      if (p.kind !== 'human' && want.length) throw invalid('leader 只能是人類');
-      for (const pj of PROJECTS) {
-        const has = nextLeaders[pj].includes(p.id), on = want.includes(pj);
-        if (has === on) continue;
-        if (on && !crossRole(p, ov) && !projAfter(p.id).includes(pj)) throw new ApiError(400, 'LEADER_NOT_MEMBER', `${p.name} 要先加入「${nameOf(pj)}」才能當 leader。`);
-        nextLeaders[pj] = on ? [...nextLeaders[pj], p.id] : nextLeaders[pj].filter(x => x !== p.id);
-        leaderChanges.push({ participantId: p.id, name: p.name, project: pj, leader: on });
+    const role = body.role === undefined ? PROJECT_ROLE.MEMBER : readProjectRole(body.role);
+    if (role === PROJECT_ROLE.ADMIN) await access.check(ctx, me, 'assign_project_admin', { project: row.id }, { what: '任命專案管理員' });
+    const ids = [...new Set((Array.isArray(body.participantIds) ? body.participantIds : body.participantId !== undefined ? [body.participantId] : []).map(String))];
+    if (!ids.length) throw invalid('要帶 participantIds（陣列），例如 ["p_xxx"]');
+    const targets = ids.map(id => memberTarget(v, id));
+    for (const p of targets) {
+      if (listOf(p).includes(row.id)) throw new ApiError(409, 'ALREADY_MEMBER', `${p.name} 已經在「${row.name}」`);
+      roleAllowed(v, p, role);
+      if (p.kind === 'ai' && !ids.includes(p.owner_id) && !isWorkspaceAdmin(v.people.get(p.owner_id)) && !listOf(v.people.get(p.owner_id)).includes(row.id)) { // 工作區管理員的 AI：隱含權限算在內
+        throw new ApiError(400, 'OWNER_NOT_IN_PROJECT', `${p.name} 的所屬人類 ${v.people.get(p.owner_id)?.name || ''} 不在「${row.name}」，AI 的專案不能超出所屬人類。`);
       }
     }
-    // 移出專案的人，那個專案的 leader 身分一起拿掉
-    for (const c of memberChanges) for (const pj of PROJECTS) {
-      if (!c.projects.includes(pj) && nextLeaders[pj].includes(c.id)) {
-        nextLeaders[pj] = nextLeaders[pj].filter(x => x !== c.id);
-        leaderChanges.push({ participantId: c.id, name: people.get(c.id).name, project: pj, leader: false, auto: true });
-      }
+    const at = nowIso(), stmts = [];
+    for (const p of targets) {
+      stmts.push(...membership.addMemberStmts(p.id, row.id, role), ['UPDATE participants SET updated_at = ? WHERE id = ?', [at, p.id]],
+        projEvent(row.id, me.id, `${me.name} 把 ${p.name} 加入專案（${PROJECT_ROLE_NAME[role]}）`, at));
     }
-    // 每個專案的人類角色，跟加入／移出一起存
-    await loadProjectRoles(true);
-    const roleChanges = [];
-    for (const ch of body.changes) {
-      if (!ch.projectRoles || typeof ch.projectRoles !== 'object' || Array.isArray(ch.projectRoles)) continue;
-      const p = person(ch.id);
-      if (p.kind !== 'human') throw invalid('AI 的角色在「我的 AI」改，不分專案');
-      const after = crossRole(p, ov) ? [...PROJECTS] : projAfter(p.id);
-      for (const [pj, v] of Object.entries(ch.projectRoles)) {
-        if (!after.includes(pj)) throw invalid(`${p.name} 不在「${nameOf(pj)}」，不能設那個專案的角色`);
-        if (!canManage(pj)) throw forbid(`你不是「${nameOf(pj)}」的 leader，不能改那個專案的角色。`);
-        const role = readRole(v);
-        if ((projRoles[p.id]?.[pj] || '') !== role) roleChanges.push({ participantId: p.id, name: p.name, project: pj, role });
-      }
-    }
-    // 唯讀：只能人類、要在那個專案、管理員與該專案 leader 不能設；他和名下 AI 負責的未結案卡退回待處理
-    await loadReadOnly(true);
-    const nextRo = Object.fromEntries(PROJECTS.map(pj => [pj, readOnlyOf(pj)]));
-    const roChanges = [];
-    for (const ch of body.changes) {
-      if (!Array.isArray(ch.readOnlyIn)) continue;
-      const p = person(ch.id);
-      if (p.kind !== 'human') throw invalid('唯讀只能設人類；他名下的 AI 會跟著唯讀');
-      const want = ch.readOnlyIn.map(String), after = crossRole(p, ov) ? [...PROJECTS] : projAfter(p.id);
-      for (const pj of PROJECTS) {
-        const has = nextRo[pj].includes(p.id), on = want.includes(pj);
-        if (has === on) continue;
-        if (!canManage(pj)) throw forbid(`你不是「${nameOf(pj)}」的 leader，不能改那個專案的權限。`);
-        if (on && !after.includes(pj)) throw invalid(`${p.name} 不在「${nameOf(pj)}」，不能設唯讀`);
-        if (on && isWorkspaceAdmin(p)) throw invalid('管理員不能設成唯讀');
-        if (on && nextLeaders[pj].includes(p.id)) throw invalid(`${p.name} 是「${nameOf(pj)}」的 leader，先取消 leader 再設唯讀`);
-        nextRo[pj] = on ? [...nextRo[pj], p.id] : nextRo[pj].filter(x => x !== p.id);
-        const ids = [p.id, ...[...people.values()].filter(a => a.kind === 'ai' && a.owner_id === p.id).map(a => a.id)];
-        const cards = on ? await db.all("SELECT seq, project, proj_no, status, status_id FROM cards WHERE project = ? AND status IN ('待整理','待處理','進行中','待確認','受阻') AND owner_id IN (SELECT value FROM json_each(?)) ORDER BY seq", pj, JSON.stringify(ids)) : [];
-        roChanges.push({ participantId: p.id, name: p.name, project: pj, readOnly: on, returnedCards: cards.map(pubNo), rows: cards });
-      }
-    }
-    for (const pj of PROJECTS) if (nextLeaders[pj].some(id => nextRo[pj].includes(id))) throw invalid(`唯讀的人不能當 leader（${nameOf(pj)}）`);
-    for (const c of memberChanges) for (const pj of PROJECTS) if (!c.projects.includes(pj) && nextRo[pj].includes(c.id)) nextRo[pj] = nextRo[pj].filter(x => x !== c.id); // 移出專案就不用記唯讀
-    const dryRun = body.dryRun === true;
-    const impact = await applyMembership(ctx, me, memberChanges, { dryRun, ov, byLeader: !isAdmin });
-    if (!dryRun && (roChanges.length || JSON.stringify(nextRo) !== JSON.stringify(Object.fromEntries(PROJECTS.map(pj => [pj, readOnlyOf(pj)]))))) {
-      const at = nowIso(), stmts = membership.setReadOnlyStmts(nextRo);
-      const book = await statuses.load(ctx);
-      for (const c of roChanges) {
-        stmts.push(projEvent(c.project, me.id, `${me.name} 把 ${c.name} 設為${c.readOnly ? '唯讀' : '一般成員'}${c.returnedCards.length ? `（${c.returnedCards.length} 張卡退回${todoName(book, c.project)}）` : ''}`, at));
-        for (const r of c.rows) {
-          stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE seq = ?`, [at, r.seq]]);
-          stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [r.seq, at, me.id, '網頁', `${c.name} 在「${nameOf(c.project)}」改為唯讀，改為未指派（${backToTodo(book, r)}）`]]);
-        }
-      }
-      await db.batch(stmts);
-      await loadReadOnly(true);
-      invalidatePeople();
-    }
-    if (!dryRun && roleChanges.length) {
-      await loadProjectRoles(true); // applyMembership 可能清掉了移出專案的角色
-      const next = { ...projRoles }, at = nowIso();
-      for (const c of roleChanges) { const o = { ...(next[c.participantId] || {}) }; if (c.role) o[c.project] = c.role; else delete o[c.project]; next[c.participantId] = o; }
-      await saveProjectRoles(next);
-      await db.batch(roleChanges.map(c => projEvent(c.project, me.id, `${me.name} 把 ${c.name} 的角色設為「${c.role || '未設定'}」`, at)));
-    }
-    if (!dryRun) {
-      const at = nowIso(), stmts = [];
-      if (crossChanges.length) {
-        stmts.push(...membership.setCrossRolesStmts(ov));
-        stmts.push(...crossChanges.flatMap(c => PROJECTS.map(pj => projEvent(pj, me.id, `${me.name} ${c.crossRole ? '設' : '取消'} ${c.name} 為跨專案角色`, at))));
-      }
-      if (leaderChanges.length) {
-        stmts.push(...membership.setLeadersStmts(nextLeaders));
-        stmts.push(...leaderChanges.map(c => projEvent(c.project, me.id, c.auto ? `${c.name} 已移出，不再是 leader` : `${me.name} ${c.leader ? '指定' : '取消'} ${c.name} 為 leader`, at)));
-      }
-      if (stmts.length) await db.batch(stmts);
-      await loadCrossRoles(true); await loadLeaders(true);
-      // leader 改的成員：通知管理員（訊息發在該專案）
-      if (!isAdmin && impact.length && admin) {
-        const book = await statuses.load(ctx);
-        for (const pj of myLead) {
-          const lines = impact.flatMap(x => [...(x.added.includes(pj) ? [`把 ${x.name} 加入${nameOf(pj)}`] : []), ...(x.removed.includes(pj) ? [`把 ${x.name} 移出${nameOf(pj)}${x.returnedCards.length ? `（${x.returnedCards.length} 張卡退回${todoName(book, pj)}）` : ''}`] : [])]);
-          if (!lines.length) continue;
-          await createMessage(ctx, me, { text: `[通知] 【${nameOf(pj)}】${me.name}（${nameOf(pj)} leader）${lines.join('；')}`.slice(0, 1900), requestId: `leader_${me.id}_${pj}_${at}`.slice(0, 128), recipientIds: [admin.id], project: pj }).catch(() => {});
-        }
-      }
-    }
-    return scopeProjects(await projectsResponse(ctx, { dryRun, impact, crossChanges, leaderChanges, roleChanges, roChanges: roChanges.map(({ rows, ...c }) => c) }), me);
+    await db.batch(stmts);
+    invalidatePeople(); await membership.loadMembers(true); ctx.people = null;
+    return { __status: 201, added: targets.map(p => p.id), ...(await membersOf(ctx, row)) };
   });
+  // 設定專案角色（要已在專案）。改成唯讀成員：他和名下 AI 在這個專案負責的未結案卡退回待處理（dryRun 先看）
+  route('PUT', '/api/projects/:id/members/:pid', async ({ ctx, me, req, params }) => {
+    const row = await memberProject(params.id);
+    const v = await access.check(ctx, me, 'manage_project_members', { project: row.id }, { what: '設定專案角色' });
+    const body = await readJson(req);
+    const role = readProjectRole(body.role), dryRun = body.dryRun === true;
+    const p = memberTarget(v, params.pid);
+    if (!listOf(p).includes(row.id)) throw new ApiError(404, 'NOT_MEMBER', `${p.name} 不在「${row.name}」，請先加入專案`);
+    upperAdminGuard(v, me, p);
+    roleAllowed(v, p, role);
+    const cur = membership.roleOf(p.id, row.id);
+    if (role === PROJECT_ROLE.ADMIN || cur === PROJECT_ROLE.ADMIN) await access.check(ctx, me, 'assign_project_admin', { project: row.id }, { what: '任免專案管理員' });
+    const ids = [p.id, ...[...v.people.values()].filter(a => a.kind === 'ai' && a.owner_id === p.id).map(a => a.id)];
+    const cards = role === PROJECT_ROLE.VIEWER && cur !== PROJECT_ROLE.VIEWER
+      ? await db.all("SELECT seq, project, proj_no, status, status_id FROM cards WHERE project = ? AND status IN ('待整理','待處理','進行中','待確認','受阻') AND owner_id IN (SELECT value FROM json_each(?)) ORDER BY seq", row.id, JSON.stringify(ids)) : [];
+    const out = { project: row.id, participantId: p.id, role, previousRole: cur, returnedCards: cards.map(pubNo) };
+    if (dryRun || cur === role) return { ...out, dryRun };
+    const at = nowIso(), book = await statuses.load(ctx);
+    const stmts = [...membership.setMemberRoleStmts(p.id, row.id, role), ['UPDATE participants SET updated_at = ? WHERE id = ?', [at, p.id]],
+      projEvent(row.id, me.id, `${me.name} 把 ${p.name} 設為${PROJECT_ROLE_NAME[role]}${cards.length ? `（${cards.length} 張卡退回${todoName(book, row.id)}）` : ''}`, at)];
+    for (const c of cards) {
+      stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE seq = ?`, [at, c.seq]]);
+      stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [c.seq, at, me.id, '網頁', `${p.name} 在「${row.name}」改為唯讀成員，改為未指派（${backToTodo(book, c)}）`]]);
+    }
+    await db.batch(stmts);
+    invalidatePeople(); await membership.loadMembers(true);
+    return { ...out, dryRun };
+  });
+  // 移出：他在這個專案負責的未結案卡退回待處理、職稱清掉（dryRun 先看）；封存專案的成員資格不動
+  route('DELETE', '/api/projects/:id/members/:pid', async ({ ctx, me, req, params }) => {
+    const row = await memberProject(params.id);
+    const v = await access.check(ctx, me, 'manage_project_members', { project: row.id }, { what: '移出專案成員' });
+    const dryRun = (await readJson(req)).dryRun === true;
+    const p = memberTarget(v, params.pid);
+    if (!listOf(p).includes(row.id)) throw new ApiError(404, 'NOT_MEMBER', `${p.name} 不在「${row.name}」，請先加入專案`);
+    upperAdminGuard(v, me, p);
+    if (membership.roleOf(p.id, row.id) === PROJECT_ROLE.ADMIN) await access.check(ctx, me, 'assign_project_admin', { project: row.id }, { what: '任免專案管理員' });
+    const next = listOf(p).filter(x => PROJECTS.includes(x) && x !== row.id);
+    if (p.kind !== 'human' && !next.length) throw new ApiError(400, 'NEEDS_ONE_PROJECT', `${p.name} 至少要屬於一個專案。`);
+    const [impact] = await applyMembership(ctx, me, [{ id: p.id, projects: next, allowEmpty: true }], { dryRun, byLeader: !wsAdminIn(v, me) });
+    return { project: row.id, participantId: p.id, removed: !dryRun, dryRun, returnedCards: impact?.returnedCards || [] };
+  });
+  // 舊的管理用端點：已移除
+  const goneMembers = () => { throw new ApiError(410, 'GONE', '這個端點已移除：專案成員請改用 GET／POST /api/projects/:id/members（列出、加入）與 PUT／DELETE /api/projects/:id/members/:participantId（設定專案角色、移出）；跨專案角色已取消。'); };
+  route('PUT', '/api/members/matrix', goneMembers);
+  route('PUT', '/api/projects/:id/members', goneMembers);
   // UX ：不屬於全部專案的人，專案清單只回自己所屬的專案（不露出別專案名稱）
   // PLAT-381：被隔離的成員也列出自己所屬、已封存的專案（leader 才能還原）
   const scopeProjects = (r, me) => { if (!isolatedFrom(me)) return r; const mine = [...new Set([...projectsOf(me), ...listOf(me)])]; return { ...r, items: r.items.filter(p => mine.includes(p.id)), leaders: Object.fromEntries(Object.entries(r.leaders || {}).filter(([k]) => mine.includes(k))), archivedLeaders: Object.fromEntries(Object.entries(r.archivedLeaders || {}).filter(([k]) => mine.includes(k))), readOnly: Object.fromEntries(Object.entries(r.readOnly || {}).filter(([k]) => mine.includes(k))), join: Object.fromEntries(Object.entries(r.join || {}).filter(([k]) => mine.includes(k))) }; };
@@ -2140,16 +2075,12 @@ ${ending}`;
     const id = randId('prj'), at = nowIso();
     // 看板狀態（選填）：建立時直接給整份清單；沒給就是預設狀態組（第一次讀狀態時補上）
     const initial = body.statuses === undefined || body.statuses === null ? [] : readStatusList(body.statuses, invalid);
-    await loadCrossRoles();
     const stmts = [['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at) VALUES (?,?,0,?,?,?)', [id, name, DEFAULT_WORKSPACE, me.id, at]], projEvent(id, me.id, `${me.name} 建立專案`, at),
       ...initial.map((st, i) => ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [id, st.name, st.category, i, st.color]]),
       ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['slug:' + id, slug]]];
     if (code) stmts.push(["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['pcode:' + id, code]]);
-    // 新專案只含建立者＋目前的跨專案角色（不一定是 PO、SM，可在成員與權限開關）；其他人由管理員在專案成員勾選加入
-    for (const p of (await peopleMap(ctx)).values()) {
-      if (p.kind === 'system' || p.status !== 'active' || !(p.id === me.id || crossRole(p))) continue;
-      stmts.push(...setProjectsStmts(p.id, [...listOf(p), id], at));
-    }
+    // 新專案只含建立者；其他人由專案管理員從工作區成員挑人加入
+    stmts.push(...setProjectsStmts(me.id, [...listOf(me), id], at));
     stmts.push(...membership.makeProjectAdminStmts(me.id, id)); // 建立專案的人是該專案的專案管理員
     await db.batch(stmts);
     invalidatePeople(); invalidateProjects();
@@ -2917,7 +2848,7 @@ ${ending}`;
     return (await readState(target.id)) || { state: null, updatedAt: null };
   });
   // 名冊可見範圍（誰看得到誰）：權限模組的 see_member
-  // 不屬於全部專案的成員，只看得到同專案的人＋跨專案角色（新成員至少找得到管理員、PO）；專案 leader 另外看得到「還沒有任何專案」的人類
+  // 不屬於全部專案的成員，只看得到同專案的人；專案管理員另外看得到「還沒有任何專案」的人類
   // ---------- 停用／恢復成員、交出管理員（只有管理員） ----------
   // 停用：所有裝置登出、登入碼與配對碼作廢、他的 AI 的 Token 全部換掉（恢復後要主人重發）；名單標「已停用」。資料、卡片、訊息都留著
   async function humanTarget(ctx, me, id) {
@@ -2997,7 +2928,7 @@ ${ending}`;
     return { participant: publicParticipant(after, await peopleMap(ctx)) };
   });
   route('GET', '/api/participants', async ({ ctx, me, url }) => {
-    await loadCrossRoles(); await loadProjectRoles();
+    await loadProjectRoles();
     const v = await access.load(ctx), people = v.people;
     const now = Date.now();
     const items = [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && v.can(me, 'see_member', { target: p }))
@@ -3783,7 +3714,6 @@ ${ending}`;
       if (closed.has(x.messageId) || !askedMe(x)) continue;
       if (await canSeeMessage(me, { project: x.project, created_at: x.at })) { const { _ask, ...rest } = x; decisions.push(rest); }
     }
-    await loadCrossRoles();
     const v = access.view({ people });
     const sees = id => { const p = people.get(id); return !!p && v.can(me, 'see_member', { target: p }); };
     // 尚未回應：看得到那個人、也看得到那則訊息才列（曾經會把別專案的訊息 ID 給沒加入的人）
