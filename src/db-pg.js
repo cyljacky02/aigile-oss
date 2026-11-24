@@ -80,7 +80,8 @@ export function pgTarget(env, dataDir) {
   return null;
 }
 
-export async function openPgDb(url, { legacyProjects = true, max, schema } = {}) {
+// exitOnIdle：連線都閒置時不擋住程序結束（測試用；不然沒關資料庫的測試會多等連線池的閒置逾時 10 秒）
+export async function openPgDb(url, { legacyProjects = true, max, schema, exitOnIdle = false } = {}) {
   const pg = await loadPg();
   if (schema) { // 指定 schema（DATABASE_SCHEMA）：沒有就建，之後所有表都放在裡面
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(schema)) throw new Error(`DATABASE_SCHEMA 只能用英文字母、數字、底線：${schema}`);
@@ -88,7 +89,7 @@ export async function openPgDb(url, { legacyProjects = true, max, schema } = {})
     await c.connect();
     try { await c.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`); } finally { await c.end(); }
   }
-  const pool = new pg.Pool({ connectionString: url, max: max ?? (Number(process.env.PG_POOL_MAX) || 10), types: typesFor(pg), ...(schema ? { options: `-c search_path="${schema}"` } : {}) });
+  const pool = new pg.Pool({ connectionString: url, max: max ?? (Number(process.env.PG_POOL_MAX) || 10), types: typesFor(pg), allowExitOnIdle: exitOnIdle, ...(schema ? { options: `-c search_path="${schema}"` } : {}) });
   pool.on('error', e => console.error(`Postgres 連線中斷（${describeUrl(url)}）：${e.message}`)); // 閒置連線斷掉不讓整個程式掛掉
   try {
     const up = await migratePg(pool, { schema: fs.readFileSync(SCHEMA_FILE, 'utf8'), dir: MIGRATIONS_DIR });
