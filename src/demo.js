@@ -55,8 +55,8 @@ const TEXT = {
   },
 };
 
-export function registerDemo({ route, db, ApiError, randId, nowIso, requireAdmin, requireHuman, newCode, newToken, afterChange }) {
-  const adminOnly = async (ctx, me) => { requireHuman(me); await requireAdmin(ctx, me, '載入或清除示範資料'); };
+export function registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, afterChange }) {
+  const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '載入或清除示範資料' }); };
   const loadMark = async () => { try { return JSON.parse((await db.get('SELECT value FROM app_settings WHERE key = ?', DEMO_KEY))?.value || 'null'); } catch { return null; } };
   const freeName = async base => { for (let i = 0; ; i++) { const n = i ? `${base}${i + 1}` : base; if (!(await db.get('SELECT 1 AS x FROM participants WHERE name = ?', n))) return n; } };
 

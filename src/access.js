@@ -23,7 +23,8 @@ export const adminOf = people => {
   return hs.find(p => Number(p.is_admin) === 1) || hs.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id)))[0] || null;
 };
 
-// 動作表。admin：管理動作（AI 一律不行）；human：check 時先擋 AI（回「僅限人類」）；light：只看唯讀名單，不必讀成員
+// 動作表。admin：管理動作（AI 一律不行）；human：check 時先擋 AI（回「僅限人類」）；light：只看唯讀名單，不必讀成員；
+// leads：看 leader 名單，check 時重讀（別份程式剛改過也算數）
 // rule(v, me, s)：v 是 load() 的判斷視圖，s 是整理過的範圍 { kind, project, target }
 const platformAdmin = (v, me) => v.roleIn(me, 'platform') === R.PLATFORM_ADMIN;
 const workspaceAdmin = (v, me) => v.roleIn(me, 'workspace') === R.WORKSPACE_ADMIN;
@@ -46,10 +47,10 @@ const ACTIONS = {
   set_project_code: { admin: true, rule: workspaceAdmin },
   set_project_slug: { admin: true, rule: workspaceAdmin },
   // 專案（專案管理員）
-  manage_project: { admin: true, human: true, rule: (v, me, s) => v.roleIn(me, s) === R.PROJECT_ADMIN }, // 改名、封存、還原、看板狀態、知識庫、技能審核、加入申請（封存的專案也算）
-  configure_project: { admin: true, rule: activeProjectAdmin }, // 程式庫、私訊開關、AI 職務
-  manage_project_members: { admin: true, rule: activeProjectAdmin }, // 成員與權限頁：加入／移出、唯讀、職稱
-  set_title: { admin: true, rule: (v, me, s) => activeProjectAdmin(v, me, s) || (!!s.target && s.target.id === me.id) },
+  manage_project: { admin: true, human: true, leads: true, rule: (v, me, s) => v.roleIn(me, s) === R.PROJECT_ADMIN }, // 改名、封存、還原、看板狀態、知識庫、技能審核、加入申請（封存的專案也算）
+  configure_project: { admin: true, leads: true, rule: activeProjectAdmin }, // 程式庫、私訊開關、AI 職務
+  manage_project_members: { admin: true, leads: true, rule: activeProjectAdmin }, // 成員與權限頁：加入／移出、唯讀、職稱
+  set_title: { admin: true, leads: true, rule: (v, me, s) => activeProjectAdmin(v, me, s) || (!!s.target && s.target.id === me.id) },
   // 一般
   write: { light: true, rule: (v, me, s) => !v.readOnlyAt(me, s.project) },
   see_project: { light: true, rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project) },
@@ -142,7 +143,7 @@ export function createAccess(deps) {
     const def = ACTIONS[action];
     if (!def) throw new Error(`沒有這個權限動作：${action}`);
     if (def.human) requireHuman(me);
-    const v = await load(ctx, { fresh: true, light: def.light });
+    const v = await load(ctx, { fresh: !!def.leads, light: def.light });
     if (!v.can(me, action, scope)) throw denial(v, me, action, scopeOf(scope), opts);
     return v;
   }

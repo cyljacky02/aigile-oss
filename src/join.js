@@ -2,13 +2,15 @@
 // 開放設定存在 app_settings 的 join_settings（{ 專案id: { open, note } }，一列）；申請存在 join_requests 表
 // 通知用帳號通知（account_notices）：送出→該專案 leader（沒有 leader 就管理員）；結果→申請人
 // 開放申請：沒設過＝開放（新專案、預設專案、引導建的專案都一樣）；leader 關掉才存 open: false
+import { ACCESS_ROLE } from './access.js';
+
 export const joinOpen = (set, pj) => (set && set[pj] ? set[pj].open !== false : true);
 export const JOIN_NOTE_MAX = 200;
 export const JOIN_DESC_MAX = 100;
 
 export function registerJoin(d) {
   const { route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf,
-    loadProjects, projectRows, loadLeaders, adminOf, applyMembership, loadProjectRoles, saveProjectRoles, projRoles, readRole,
+    loadProjects, projectRows, loadLeaders, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles, readRole,
     loadReadOnly, invalidatePeople, projEvent, liveTo = () => {} } = d; // liveTo：內建即時通道（本機／Docker），申請結果幾秒內推給申請人
 
   async function joinSettings() {
@@ -17,12 +19,10 @@ export function registerJoin(d) {
   }
   const notice = (pid, kind, detail) => ['INSERT INTO account_notices (id, participant_id, kind, detail, created_at) VALUES (?,?,?,?,?)', [randId('ntc'), pid, kind, String(detail || '').slice(0, 200), Date.now()]];
   const activeProject = pj => projectRows().find(r => r.id === pj);
-  // 誰能審：該專案 leader、群組管理員（只有人類）
+  // 誰能審：該專案 leader、群組管理員（只有人類）＝權限模組的 manage_project
   async function reviewer(ctx, me, pj) {
-    requireHuman(me);
-    const [leaders, admin] = [await loadLeaders(), adminOf(await peopleMap(ctx))];
-    if (admin?.id === me.id || (leaders[pj] || []).includes(me.id)) return { admin: admin?.id === me.id };
-    throw new ApiError(403, 'NOT_REVIEWER', `只有「${nameOf(pj)}」的 leader 或群組管理員能處理申請。`);
+    const v = await access.check(ctx, me, 'manage_project', { project: pj }, { deny: () => new ApiError(403, 'NOT_REVIEWER', `只有「${nameOf(pj)}」的 leader 或群組管理員能處理申請。`) });
+    return { admin: v.roleIn(me, 'workspace') === ACCESS_ROLE.WORKSPACE_ADMIN };
   }
   const reviewersOf = (pj, leaders, admin) => { const l = (leaders[pj] || []).filter(Boolean); return l.length ? l : admin ? [admin.id] : []; };
 
@@ -86,9 +86,8 @@ export function registerJoin(d) {
   // leader／管理員：待審申請（管理員看全部，leader 看自己帶的專案）；?project= 只看一個
   route('GET', '/api/join-requests', async ({ ctx, me, url }) => {
     requireHuman(me);
-    const [leaders, people] = [await loadLeaders(), await peopleMap(ctx)];
-    const isAdmin = adminOf(people)?.id === me.id;
-    const pjs = isAdmin ? PROJECTS : PROJECTS.filter(pj => (leaders[pj] || []).includes(me.id));
+    const v = await access.load(ctx), people = v.people;
+    const pjs = PROJECTS.filter(pj => v.can(me, 'manage_project', { project: pj })); // 管理員看全部，leader 看自己帶的專案
     const only = url.searchParams.get('project');
     const want = only ? pjs.filter(pj => pj === only) : pjs;
     if (!want.length) return { items: [] };

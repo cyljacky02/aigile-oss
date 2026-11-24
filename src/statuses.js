@@ -138,12 +138,12 @@ export function readStatusList(raw, invalid) {
 
 // 狀態管理 API：讀（看得到這個專案的人）；新增、改名／改色／改類別、排序、刪除（管理員或該專案 leader）
 // moveCardStmts(ctx, me, card, target, at)：刪除狀態時把卡搬到目標狀態的語句（跨類別照卡片規則；卡片同時被改過就讓交易失敗），由 cards.js 提供
-export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, requireAdminOrLeader, canSeeProject, projectExists, cardKey, moveCardStmts, invalidatePeople, projEvent }) {
+export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, access, projectExists, cardKey, moveCardStmts, invalidatePeople, projEvent }) {
   const notFound = () => new ApiError(404, 'NOT_FOUND', '找不到這個狀態');
   async function projectOf(ctx, me, pj, { manage = false } = {}) {
     if (!(await projectExists(pj))) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    if (manage) await requireAdminOrLeader(ctx, me, pj, '改專案的看板狀態');
-    else if (!canSeeProject(me, pj)) throw new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
+    if (manage) await access.check(ctx, me, 'manage_project', { project: pj }, { what: '改專案的看板狀態' });
+    else await access.check(ctx, me, 'see_project', { project: pj });
     return statuses.load(ctx);
   }
   // 改設定前先把卡片的 status_id 補齊，之後「狀態裡有幾張卡」只看 status_id

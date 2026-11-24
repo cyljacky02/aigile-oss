@@ -8,7 +8,7 @@ export const UPDATE_REPO = 'alansid/aigile-oss';
 const DAY_MS = 24 * 3600_000;
 const TIMEOUT_MS = 5000;
 
-export function registerUpdateCheck({ route, db, requireAdmin, requireHuman, config = {} }) {
+export function registerUpdateCheck({ route, db, access, requireHuman, config = {} }) {
   const enabled = !(config.updateCheck === false || String(config.updateCheck ?? '') === '0');
   const doFetch = config.updateFetch || ((...a) => fetch(...a));
   const load = async () => { try { return JSON.parse((await db.get("SELECT value FROM app_settings WHERE key = 'update_check'"))?.value || 'null'); } catch { return null; } };
@@ -28,7 +28,7 @@ export function registerUpdateCheck({ route, db, requireAdmin, requireHuman, con
 
   route('GET', '/api/admin/update-check', async ({ ctx, me }) => {
     requireHuman(me);
-    await requireAdmin(ctx, me, '看新版本');
+    await access.check(ctx, me, 'manage_platform', 'platform', { what: '看新版本' });
     if (!enabled) return { enabled: false, current: APP_VERSION };
     let c = await load();
     if (!c || !(Date.now() - Number(c.at) < DAY_MS)) {
