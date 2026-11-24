@@ -86,7 +86,7 @@ try {
   // 各區內容；網址跟著區塊、重新整理停在原處
   const sec = async (k, sel) => { await click(`.adm-nav [data-adm="${k}"]`); await until(() => js(`location.pathname === '/admin/${k}' && !!document.querySelector(${JSON.stringify(sel)})`), 8000, '區塊 ' + k); };
   await sec('group', '.pm-group-name input');
-  await until(() => js("!!document.querySelector('.pm-join-set [data-pp=\"openjoin\"]') && !!document.querySelector('#pm-room-code')"), 8000, '工作區設定有開放註冊、群組密碼');
+  await until(() => js("!!document.querySelector('.pm-join-set [data-pp=\"openjoin\"]') && !!document.querySelector('#pm-room-code')"), 8000, '工作區設定有開放註冊、房間碼');
   await shot('3-電腦-工作區設定');
   await sec('projects', '.pm-ptable');
   assert.ok(await js("!!document.querySelector('[data-pm-newproj]') && !!document.querySelector('[data-pm-more]')"), '專案：新增、⋯ 都在');

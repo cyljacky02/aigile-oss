@@ -2467,7 +2467,8 @@ html:not(.gn-ready) [data-group-name] { visibility: hidden; }
 .pm-ro-btn.on { border-style: solid; background: var(--surface-2); color: var(--text); font-weight: 600; }
 .ro-tag { margin-left: 6px; }
 .pm-pick-ro { margin: 8px 0 0; font-size: .85rem; }
-.inv-ro { margin: 0 8px; font-size: .8rem; }
+.inv-prole { margin: 0 8px; height: 36px; padding: 0 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: .8rem; }
+.inv-prole:disabled { opacity: .5; }
 
 /* 第一批：總覽側欄列專案、選單分組、專案卡清爽化 */
 .hub-side { display: flex; flex-direction: column; gap: 2px; }

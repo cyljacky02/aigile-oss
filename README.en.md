@@ -36,7 +36,7 @@ docker compose up -d     # http://localhost:3000, username admin, password admin
 
 > ⚠ **Set `ADMIN_PASSWORD` before putting it on the internet** (put `ADMIN_PASSWORD=your-password` in a `.env` file in this folder). Without it the admin login is admin / admin, and **whoever opens the URL first becomes the admin**. For a trial on your own computer or office network you can skip it, but change the username and password on first login (the app forces you to).
 >
-> **A public deployment also needs:** an HTTPS reverse proxy in front (Caddy, nginx, Cloudflare Tunnel…) with `TRUST_PROXY=1` and `APP_URL=https://your-site`; with open sign-up, set a group password or turn on human verification (see "How people join" and "Human verification"). Full checklist: [SECURITY.md](SECURITY.md).
+> **A public deployment also needs:** an HTTPS reverse proxy in front (Caddy, nginx, Cloudflare Tunnel…) with `TRUST_PROXY=1` and `APP_URL=https://your-site`; with open sign-up, set a room code or turn on human verification (see "How people join" and "Human verification"). Full checklist: [SECURITY.md](SECURITY.md).
 
 First visit: log in with **admin / admin** → you are asked to change the username and password → the first-time setup guide opens (group name, first project, invite members, first AI; every step can be skipped).
 
@@ -209,13 +209,13 @@ First login and setup are the same as above.
 <details>
 <summary><b>Show details</b></summary>
 
-- **Sign up**: open the site, click "First time here? Sign up" on the login page, enter a display name, username and password, then log in with that username and password from now on. New members are regular members (the admin is the default account above). The entry is hidden when open sign-up is off.
+- **Sign up**: open the site, click "First time here? Sign up" on the login page, enter a display name, username and password, then log in with that username and password from now on. New members are workspace members with no projects yet (the admin is the default account above; only when the platform has no platform admin yet does the first person to sign up become platform admin and workspace admin). The entry is hidden when open sign-up is off.
 - **Request to join projects**: new members have no projects yet; the home screen lists projects open for requests. Click "Request to join", add a line about what you want to do, and send. The project lead (or the admin if there is none) is notified and approves or declines on "Needs your attention" or in "Member management"; after approval the requester's page loads the project within a minute.
 - **Projects accept requests by default**: the default project, projects created in setup and later projects are open by default. To stop requests, a project lead or admin turns off "New members can request to join this project" in "Member management" (or setup step 3); then only the admin can add people. The demo project never accepts requests.
-- **Invite links**: admins can also send one-time invite links (valid 24 hours by default, adjustable) with projects and role preset; invited people also set a username and password when they open the link.
+- **Invite links**: workspace admins can also send one-time invite links (valid 24 hours by default, adjustable). Each checked project gets a preset project role (project member, viewer or project admin) and title, joined on accept; invited people set a username and password when they open the link, and an account is created if they don't have one. Project admins can't invite. People removed from the workspace can be invited back with their existing account.
 - **Login**: the login page defaults to username and password; on a new device you can also use "Other ways to sign in" — pair a device (6 digits generated on a signed-in device) or a login code. Usernames are 4–30 characters (letters, digits, `. _ -`), passwords at least 8; `admin` is reserved for the default admin.
-- **Set a group password for public deployments**: once set, everyone must enter it to sign up. To allow invite links only, turn off open sign-up.
-- **Change it on the admin page, no redeploy**: "Admin settings › Workspace settings" renames the workspace, sets who can create projects (all members or admins only; whoever creates a project becomes its project admin; new installs default to all members, sites upgraded from an older version default to admins only), toggles open sign-up, sets or clears the group password and changes attachment retention. Changes are stored in the database, take effect immediately and are recorded in the workspace change log. The group password is stored only as a hash; you can't see it after saving — just reset it if forgotten.
+- **Set a room code for public deployments**: once set, everyone must enter it to sign up. To allow invite links only, turn off open sign-up.
+- **Change it on the admin page, no redeploy**: "Admin settings › Workspace settings" renames the workspace, sets who can create projects (all members or admins only; whoever creates a project becomes its project admin; new installs default to all members, sites upgraded from an older version default to admins only), toggles open sign-up, sets or clears the room code and changes attachment retention. Changes are stored in the database, take effect immediately and are recorded in the workspace change log. The room code is stored only as a hash; you can't see it after saving — just reset it if forgotten.
 - **Admin settings**: everything only the admin can do is under "⚙️ Admin settings" in the avatar menu (`/admin`): To do (join requests, skills awaiting approval, invites about to expire), Workspace settings, Projects, Invites, Accounts & recovery, Audit & storage, and Platform settings (platform admins only: updates, backup and import, the default attachment retention, demo data). Workspace settings can override the attachment retention. On a computer it has a sidebar; on a phone it is a list you tap into. "👥 Member management" keeps only members, roles and skills; old links such as `/members?tab=projects` redirect automatically.
 - **Turn off AI tools that cannot run here**: some computers block certain CLIs. Under "Admin settings › Workspace settings", "AI tools that can connect" turns Claude Code, Codex, Antigravity CLI, Copilot CLI and Other on or off one by one (one setting for the whole site; at least one stays on). A tool that is off is hidden from "My AIs › Connect", and the API will not hand out its onboarding text or one-line start; AIs already connected with it keep working. Changes are recorded in the workspace change log.
 - **`OPEN_JOIN` and `ROOM_CODE` are only initial values**: they apply until changed on the admin page; after that (including clearing the password) the admin page wins, and changing the environment variables won't override it.
@@ -237,7 +237,7 @@ First login and setup are the same as above.
 | `DATABASE_SCHEMA` | empty | ✓ | | With Postgres, put the tables in this schema (created if missing); empty = the database default (public) |
 | `PG_POOL_MAX` | `10` | ✓ | | With Postgres, the maximum number of open connections |
 | `ADMIN_PASSWORD` | `admin` | ✓ | ✓ | Initial password of the default admin (username `admin`); used only on a new site's first start and must be changed on first login. Set it for public deployments |
-| `ROOM_CODE` | empty | ✓ | ✓ | Initial group password: everyone signing up must enter it (recommended for public deployments). The admin page overrides it once changed |
+| `ROOM_CODE` | empty | ✓ | ✓ | Initial room code: everyone signing up must enter it (recommended for public deployments). The admin page overrides it once changed |
 | `OPEN_JOIN` | on | ✓ | ✓ | Initial open sign-up: unset = open; `0` = invite links only. The admin page overrides it once changed |
 | `AUTH_FAIL_LIMIT` | `10` | ✓ | | Failed logins before a temporary lock |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | empty | ✓ | ✓ | Cloudflare Turnstile human verification; enabled only when both are set (see "Human verification") |
@@ -263,7 +263,7 @@ First login and setup are the same as above.
 | `SUPABASE_TOPIC` | `aigile-switch` | ✓ | ✓ | Realtime channel name |
 | `TRUST_PROXY` | off | ✓ | | `1` = there is a reverse proxy in front: use the client IP (`X-Forwarded-For`) and https it passes on. Otherwise the connection's own address is used and IP headers sent by clients are ignored (they could be spoofed to get around login limits) |
 | `APP_URL` | empty | ✓ | | Public URL (e.g. `https://team.example.com`); when set, invite and onboarding links use it instead of the request's Host header |
-| `JOIN_LIMIT_PER_HOUR` | `20` | ✓ | ✓ | Max self sign-ups per IP per hour; 10 wrong group passwords from one IP means a 10-minute wait |
+| `JOIN_LIMIT_PER_HOUR` | `20` | ✓ | ✓ | Max self sign-ups per IP per hour; 10 wrong room codes from one IP means a 10-minute wait |
 | `MAX_BODY_MB` | `26` | ✓ | | Max request size in MB; larger requests get 413 right away (never fully read into memory) |
 | `UPDATE_CHECK` | on | ✓ | ✓ | When an admin opens "Admin settings" or "Member management", check GitHub for a new version (at most once a day; nothing shown if unreachable); `0` turns it off |
 | `FEEDBACK_REPO` | `alansid/aigile-oss` | ✓ | ✓ | Feedback destination in Help. Set `owner/repo` to use a fork or `0` to hide feedback |
@@ -326,7 +326,7 @@ Recommended for public deployments with open sign-up, to stop bots from mass sig
    ```
    The Site Key is public and can go into `[vars]` in `wrangler.toml`: `TURNSTILE_SITE_KEY = "0x4AAAA..."`. Locally, use the `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET` environment variables.
 3. Redeploy. Then:
-   - **Sign-up** (including creating the group) always requires verification, before the group password is checked.
+   - **Sign-up** (including creating the group) always requires verification, before the room code is checked.
    - **Login** (password, pairing code, login code, invite link) requires verification after 3 failures from the same IP (`TURNSTILE_AFTER_FAILS`); the login page shows the widget automatically.
    - The server verifies the token with your secret; failures return 403 `CAPTCHA_REQUIRED` / `CAPTCHA_FAILED`, an unreachable Cloudflare returns 503 `CAPTCHA_UNAVAILABLE`, and errors include `captchaRequired: true`.
    - The page loads the `challenges.cloudflare.com` script only when verification is needed; AIs calling the API with tokens are not affected.

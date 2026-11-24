@@ -394,7 +394,7 @@ export function registerLogin(d) {
     if (!iv) { failed(req); return { valid: false }; } // 失效連結不回管理員姓名
     return { valid: true, kind: inviteKind(iv), inviterName: people.get(iv.created_by)?.name || admin?.name || null,
       groupName: await groupName(), name: iv.participant_id ? people.get(iv.participant_id)?.name ?? iv.name : iv.name,
-      role: roleText(iv.role), projects: listOf(iv.projects).map(id => ({ id, name: nameOf(id) })), expiresAt: iso(iv.expires_at) };
+      role: roleText(iv.role), projects: listOf(iv.projects).map(id => ({ id, name: nameOf(id) })), presets: presetsOf(iv).map(x => ({ ...x, name: nameOf(x.project) })), expiresAt: iso(iv.expires_at) };
   }, { open: true });
 
   // 管理員「重設登入」：作廢舊登入碼、登出該人所有裝置，產生給他的新邀請連結

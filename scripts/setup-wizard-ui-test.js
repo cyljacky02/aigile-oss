@@ -47,7 +47,7 @@ try {
   await until(async () => /\/p\/project-1/.test(await txt('#sw-pj-slug-hint')), 5000, '留空：顯示會變成 /p/project-1');
   await click('[data-sw="project"]');
   await until(() => js("!!document.querySelector('#sw-inv-name')"), 8000, '第 3 步');
-  assert.match(await txt('#sw'), /開放自己註冊/, '寫出目前開放註冊');
+  assert.match(await txt('#sw'), /開放自行註冊/, '寫出目前開放註冊');
   // 開放註冊開關：關掉立刻生效，再打開
   const ojOn = () => js("document.querySelector('[data-sw=\"openjoin\"]')?.getAttribute('aria-checked')");
   assert.equal(await ojOn(), 'true');
