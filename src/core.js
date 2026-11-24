@@ -16,6 +16,7 @@ import { registerKbPages } from './kb-pages.js'; // 知識頁、整理卡
 import { registerBackup } from './backup.js'; // 備份匯出與匯入
 import { registerUpdateCheck } from './update.js'; // 管理頁「有新版本」
 import { registerDemo } from './demo.js'; // 示範資料
+import { createAccess, ACCESS_ROLE } from './access.js'; // 權限模組
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -344,8 +345,9 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 成員資格（誰在哪些專案、leader、唯讀、跨專案角色）的讀寫都走 src/membership.js；這裡沿用原本的名字
   // projectsOf＝目前所屬（未封存）專案；listOf＝含封存專案的原始清單
   const membership = createMembership({ db, PROJECTS, nowIso, onChange: () => invalidatePeople() });
-  const { projectsOf, allProjectsOf: listOf, setProjectsStmts, loadLeaders, leadersOf, leaderProjectsOf, loadReadOnly, readOnlyOf,
-    isReadOnlyHuman: roHuman, isReadOnly: roIn, readOnlyProjectsOf: roList, loadCrossRoles, isCrossRole: crossRole } = membership;
+  // 「能不能」的判斷（唯讀、leader、管理員…）不在這裡，走權限模組 access（見「專案與成員管理」）
+  const { projectsOf, allProjectsOf: listOf, setProjectsStmts, loadLeaders, leadersOf, loadReadOnly, readOnlyOf,
+    loadCrossRoles, isCrossRole: crossRole } = membership;
   function readProjects(raw) {
     if (!Array.isArray(raw)) throw invalid('projects 需為陣列，例如 ["預設專案"]');
     const list = [...new Set(raw.map(x => String(x).trim()))];
@@ -412,13 +414,12 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   });
 
   // 查詢帶 ?project= 時，人類的 role 換成那個專案的角色（未設定＝空字串）；沒帶給原本的值
-  // 管理員看得到、管得了所有專案，但在沒有專案角色的專案不算成員（名單、人數、團隊狀態、@所有人都不算）
-  const ghostAdminIn = (p, pj, adminId) => !!p && p.kind === 'human' && p.id === adminId && !!pj && !projRoles[p.id]?.[pj];
-  function roleForProject(items, url, adminId = null) {
+  // 管理員看得到、管得了所有專案，但只有隱含權限的專案不算成員（名單、人數、團隊狀態、@所有人都不算；access.view().implicitOnlyIn）
+  function roleForProject(items, url, v) {
     const pj = url?.searchParams.get('project');
     if (!pj || !PROJECTS.includes(pj)) return items;
     for (const it of items) if (it.memberType === 'human' && it.projectRoles) it.role = it.projectRoles[pj] || '';
-    return adminId ? items.filter(it => !(it.memberType === 'human' && it.participantId === adminId && !projRoles[adminId]?.[pj])) : items;
+    return items.filter(it => !(it.memberType === 'human' && v.implicitOnlyIn(it.participantId, pj)));
   }
   const settingsOf = p => ({
     roleKey: p.role_key, duties: p.duties, style: p.style, autonomy: p.autonomy,
@@ -717,7 +718,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (!systemNotice) await assertWritable(me, project); // （平台自動發的通知，例如「X 已加入」，不擋）
     if (project) for (const rid of [...recipientIds]) {
       const rp = people.get(rid);
-      if (!roIn(rp, project)) continue;
+      if (!access.readOnlyIn(rp, project)) continue;
       if (rawIds.includes(rid) || (rawAsk || []).includes(rid)) throw new ApiError(400, 'READ_ONLY_RECIPIENT', `${rp.name} 在「${nameOf(project)}」是唯讀，不能被 @ 或指定要回覆。`);
       recipientIds.delete(rid);
     }
@@ -729,7 +730,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     }
     const id = randId('msg');
     const createdAt = nowIso();
-    if (audience && project) { await loadProjectRoles(); const adminId = adminOf(people)?.id; for (const rid of [...recipientIds]) if (!projectsOf(people.get(rid)).includes(project) || ghostAdminIn(people.get(rid), project, adminId)) recipientIds.delete(rid); } // 沒角色的管理員不通知
+    if (audience && project) { await loadProjectRoles(); const v = access.view({ people }); for (const rid of [...recipientIds]) if (!projectsOf(people.get(rid)).includes(project) || v.implicitOnlyIn(rid, project)) recipientIds.delete(rid); } // 沒角色的管理員不通知
     const reasons = new Map();
     for (const rid of recipientIds) reasons.set(rid, [audience ? 'all' : 'mention']);
     const replyPerson = replyTo && people.get(replyTo.author_id);
@@ -1055,7 +1056,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const aiProjects = body.projects !== undefined ? readProjects(body.projects).join(',') : mineP.length === 1 ? mineP[0] : null;
     if (aiProjects === null) throw invalid(`projects 為必填：這位 AI 屬於哪些專案（至少一個，專案編號：${PROJECTS.join('、')}）`);
     const s = readSettings(body, null, await projRoleKeys(aiProjects.split(',')));
-    await loadReadOnly(); { const bad = aiProjects.split(',').filter(pj => roHuman(me.id, pj)); if (bad.length) throw readOnlyError(me, bad[0]); }
+    for (const pj of aiProjects.split(',')) await access.check(ctx, me, 'write', { project: pj }); // 主人在唯讀的專案不能放 AI
     const outside = aiProjects.split(',').filter(x => !mineP.includes(x));
     if (outside.length) throw new ApiError(400, 'OWNER_NOT_IN_PROJECT', `你不在「${outside.join('、')}」，AI 的專案不能超出所屬人類。`);
     invalidatePeople();
@@ -1468,13 +1469,13 @@ ${ending}`;
     return {
       ...identity(me, people),
       ...(me.kind === 'human' ? { projectRoles: projectRolesOf(me) } : {}),
-      readOnlyIn: roList(me, await loadReadOnly()), // 在這些專案只能看
+      readOnlyIn: (await loadReadOnly(), PROJECTS.filter(pj => access.readOnlyIn(me, pj))), // 在這些專案只能看
       isOnline: true,
       expiresAt: iso(me.token_expires_at),
       fileTtlHours: await fileTtlHours(), // 訊息附件保存時間（小時），網頁與 AI 的說明照這個寫
       ...(me.kind === 'human' ? { authKind: me.authKind, deviceId: me.deviceId, prefs: await prefsOf(me), onboard: await onboardOf(me) } : {}), // 個人偏好（風格）、新手上路記在帳號
       ...(me.mustChangeCredentials ? { mustChangeCredentials: true } : {}), // 還在用預設帳密：網頁只顯示改帳密
-      ...(me.kind === 'human' && adminOf(people)?.id === me.id && (await db.get("SELECT value FROM app_settings WHERE key = 'setup_wizard'"))?.value === 'pending' ? { setupWizard: true } : {}), // 第一次設定引導還沒做完
+      ...(access.view({ people }).can(me, 'manage_workspace', 'workspace') && (await db.get("SELECT value FROM app_settings WHERE key = 'setup_wizard'"))?.value === 'pending' ? { setupWizard: true } : {}), // 第一次設定引導還沒做完
       // 長期授權（到期＝空的）與所在專案的程式庫
       ...(me.kind === 'ai' ? { settings: settingsOf(me), grants: await grantsOf(me), repos: await reposOf(me) } : {}),
     };
@@ -1527,31 +1528,17 @@ ${ending}`;
     await db.run('UPDATE participants SET avatar = ?, updated_at = ? WHERE id = ?', avatar, nowIso(), me.id);
     return identity({ ...me, avatar }, await peopleMap(ctx));
   });
-  // ---------- 專案與成員管理：只有群組管理員能新增／改名／封存專案、調整成員所屬專案 ----------
-  // 群組管理員＝最早加入、仍有效的人類（建立群組的人）
-  // 管理員：participants.is_admin 標記的那位（可以交給別人）。都沒標記（舊備份）才退回最早加入的人類
-  const adminOf = people => { const hs = [...people.values()].filter(p => p.kind === 'human' && p.status === 'active');
-    return hs.find(p => Number(p.is_admin) === 1) || hs.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id)))[0] || null; };
-  async function requireAdmin(ctx, me, what = '管理專案與成員所屬專案') {
-    const admin = adminOf(await peopleMap(ctx));
-    if (!admin || admin.id !== me.id) throw new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${admin?.name || '未設定'}）能${what}。`);
-  }
-  // PLAT-381：改名、封存、還原：管理員或這個專案的 leader（新增、永久刪除、跨專案角色、邀請、帳號仍只限管理員）
-  async function requireAdminOrLeader(ctx, me, pj, what) {
-    requireHuman(me);
-    const admin = adminOf(await peopleMap(ctx));
-    if (admin && admin.id === me.id) return;
-    await loadLeaders(true);
-    if (!leadersOf(pj).includes(me.id)) throw new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${admin?.name || '未設定'}）或這個專案的 leader 能${what}。`); // 封存的專案不在 PROJECTS，leader 也要能還原
-  }
-  const readOnlyError = (p, pj) => new ApiError(403, 'READ_ONLY', `${p?.kind === 'ai' ? '你的所屬人類' : '你'}在「${nameOf(pj)}」是唯讀，只能看，不能發訊息、回覆、建卡、改卡、交接、上傳或私訊。需要權限請找管理員或該專案 leader。AI 收到這個就停下、在本機對話告訴所屬人類，不要重試。`);
-  // pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
-  async function assertWritable(me, pj) {
-    await loadReadOnly();
-    if (pj) { if (roIn(me, pj)) throw readOnlyError(me, pj); return; }
-    const l = roList(me);
-    if (l.length) throw readOnlyError(me, l[0]);
-  }
+  // ---------- 專案與成員管理 ----------
+  // 權限判斷全部走權限模組（src/access.js）：誰是什麼角色、能不能做什麼；它要讀的成員資料都來自成員資格模組（src/membership.js）
+  const access = createAccess({
+    ApiError, requireHuman, nameOf: id => nameOf(id), people: ctx => peopleMap(ctx), projects: () => PROJECTS, projectsOf, isolatedFrom,
+    isCrossRole: p => membership.isCrossRole(p), titles: () => projRoles,
+    loadLeaders: force => membership.loadLeaders(force), leadersOf: pj => membership.leadersOf(pj),
+    loadReadOnly: force => membership.loadReadOnly(force), isReadOnly: (p, pj) => membership.isReadOnly(p, pj),
+  });
+  const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
+  // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
+  const assertWritable = (me, pj) => access.check({}, me, 'write', { project: pj || null });
   // 人類在每個專案各自的角色（AI 角色、跨專案角色不變）。沒有紀錄＝「未設定」
   const ROLE_CHOICES = ['PO', 'PG', 'UX', 'QA', 'BA', 'SM', 'Sponsor', 'BU'];
   let projRoles = {}, projRolesAt = 0;
@@ -1588,8 +1575,6 @@ ${ending}`;
     if (/[\n\r]/.test(s)) throw invalid('角色不能換行');
     return s;
   }
-  // 誰能改某人在某專案的角色：管理員全部；該專案 leader；本人只改自己
-  const canSetRole = (me, target, pj, admin) => !!admin && admin.id === me.id || leaderProjectsOf(me.id).includes(pj) || me.id === target.id;
   const projEvent = (projectId, actorId, text, at) => ['INSERT INTO project_events (project_id, at, actor_id, text) VALUES (?,?,?,?)', [projectId, at, actorId, text]];
   const nameOf = id => projectRows.find(r => r.id === id)?.name || id;
 
@@ -1706,12 +1691,12 @@ ${ending}`;
     const repos = await reposMap(), dms = await dmMap(), rdefs = await roleDefsMap(), slugs = await slugMap();
     await loadProjectRoles();
     const book = await statuses.load(ctx);
-    const adminId = adminOf(people)?.id;
+    const v = access.view({ people });
     const inUse = (pj, d) => [...people.values()].filter(p => p.status === 'active' && listOf(p).includes(pj) && (p.kind === 'ai' ? p.role_key === d.key : projRoles[p.id]?.[pj] === d.role)).length;
     return projectRows.map(r => ({ id: r.id, name: r.name, slug: slugs[r.id], code: projCodes[r.id] || null, archived: !!r.archived, createdAt: r.created_at, repo: repos[r.id] || null, // ；C-xxx 網址英文名
       roles: (rdefs[r.id] || []).map(d => ({ ...d, createdByName: people.get(d.createdBy)?.name || null, inUse: inUse(r.id, d) })), // 本專案角色
       dm: dms[r.id] ? { ...dms[r.id], byName: people.get(dms[r.id].by)?.name || null } : { on: false, by: null, at: null, byName: null },
-      memberCount: [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && listOf(p).includes(r.id) && !ghostAdminIn(p, r.id, adminId)).length,
+      memberCount: [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && listOf(p).includes(r.id) && !v.implicitOnlyIn(p.id, r.id)).length,
       openCards: counts.get(r.id) || 0, statuses: book.list(r.id) })); // 看板狀態（順序＝看板欄順序）
   }
   async function projectsResponse(ctx, extra = {}) {
@@ -1792,7 +1777,7 @@ ${ending}`;
 
   // 單人：人人可看自己的專案；只有管理員能改（起一般成員不能自己加入）
   route('PUT', '/api/participants/:id/projects', async ({ ctx, me, req, params }) => {
-    await requireAdmin(ctx, me);
+    await access.check(ctx, me, 'assign_members', 'workspace');
     const body = await readJson(req);
     const impact = await applyMembership(ctx, me, [{ id: params.id, projects: body.projects }], { dryRun: body.dryRun === true });
     if (body.dryRun === true) return { dryRun: true, impact };
@@ -1802,8 +1787,8 @@ ${ending}`;
   // 改某位人類在各專案的角色。管理員全部、該專案 leader、本人只改自己
   route('PUT', '/api/participants/:id/project-roles', async ({ ctx, me, req, params }) => {
     requireHuman(me);
-    await loadProjects(true); await loadLeaders(true); await loadProjectRoles(true);
-    const people = await peopleMap(ctx, [params.id]), admin = adminOf(people);
+    await loadProjects(true); await loadProjectRoles(true);
+    const people = await peopleMap(ctx, [params.id]);
     const target = people.get(params.id);
     if (!target || target.status !== 'active' || target.kind !== 'human') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員（AI 的角色在「我的 AI」改）');
     const body = await readJson(req);
@@ -1811,7 +1796,7 @@ ${ending}`;
     const inP = projectsOf(target), next = { ...projRoles, [target.id]: { ...(projRoles[target.id] || {}) } }, at = nowIso(), events = [];
     for (const [pj, v] of Object.entries(body.roles)) {
       if (!inP.includes(pj)) throw invalid(`${target.name} 不在「${nameOf(pj)}」，不能設那個專案的角色`);
-      if (!canSetRole(me, target, pj, admin)) throw new ApiError(403, 'NOT_PROJECT_LEADER', `只有管理員、「${nameOf(pj)}」的 leader 或 ${target.name} 本人能改他在這個專案的角色。`);
+      await access.check(ctx, me, 'set_title', { project: pj, target }); // 管理員、該專案 leader、本人
       const role = readRole(v);
       if ((next[target.id][pj] || '') === role) continue;
       if (role) next[target.id][pj] = role; else delete next[target.id][pj];
@@ -1822,7 +1807,7 @@ ${ending}`;
   });
   // 批次：某專案的成員名單（專案管理畫面的「儲存」）；memberIds 以外的人移出此專案
   route('PUT', '/api/projects/:id/members', async ({ ctx, me, req, params }) => {
-    await requireAdmin(ctx, me);
+    await access.check(ctx, me, 'assign_members', 'workspace');
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
@@ -1848,10 +1833,11 @@ ${ending}`;
   route('PUT', '/api/members/matrix', async ({ ctx, me, req }) => {
     await loadProjects(true);
     await loadCrossRoles(true);
-    await loadLeaders(true);
-    const people = await peopleMap(ctx);
-    const admin = adminOf(people), isAdmin = !!admin && admin.id === me.id;
-    const myLead = leaderProjectsOf(me.id);
+    const acc = await access.load(ctx, { fresh: true }), people = acc.people;
+    const admin = adminOf(people), isAdmin = acc.can(me, 'assign_members', 'workspace');
+    const canManage = pj => acc.can(me, 'manage_project_members', { project: pj }); // 管理員，或這個（未封存）專案的 leader
+    const isWorkspaceAdmin = p => acc.roleIn(p, 'workspace') === ACCESS_ROLE.WORKSPACE_ADMIN;
+    const myLead = isAdmin ? [] : PROJECTS.filter(canManage);
     // 非管理員要是某個專案的 leader 才能用，而且只能改那些專案的欄（伺服器檢查，不只靠畫面）
     if (!isAdmin && !myLead.length) throw new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${admin?.name || '未設定'}）或專案 leader 能管理成員。`);
     const body = await readJson(req);
@@ -1882,9 +1868,9 @@ ${ending}`;
       const next = ch.projects ?? cur;
       if (!isAdmin) {
         const touched = [...next.filter(x => !cur.includes(x)), ...cur.filter(x => !next.includes(x))];
-        const outside = touched.filter(x => !myLead.includes(x));
+        const outside = touched.filter(x => !canManage(x));
         if (outside.length) throw forbid(`你不是「${outside.map(nameOf).join('、')}」的 leader，不能改那些專案的成員。`);
-        if (p.id === admin?.id) throw forbid('leader 不能改管理員。');
+        if (isWorkspaceAdmin(p)) throw forbid('leader 不能改管理員。');
         if (p.id === me.id && cur.some(x => !next.includes(x))) throw forbid('leader 不能把自己移出專案。');
       }
       memberChanges.push({ id: p.id, projects: next, allowEmpty: true });
@@ -1895,7 +1881,7 @@ ${ending}`;
     const projAfter = id => memberChanges.find(c => c.id === id)?.projects ?? listOf(people.get(id)).filter(x => PROJECTS.includes(x));
     for (const ch of body.changes) {
       if (!Array.isArray(ch.leaderOf)) continue;
-      if (!isAdmin) throw forbid('只有管理員能指定 leader。');
+      if (!acc.can(me, 'assign_project_admin', 'workspace')) throw forbid('只有管理員能指定 leader。');
       const p = person(ch.id), want = ch.leaderOf.map(String);
       if (p.kind !== 'human' && want.length) throw invalid('leader 只能是人類');
       for (const pj of PROJECTS) {
@@ -1923,7 +1909,7 @@ ${ending}`;
       const after = crossRole(p, ov) ? [...PROJECTS] : projAfter(p.id);
       for (const [pj, v] of Object.entries(ch.projectRoles)) {
         if (!after.includes(pj)) throw invalid(`${p.name} 不在「${nameOf(pj)}」，不能設那個專案的角色`);
-        if (!isAdmin && !myLead.includes(pj)) throw forbid(`你不是「${nameOf(pj)}」的 leader，不能改那個專案的角色。`);
+        if (!canManage(pj)) throw forbid(`你不是「${nameOf(pj)}」的 leader，不能改那個專案的角色。`);
         const role = readRole(v);
         if ((projRoles[p.id]?.[pj] || '') !== role) roleChanges.push({ participantId: p.id, name: p.name, project: pj, role });
       }
@@ -1940,9 +1926,9 @@ ${ending}`;
       for (const pj of PROJECTS) {
         const has = nextRo[pj].includes(p.id), on = want.includes(pj);
         if (has === on) continue;
-        if (!isAdmin && !myLead.includes(pj)) throw forbid(`你不是「${nameOf(pj)}」的 leader，不能改那個專案的權限。`);
+        if (!canManage(pj)) throw forbid(`你不是「${nameOf(pj)}」的 leader，不能改那個專案的權限。`);
         if (on && !after.includes(pj)) throw invalid(`${p.name} 不在「${nameOf(pj)}」，不能設唯讀`);
-        if (on && p.id === admin?.id) throw invalid('管理員不能設成唯讀');
+        if (on && isWorkspaceAdmin(p)) throw invalid('管理員不能設成唯讀');
         if (on && nextLeaders[pj].includes(p.id)) throw invalid(`${p.name} 是「${nameOf(pj)}」的 leader，先取消 leader 再設唯讀`);
         nextRo[pj] = on ? [...nextRo[pj], p.id] : nextRo[pj].filter(x => x !== p.id);
         const ids = [p.id, ...[...people.values()].filter(a => a.kind === 'ai' && a.owner_id === p.id).map(a => a.id)];
@@ -2007,12 +1993,12 @@ ${ending}`;
   route('GET', '/api/group', async () => ({ name: await groupName() }), { open: true });
   // 第一次設定引導做完或全部略過：之後不再出現（群組名稱、專案、邀請、AI 都在管理頁改得到）
   route('POST', '/api/setup-wizard/done', async ({ ctx, me }) => {
-    await requireAdmin(ctx, me, '完成第一次設定');
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '完成第一次設定' });
     await db.run("DELETE FROM app_settings WHERE key = 'setup_wizard'");
     return { ok: true };
   });
   route('PUT', '/api/group', async ({ ctx, me, req }) => {
-    await requireAdmin(ctx, me, '改群組名稱');
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '改群組名稱' });
     const name = String((await readJson(req)).name ?? '').trim();
     if (!name || name.length > 30 || /\n/.test(name)) throw invalid('name 需為 1～30 字，不可換行');
     await saveGroupName(me, name);
@@ -2030,11 +2016,11 @@ ${ending}`;
   const groupSettings = async () => { const js = await joinSettings(); return { name: await groupName(), openJoin: js.openJoin, roomCodeSet: js.roomCodeSet, source: js.source }; };
   // 加入設定（管理員）：開放註冊、群組密碼、群組名稱；存資料庫立刻生效。群組密碼只回「有沒有設」
   route('GET', '/api/group/settings', async ({ ctx, me }) => {
-    await requireAdmin(ctx, me, '查看加入設定');
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看加入設定' });
     return groupSettings();
   });
   route('PUT', '/api/group/settings', async ({ ctx, me, req }) => {
-    await requireAdmin(ctx, me, '改加入設定');
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '改加入設定' });
     const body = await readJson(req);
     const has = k => Object.prototype.hasOwnProperty.call(body, k);
     if (has('openJoin') && typeof body.openJoin !== 'boolean') throw invalid('openJoin 需為 true 或 false');
@@ -2063,7 +2049,7 @@ ${ending}`;
     return groupSettings();
   });
   route('GET', '/api/group/events', async ({ ctx, me, url }) => {
-    await requireAdmin(ctx, me, '查看群組異動紀錄');
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看群組異動紀錄' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);
     const rows = await db.all('SELECT * FROM project_events WHERE project_id = ? ORDER BY id DESC LIMIT ?', GROUP_EVT, limit);
     return { items: rows.map(r => ({ at: r.at, actorId: r.actor_id, text: r.text })) };
@@ -2072,7 +2058,7 @@ ${ending}`;
   const toolsOut = off => ({ tools: TOOLS.map(key => ({ key, name: TOOL_LABEL[key], on: !off.includes(key) })), off });
   route('GET', '/api/ai-tools', async ({ me }) => { requireHuman(me); return toolsOut(await aiToolsOff()); });
   route('PUT', '/api/ai-tools', async ({ ctx, me, req }) => {
-    await requireAdmin(ctx, me, '設定 AI 工具開關');
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '設定 AI 工具開關' });
     const body = await readJson(req);
     if (!Array.isArray(body.off) || body.off.some(t => typeof t !== 'string')) throw invalid(`off 需為陣列，只能是 ${TOOLS.join('、')}`);
     if (body.off.some(t => !TOOLS.includes(t))) throw invalid(`off 只能是 ${TOOLS.join('、')}`);
@@ -2091,9 +2077,9 @@ ${ending}`;
   // envHours：主機 FILE_TTL_HOURS（沒設＝null）；custom：管理員改過（之後就不看 FILE_TTL_HOURS）
   const fileTtlOut = (cfg, admin) => ({ hours: cfg.hours, defaultHours: FILE_TTL_DEFAULT_H, choices: FILE_TTL_CHOICES,
     ...(admin ? { custom: cfg.set, envHours: Number(config.fileTtlHours) > 0 ? Number(config.fileTtlHours) : null, log: cfg.log } : {}) });
-  route('GET', '/api/file-ttl', async ({ ctx, me }) => fileTtlOut(await fileTtlCfg(), adminOf(await peopleMap(ctx))?.id === me.id));
+  route('GET', '/api/file-ttl', async ({ ctx, me }) => fileTtlOut(await fileTtlCfg(), await access.can(ctx, me, 'manage_workspace', 'workspace')));
   route('PUT', '/api/file-ttl', async ({ ctx, me, req }) => {
-    await requireAdmin(ctx, me, '設定訊息附件保存時間');
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '設定訊息附件保存時間' });
     const hours = (await readJson(req)).hours;
     if (!FILE_TTL_CHOICES.includes(hours)) throw invalid(`hours 只能是 ${FILE_TTL_CHOICES.join('、')}（小時）`);
     const cur = await fileTtlCfg();
@@ -2104,7 +2090,7 @@ ${ending}`;
   });
   route('GET', '/api/projects/:id/events', async ({ ctx, me, params, url }) => {
     // 只有該專案成員或管理員看得到（含程式庫網址、成員異動）
-    if (!projectsOf(me).includes(params.id)) await requireAdmin(ctx, me, '查看其他專案的異動紀錄');
+    await access.check(ctx, me, 'see_project_events', { project: params.id }, { what: '查看其他專案的異動紀錄' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);
     const rows = await db.all('SELECT * FROM project_events WHERE project_id = ? ORDER BY id DESC LIMIT ?', params.id, limit);
     return { items: rows.map(r => ({ at: r.at, actorId: r.actor_id, text: r.text })) };
@@ -2115,7 +2101,7 @@ ${ending}`;
     return name;
   };
   route('POST', '/api/projects', async ({ ctx, me, req }) => {
-    await requireAdmin(ctx, me);
+    await access.check(ctx, me, 'create_project', 'workspace');
     const body = await readJson(req);
     const name = readProjectName(body.name);
     await loadProjects(true);
@@ -2142,7 +2128,7 @@ ${ending}`;
     return { __status: 201, ...(await projectsResponse(ctx)), id };
   });
   route('PATCH', '/api/projects/:id', async ({ ctx, me, req, params }) => {
-    await requireAdminOrLeader(ctx, me, params.id, '改專案名稱');
+    await access.check(ctx, me, 'manage_project', { project: params.id }, { what: '改專案名稱' });
     const name = readProjectName((await readJson(req)).name);
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
@@ -2160,9 +2146,7 @@ ${ending}`;
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    const admin = adminOf(await peopleMap(ctx));
-    await loadLeaders(true);
-    if (!(admin && admin.id === me.id) && !leaderProjectsOf(me.id).includes(row.id)) throw new ApiError(403, 'NOT_ADMIN', `只有群組管理員或「${row.name}」的 leader 能改程式庫設定。`);
+    await access.check(ctx, me, 'configure_project', { project: row.id }, { deny: () => new ApiError(403, 'NOT_ADMIN', `只有群組管理員或「${row.name}」的 leader 能改程式庫設定。`) });
     const repo = readRepo(await readJson(req));
     const at = nowIso();
     await db.batch([
@@ -2218,7 +2202,7 @@ ${ending}`;
     return code;
   }
   route('PUT', '/api/projects/:id/code', async ({ ctx, me, req, params }) => {
-    await requireAdmin(ctx, me, '改專案代號');
+    await access.check(ctx, me, 'set_project_code', { project: params.id }, { what: '改專案代號' });
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
@@ -2231,7 +2215,7 @@ ${ending}`;
     return projectsResponse(ctx);
   });
   route('PUT', '/api/projects/:id/slug', async ({ ctx, me, req, params }) => {
-    await requireAdmin(ctx, me, '改專案的網址英文名');
+    await access.check(ctx, me, 'set_project_slug', { project: params.id }, { what: '改專案的網址英文名' });
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
@@ -2251,9 +2235,7 @@ ${ending}`;
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    const admin = adminOf(await peopleMap(ctx));
-    await loadLeaders(true);
-    if (!(admin && admin.id === me.id) && !leaderProjectsOf(me.id).includes(row.id)) throw new ApiError(403, 'NOT_ADMIN', `只有群組管理員或「${row.name}」的 leader 能開關私訊。`);
+    await access.check(ctx, me, 'configure_project', { project: row.id }, { deny: () => new ApiError(403, 'NOT_ADMIN', `只有群組管理員或「${row.name}」的 leader 能開關私訊。`) });
     const body = await readJson(req);
     if (typeof body.on !== 'boolean') throw invalid('on 需為 true 或 false');
     const at = nowIso();
@@ -2349,7 +2331,7 @@ ${ending}`;
     const open = await dmProjects(human, ai);
     if (!open.length) throw new ApiError(403, 'DM_DISABLED', '這個專案沒有開放私訊（專案設定由管理員或 leader 開啟）；舊的私訊還看得到，但不能再送。');
     const project = body.project && open.includes(body.project) ? body.project : open[0];
-    await loadReadOnly(); if (roHuman(human.id, project)) throw readOnlyError(me, project); // 唯讀的人和他的 AI 不能私訊
+    await loadReadOnly(); if (access.readOnlyIn(human, project)) throw access.readOnlyError(me, project); // 唯讀的人和他的 AI 不能私訊
     const id = await writeDm({ human, ai, from: me.id, text, project, requestId }); // 叫醒 AI（門鈴只含 ID 與時間）
     return { __status: 201, ...dmView(await db.get('SELECT * FROM dms WHERE id = ?', id), people) };
   });
@@ -2384,12 +2366,10 @@ ${ending}`;
     const m = await roleDefsMap();
     return pjs.flatMap(pj => (m[pj] || []).filter(d => d.status !== 'disabled').map(d => d.key));
   }
-  // 誰能建立／管理某專案的角色：群組管理員、該專案 leader
+  // 誰能建立／管理某專案的角色（AI 職務）：群組管理員、該（未封存）專案 leader
   async function roleManagerOf(ctx, me) {
-    const admin = adminOf(await peopleMap(ctx));
-    await loadLeaders();
-    const lead = leaderProjectsOf(me.id);
-    return pj => (!!admin && admin.id === me.id) || lead.includes(pj);
+    const v = await access.load(ctx);
+    return pj => v.can(me, 'configure_project', { project: pj });
   }
   const RESERVED_KEYS = new Set([...ROLES.map(r => r.key.toUpperCase()), 'AI', 'ALL']);
   // 檢查名稱、代碼、五題；strict＝建立／修改時（代碼重複直接擋），提案時只標出衝突
@@ -2604,7 +2584,7 @@ ${ending}`;
   route('POST', '/api/my-ais/:id/avatar/revert', async ({ ctx, me, params }) => { requireHuman(me); return avatarRevert(ctx, (await myAi(me, params.id)).id); });
 
   route('POST', '/api/projects/:id/archive', async ({ ctx, me, params }) => {
-    await requireAdminOrLeader(ctx, me, params.id, '封存專案');
+    await access.check(ctx, me, 'manage_project', { project: params.id }, { what: '封存專案' });
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
@@ -2617,7 +2597,7 @@ ${ending}`;
     return projectsResponse(ctx);
   });
   route('POST', '/api/projects/:id/unarchive', async ({ ctx, me, params }) => {
-    await requireAdminOrLeader(ctx, me, params.id, '還原專案');
+    await access.check(ctx, me, 'manage_project', { project: params.id }, { what: '還原專案' });
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
@@ -2633,7 +2613,7 @@ ${ending}`;
   // 跨專案頻道（project=all）的訊息不動。D1：每張表一句（沒有索引的表只掃一次），不逐筆刪
   const DEL_LOG = 'pdel:'; // 全站紀錄：app_settings 的 pdel:<時間>:<專案 id>（專案事件會跟著刪掉，所以另外記）
   async function deletableProject(ctx, me, id) {
-    await requireAdmin(ctx, me);
+    await access.check(ctx, me, 'delete_project', { project: id });
     await loadProjects(true);
     const row = projectRows.find(r => r.id === id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
@@ -2726,7 +2706,7 @@ ${ending}`;
     return projectsResponse(ctx, { deleted: log });
   });
   route('GET', '/api/project-deletions', async ({ ctx, me }) => {
-    await requireAdmin(ctx, me);
+    await access.check(ctx, me, 'delete_project', 'workspace');
     const rows = await db.all("SELECT value FROM app_settings WHERE key >= ? AND key < ? ORDER BY key DESC LIMIT 50", DEL_LOG, 'pdel;');
     const items = rows.map(r => { try { return JSON.parse(r.value); } catch { return null; } }).filter(Boolean);
     return { items };
@@ -2798,8 +2778,7 @@ ${ending}`;
     if (texts.some(x => /(?:^|[^A-Za-z0-9_-])(?:dv_)?[A-Za-z0-9_-]{43,}/.test(x))) throw new ApiError(400, 'SECRET_LIKE', '工作記憶裡有一段看起來像 Token 的長字串；Token 不要寫進工作記憶（大家都看得到）。');
     return out;
   }
-  // 誰看得到誰的工作記憶：兩邊至少有一個共同專案（兩邊成員都看得到）
-  const canSeeState = (viewer, target) => projectsOf(target).some(p => projectsOf(viewer).includes(p));
+  // 誰看得到誰的工作記憶：兩邊至少有一個共同專案（權限模組的 see_ai_state）
   async function readState(id) {
     const r = await db.get('SELECT state, updated_at FROM ai_state WHERE participant_id = ?', id);
     return r ? { state: JSON.parse(r.state), updatedAt: r.updated_at } : null;
@@ -2904,17 +2883,15 @@ ${ending}`;
     const people = await peopleMap(ctx, [params.id]);
     const target = people.get(params.id);
     if (!target || target.kind !== 'ai' || target.status !== 'active') throw new ApiError(404, 'NOT_FOUND', '找不到這位 AI');
-    if (!canSeeState(me, target)) throw new ApiError(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。');
+    await access.check(ctx, me, 'see_ai_state', { target });
     return (await readState(target.id)) || { state: null, updatedAt: null };
   });
-  // 不屬於全部專案的成員，只看得到同專案的人＋跨專案角色（新成員至少找得到管理員、PO）
-  // 專案 leader 另外看得到「還沒有任何專案」的人類，才能把新成員加進自己的專案
-  const seesPerson = (me, p) => !isolatedFrom(me) || p.id === me.id || crossRole(p) || projectsOf(p).some(x => projectsOf(me).includes(x))
-    || (p.kind === 'human' && !projectsOf(p).length && leaderProjectsOf(me.id).length > 0);
+  // 名冊可見範圍（誰看得到誰）：權限模組的 see_member
+  // 不屬於全部專案的成員，只看得到同專案的人＋跨專案角色（新成員至少找得到管理員、PO）；專案 leader 另外看得到「還沒有任何專案」的人類
   // ---------- 停用／恢復成員、交出管理員（只有管理員） ----------
   // 停用：所有裝置登出、登入碼與配對碼作廢、他的 AI 的 Token 全部換掉（恢復後要主人重發）；名單標「已停用」。資料、卡片、訊息都留著
   async function humanTarget(ctx, me, id) {
-    await requireAdmin(ctx, me, '停用或恢復成員');
+    await access.check(ctx, me, 'manage_accounts', 'platform', { what: '停用或恢復成員' });
     const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human'", id);
     if (!t || t.status === 'deleted') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員');
     if (t.id === me.id) throw new ApiError(400, 'SELF', '不能停用自己；要離開請先把管理員交給別人。');
@@ -2945,13 +2922,13 @@ ${ending}`;
   });
   // 已停用的人類（只有管理員看）：成員頁列出來、可以恢復
   route('GET', '/api/participants/disabled', async ({ ctx, me }) => {
-    await requireAdmin(ctx, me, '看已停用的成員');
+    await access.check(ctx, me, 'manage_accounts', 'platform', { what: '看已停用的成員' });
     const people = await peopleMap(ctx);
     return { items: (await db.all("SELECT * FROM participants WHERE kind = 'human' AND status = 'disabled' ORDER BY updated_at DESC")).map(p => publicParticipant(p, people)) };
   });
   // 把管理員交給另一位人類（立刻生效；交出去的人變一般成員）
   route('POST', '/api/admin/transfer', async ({ ctx, me, req }) => {
-    await requireAdmin(ctx, me, '交出管理員');
+    await access.check(ctx, me, 'assign_platform_admin', 'platform', { what: '交出管理員' });
     const toId = String((await readJson(req)).toId || '');
     const to = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human' AND status = 'active'", toId);
     if (!to) throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員（只能交給還在群組的人類）');
@@ -2965,19 +2942,19 @@ ${ending}`;
     return { adminId: to.id, adminName: to.name };
   });
   route('GET', '/api/participants', async ({ ctx, me, url }) => {
-    await loadCrossRoles(); await loadLeaders(); await loadProjectRoles();
-    const people = await peopleMap(ctx);
+    await loadCrossRoles(); await loadProjectRoles();
+    const v = await access.load(ctx), people = v.people;
     const now = Date.now();
-    const items = [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && seesPerson(me, p))
+    const items = [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && v.can(me, 'see_member', { target: p }))
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
       .map(p => publicParticipant(p, people, now));
-    if (adminOf(people)?.id === me.id) { // 管理員看得到誰匯入後還要重設登入
+    if (v.can(me, 'reset_login', 'workspace')) { // 管理員看得到誰匯入後還要重設登入
       const relogin = new Set((await db.all("SELECT key FROM app_settings WHERE key >= 'relogin:' AND key < 'relogin;'")).map(r => r.key.slice(8)));
       for (const it of items) if (relogin.has(it.participantId)) it.needsLogin = true;
     }
     // 補（UX）：不屬於全部專案的人，別人的 projects 只列自己也在的專案，不露出別專案名稱
     if (isolatedFrom(me)) { const mine = projectsOf(me); for (const it of items) if (it.participantId !== me.id) { it.projects = (it.projects || []).filter(x => mine.includes(x)); if (it.projectRoles) it.projectRoles = Object.fromEntries(Object.entries(it.projectRoles).filter(([k]) => mine.includes(k))); } }
-    return { items: roleForProject(items, url, adminOf(people)?.id) };
+    return { items: roleForProject(items, url, v) };
   });
 
   route('GET', '/api/messages', ({ ctx, url, me }) => listMessages(ctx, url, me));
@@ -3431,7 +3408,7 @@ ${ending}`;
     // 全站稽核只給管理員；其他人只看自己專案的檔案紀錄＋自己做的動作
     // （發到「全部專案」、沒有專案的檔案與別人被拒的上傳，只有管理員看得到）
     // ?scope=mine 讓管理員在文件頁也只看自己的（全站在管理員設定）；只會變少，不會放寬
-    const isAdmin = adminOf(people)?.id === me.id && url.searchParams.get('scope') !== 'mine';
+    const isAdmin = access.view({ people }).can(me, 'manage_workspace', 'workspace') && url.searchParams.get('scope') !== 'mine';
     const mine = projectsOf(me).filter(pj => PROJECTS.includes(pj));
     const rows = isAdmin
       ? await db.all('SELECT * FROM file_audit ORDER BY at DESC LIMIT ?', limit)
@@ -3650,7 +3627,7 @@ ${ending}`;
   }
   const setInitialReadOnly = (pid, projects) => membership.addReadOnly(pid, projects.filter(pj => PROJECTS.includes(pj))); // 邀請時勾了唯讀
   login = registerLogin({ route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, setInitialReadOnly, setProjectsStmts, projectListOf: listOf,
-    adminOf, requireAdmin, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
+    adminOf, access, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
     groupName, humanTtlMs: HUMAN_TOKEN_TTL_MS, failLimit: Number(config.authFailLimit) || 10,
     captcha: { on: TURNSTILE, after: TS_AFTER, verify: verifyTurnstile } });
   // 卡片的寫入一律先擋唯讀（不用改 cards.js 每條路由）
@@ -3679,27 +3656,27 @@ ${ending}`;
     const people = await peopleMap({});
     for (const k of ['ownerId', 'toId', 'deciderId']) {
       const p = body[k] && people.get(String(body[k]));
-      if (p && roIn(p, pj)) throw new ApiError(400, 'READ_ONLY_MEMBER', `${p.name} 在「${nameOf(pj)}」是唯讀，不能當負責人、交接對象或決策者。`);
+      if (p && access.readOnlyIn(p, pj)) throw new ApiError(400, 'READ_ONLY_MEMBER', `${p.name} 在「${nameOf(pj)}」是唯讀，不能當負責人、交接對象或決策者。`);
     }
   }
-  const joinApi = registerJoin({ liveTo: (ids, type, data) => live?.toPeople(ids, type, data), route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf, loadProjects, projectRows: () => projectRows, loadLeaders, adminOf, applyMembership, loadProjectRoles, saveProjectRoles, projRoles: () => projRoles, readRole, addReadOnly: membership.addReadOnly, invalidatePeople, projEvent });
+  const joinApi = registerJoin({ liveTo: (ids, type, data) => live?.toPeople(ids, type, data), route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf, loadProjects, projectRows: () => projectRows, loadLeaders, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles: () => projRoles, readRole, addReadOnly: membership.addReadOnly, invalidatePeople, projEvent });
   // 知識庫管理（補建索引、整理 AI 設定）：群組管理員或這個專案的 leader（人類）
   const kbHooks = {}; // 文件區抽字、上傳、刪除時通知知識頁模組（卡片模組建好後才填）
-  const kbManager = async (ctx, me, pj) => me.kind === 'human' && (adminOf(await peopleMap(ctx))?.id === me.id || ((await loadLeaders())[pj] || []).includes(me.id));
-  registerDocs({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, sha256, peopleMap, identity, projectsOf, PROJECTS, assertWritable, loadReadOnly, roIn, audit, docStorage,
+  const kbManager = (ctx, me, pj) => access.can(ctx, me, 'manage_project', { project: pj });
+  registerDocs({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, sha256, peopleMap, identity, projectsOf, PROJECTS, assertWritable, loadReadOnly, roIn: access.readOnlyIn, audit, docStorage,
     findSecret, background, kbManager, kbHooks, kbMaxTotalChars: Number(config.kbMaxTotalChars) || undefined, kbMaxProjectChunks: Number(config.kbMaxProjectChunks) || undefined, // 知識庫上限（環境變數可調）
     maxFileBytes: (Number(config.docMaxFileMb) || 0) * 1048576 || undefined,
     maxTotalBytes: (Number(config.docMaxTotalMb) || 0) * 1048576 || DOC_MAX_TOTAL_BYTES });
-  const skillsApi = registerSkills({ route, db, ApiError, invalid, readJson, randId, nowIso, sha256, peopleMap, projectsOf, PROJECTS, nameOf, loadLeaders, adminOf, assertNoSecret, writeDm, myAi, requireHuman, loadReadOnly, roIn, readOnlyError, setupSha: SETUP_SHA256, roleDefsMap, storage }); // 技能包放分塊儲存 // C-xxx；C-xxx 唯讀；MAIN-240 同步工具版本；MAIN-249 專案自訂角色
-  registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, requireAdmin, requireHuman, peopleMap, adminOf, storage, docStorage,
+  const skillsApi = registerSkills({ route, db, ApiError, invalid, readJson, randId, nowIso, sha256, peopleMap, projectsOf, PROJECTS, nameOf, access, assertNoSecret, writeDm, myAi, requireHuman, setupSha: SETUP_SHA256, roleDefsMap, storage }); // 技能包放分塊儲存 // C-xxx；C-xxx 唯讀；MAIN-240 同步工具版本；MAIN-249 專案自訂角色
+  registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage,
     afterRestore: async () => { invalidatePeople(); await bumpPeopleVer(); await Promise.all([loadProjects(true), loadLeaders(true), loadReadOnly(true), loadProjectRoles(true)]); } });
-  registerUpdateCheck({ route, db, requireAdmin, requireHuman, config });
-  registerDemo({ route, db, ApiError, randId, nowIso, requireAdmin, requireHuman, newCode, newToken, membership,
+  registerUpdateCheck({ route, db, access, requireHuman, config });
+  registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership,
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });
   const cardsApi = registerCards({ route: cardRoute, statuses, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, canSeeMessage,archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
-  registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, requireAdminOrLeader, cardKey, projEvent, moveCardStmts: cardsApi.moveCardStmts, invalidatePeople,
-    canSeeProject: (me, pj) => !isolatedFrom(me) || projectsOf(me).includes(pj), projectExists: async pj => !!(await db.get('SELECT id FROM projects WHERE id = ?', pj)) });
-  Object.assign(kbHooks, registerKbPages({ route, db, ApiError, invalid, readJson, randId, nowIso, peopleMap, identity, projectsOf, PROJECTS, assertWritable, roIn, kbManager, findSecret, getJson, setJson, createMessage, cardKey, cardsApi, claimsOf, kbSkillState: (pj, ais) => skillsApi.templateState(pj, 'kb-curation', ais) })); // 知識頁、整理卡
+  registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, access, cardKey, projEvent, moveCardStmts: cardsApi.moveCardStmts, invalidatePeople,
+    projectExists: async pj => !!(await db.get('SELECT id FROM projects WHERE id = ?', pj)) });
+  Object.assign(kbHooks, registerKbPages({ route, db, ApiError, invalid, readJson, randId, nowIso, peopleMap, identity, projectsOf, PROJECTS, assertWritable, roIn: access.readOnlyIn, kbManager, findSecret, getJson, setJson, createMessage, cardKey, cardsApi, claimsOf, kbSkillState: (pj, ais) => skillsApi.templateState(pj, 'kb-curation', ais) })); // 知識頁、整理卡
 
   // 只屬部分專案的人：每個人的目前工作、張數、待處理則數只算看的人也在的專案（卡片看專案、訊息照隔離規則）
   async function scopeTeamMembers(me, members, priv) {
@@ -3752,12 +3729,13 @@ ${ending}`;
       if (await canSeeMessage(me, { project: x.project, created_at: x.at })) { const { _ask, ...rest } = x; decisions.push(rest); }
     }
     await loadCrossRoles();
-    const sees = id => { const p = people.get(id); return !!p && seesPerson(me, p); };
+    const v = access.view({ people });
+    const sees = id => { const p = people.get(id); return !!p && v.can(me, 'see_member', { target: p }); };
     // 尚未回應：看得到那個人、也看得到那則訊息才列（曾經會把別專案的訊息 ID 給沒加入的人）
     const unanswered = [];
     for (const u of d.unanswered) if (sees(u.participantId) && await canSeeMessage(me, { project: u._project, created_at: u._at || '' })) unanswered.push({ messageId: u.messageId, participantId: u.participantId, name: u.name, since: u.since });
     return { ...d, decisions, unanswered,
-      members: roleForProject((await scopeTeamMembers(me, d.members, priv)).filter(m => sees(m.participantId)).map(m => (m.aiState && !canSeeState(me, people.get(m.participantId)) ? { ...m, aiState: null } : m)).map(m => (m.projectRoles && isolatedFrom(me) && m.participantId !== me.id ? { ...m, projectRoles: Object.fromEntries(Object.entries(m.projectRoles).filter(([k]) => projectsOf(me).includes(k))) } : m)), url, adminOf(people)?.id) }; // 工作記憶依專案可見；C-xxx 角色依專案
+      members: roleForProject((await scopeTeamMembers(me, d.members, priv)).filter(m => sees(m.participantId)).map(m => (m.aiState && !v.can(me, 'see_ai_state', { target: people.get(m.participantId) }) ? { ...m, aiState: null } : m)).map(m => (m.projectRoles && isolatedFrom(me) && m.participantId !== me.id ? { ...m, projectRoles: Object.fromEntries(Object.entries(m.projectRoles).filter(([k]) => projectsOf(me).includes(k))) } : m)), url, v) }; // 工作記憶依專案可見；C-xxx 角色依專案
   });
   route('POST', '/api/decisions/:id/resolve', async ({ me, params }) => {
     requireHuman(me);

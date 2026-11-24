@@ -5,6 +5,7 @@
 // AI 的 Token 不經過這裡，維持原樣。
 // 再加帳號密碼（人類自己設）與主機救援連結（只救管理員，只能在主機用 npm run admin-rescue 產生）。
 import { hashPassword, verifyPassword, normUsername, validUsername, USERNAME_RULE, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
+import { ACCESS_ROLE } from './access.js';
 
 // 邀請連結有效時間可選（預設 24 小時）；照舊只能用一次
 export const INVITE_TTLS = { '15m': 15 * 60_000, '1h': 3_600_000, '24h': 86_400_000, '7d': 7 * 86_400_000 };
@@ -34,7 +35,7 @@ export function deviceLabelAs(prefix, ua = '') {
 
 export function registerLogin(d) {
   const { route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, setInitialReadOnly, setProjectsStmts, projectListOf,
-    adminOf, requireAdmin, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
+    adminOf, access, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
     groupName, humanTtlMs, failLimit = 10, captcha = { on: false } } = d;
 
   // ---------- 嘗試失敗的限流（配對碼只有 6 位數，要擋猜測） ----------
@@ -293,7 +294,7 @@ export function registerLogin(d) {
 
   route('POST', '/api/invites', async ({ me, ctx, req, base }) => {
     requireHuman(me);
-    await requireAdmin(ctx, me, '邀請新成員');
+    await access.check(ctx, me, 'invite', 'workspace', { what: '邀請新成員' });
     const body = await readJson(req);
     const name = validateName(body.name);
     await assertNameFree(name);
@@ -324,13 +325,13 @@ export function registerLogin(d) {
     return { __status: 201, ...(await inviteOut(ctx, base, id, token)) };
   });
   route('GET', '/api/invites', async ({ me, ctx }) => {
-    await requireAdmin(ctx, me, '查看邀請');
+    await access.check(ctx, me, 'invite', 'workspace', { what: '查看邀請' });
     const rows = await db.all('SELECT * FROM invites WHERE created_at > ? ORDER BY created_at DESC LIMIT 100', Date.now() - INVITE_LIST_MS);
     const people = await peopleMap(ctx);
     return { items: rows.map(iv => inviteView(iv, people)) };
   });
   async function myInvite(ctx, me, id) {
-    await requireAdmin(ctx, me, '管理邀請');
+    await access.check(ctx, me, 'invite', 'workspace', { what: '管理邀請' });
     const iv = await db.get('SELECT * FROM invites WHERE id = ?', id);
     if (!iv) throw new ApiError(404, 'NOT_FOUND', '找不到這個邀請');
     return iv;
@@ -370,7 +371,7 @@ export function registerLogin(d) {
   // 管理員「重設登入」：作廢舊登入碼、登出該人所有裝置，產生給他的新邀請連結
   route('POST', '/api/participants/:id/reset-login', async ({ me, ctx, params, base, req }) => {
     requireHuman(me);
-    await requireAdmin(ctx, me, '重設成員登入');
+    await access.check(ctx, me, 'reset_login', 'workspace', { what: '重設成員登入' });
     const t = (await peopleMap(ctx)).get(params.id);
     if (!t || t.kind !== 'human' || t.status !== 'active') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員');
     if (t.id === me.id) throw new ApiError(400, 'RESET_SELF', '要換自己的登入碼，請到「API 資訊與登入碼」按「換一組登入碼」');
@@ -560,8 +561,8 @@ export function registerLogin(d) {
         const now = Date.now();
         const row = await db.get('SELECT * FROM rescue_links WHERE token_hash = ?', await sha256(body.token));
         if (!row || row.used_at || row.expires_at <= now) return null;
-        const admin = adminOf(await peopleMap(ctx));
-        if (!admin || admin.id !== row.participant_id) return null;
+        const v = await access.load(ctx); // 救援連結只給平台管理員
+        if (v.roleIn(v.people.get(row.participant_id), 'platform') !== ACCESS_ROLE.PLATFORM_ADMIN) return null;
         const r = await db.run('UPDATE rescue_links SET used_at = ?, used_device = ? WHERE id = ? AND used_at IS NULL', now, deviceLabelAs(RESCUE_DEVICE, req.headers.get('user-agent') || ''), row.id);
         if (!r.changes) return null;
         return db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human' AND status = 'active'", row.participant_id);

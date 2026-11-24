@@ -30,10 +30,10 @@ const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s +=
 const unb64 = s => { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
 const toU8 = v => (v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new Uint8Array(v) : Array.isArray(v) ? Uint8Array.from(v) : null);
 
-export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, requireAdmin, requireHuman, peopleMap, adminOf, storage, docStorage, afterRestore }) {
-  const adminOnly = async (ctx, me) => { requireHuman(me); await requireAdmin(ctx, me, '備份與匯入'); };
+export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, afterRestore }) {
+  const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '備份與匯入' }); };
   const columnsOf = async t => (await db.all(`PRAGMA table_info(${t})`)).map(c => c.name);
-  // 匯入中只認開始匯入的那位（備份的成員寫進來後，最早的人類會變成管理員，不能再用 requireAdmin 判斷）
+  // 匯入中只認開始匯入的那位（備份的成員寫進來後，最早的人類會變成管理員，不能再用權限模組的管理員判斷）
   const restorer = async me => { requireHuman(me); const st = await restoring(); if (!st || st.by !== me.id) throw new ApiError(409, 'NOT_RESTORING', '沒有你開始的匯入（先按匯入，restore/begin）'); return st; };
   const restoring = async () => { try { return JSON.parse((await db.get("SELECT value FROM app_settings WHERE key = 'restore_state'"))?.value || 'null'); } catch { return null; } };
   // 空站：只有你一位人類、沒有 AI、訊息、私訊、卡片、技能、文件（新站自動建的預設專案與設定不算）

@@ -4,6 +4,7 @@
 //   - 每個 AI 的主人允許「這一版」才安裝含腳本的包；同步全手動（主人按「同步」或重跑 aigile-setup），AI 不自己查、不加輪詢
 //   - 執行照工具權限，不另外問；技能只發給該專案、指定的 AI（所有 AI／指定角色／指定 AI，MAIN-249）；新版或下架由平台私訊主人（每位主人一則）
 import { ROLES } from './roles.js';
+import { ACCESS_ROLE } from './access.js';
 import { SKILL_TEMPLATES, TEMPLATE_CATEGORIES, templateByName, templateIn, templateMarkOf, TEMPLATE_MARK } from './skill-templates.js';
 export const SKILL_MAX_BYTES = 1024 * 1024;
 export const SKILL_MAX_FILES = 100;
@@ -50,7 +51,7 @@ export const PACK_MAX_FILES = 800;
 export const packMeta = r => { const s = r?.files ?? r?.pack_meta; if (typeof s !== 'string' || s[0] !== '{') return null; try { return JSON.parse(s).pack || null; } catch { return null; } };
 
 export function registerSkills({ route, db, ApiError, invalid, readJson, randId, nowIso, sha256, peopleMap, projectsOf, PROJECTS, nameOf,
-  loadLeaders, adminOf, assertNoSecret, writeDm, myAi, requireHuman, loadReadOnly = async () => ({}), roIn = () => false, readOnlyError = null, setupSha = '', roleDefsMap = async () => ({}), storage = null }) {
+  access, assertNoSecret, writeDm, myAi, requireHuman, setupSha = '', roleDefsMap = async () => ({}), storage = null }) {
   const bytes = s => new TextEncoder().encode(s).length;
   const TPL_HINT = `CASE WHEN substr(files, 1, 1) = '[' AND instr(files, '\\n  ${TEMPLATE_MARK}:') > 0 THEN substr(files, instr(files, '\\n  ${TEMPLATE_MARK}:'), 100) END AS tpl`; // 範本標記那一小段（PLAT-365；JSON 裡 frontmatter 縮排那一行，其他檔隨口提到不算）
   // 這個技能發不發給這隻 AI——安裝、私訊主人、同名檢查、待允許數、安裝統計都用這一個判斷
@@ -81,16 +82,12 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
     return { roles, ais };
   }
 
-  async function canManage(ctx, me, pj) {
-    if (me.kind !== 'human') return false;
-    const people = await peopleMap(ctx);
-    if (adminOf(people)?.id === me.id) return true;
-    return ((await loadLeaders())[pj] || []).includes(me.id);
-  }
+  // 管理技能（核准、下架、改發給誰）：該專案 leader 或群組管理員（權限模組的 manage_project）
+  const canManage = (ctx, me, pj) => access.can(ctx, me, 'manage_project', { project: pj });
   const requireProject = pj => { if (!PROJECTS.includes(pj)) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案'); };
   const inProject = (me, pj) => projectsOf(me).includes(pj);
   // 唯讀成員（及他的 AI）不能上傳、核准、下架技能
-  const assertWritable = async (me, pj) => { const map = await loadReadOnly(); if (roIn(me, pj, map)) throw readOnlyError ? readOnlyError(me, pj) : new ApiError(403, 'READ_ONLY', '你在這個專案是唯讀'); };
+  const assertWritable = (me, pj) => access.check({}, me, 'write', { project: pj });
   // 能看＝在專案、或有 AI 在專案（主人要決定允不允許）、或能管理（管理員不在專案也算）
   const canSee = async (ctx, me, pj) => inProject(me, pj) || await ownsAiIn(ctx, me, pj) || await canManage(ctx, me, pj);
   // 主人看得到自己 AI 所在專案的技能（要決定允不允許）
@@ -235,13 +232,12 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
 
   // ---------- 技能分頁：一次拿全部 ----------
   route('GET', '/api/skills', async ({ ctx, me }) => {
-    const people = await peopleMap(ctx);
-    const admin = me.kind === 'human' && adminOf(people)?.id === me.id;
-    const leaders = await loadLeaders();
+    const v = await access.load(ctx), people = v.people;
+    const admin = v.roleIn(me, 'workspace') === ACCESS_ROLE.WORKSPACE_ADMIN; // 管理員不在專案也看得到（隱含權限）
     const pjs = PROJECTS.filter(pj => admin || inProject(me, pj));
     if (!pjs.length) return { items: [], projects: [], roles: ROLES.map(r => r.key) };
-    const ro = await loadReadOnly();
-    const manageOf = pj => me.kind === 'human' && !roIn(me, pj, ro) && (admin || (leaders[pj] || []).includes(me.id));
+    const writable = pj => v.can(me, 'write', { project: pj });
+    const manageOf = pj => writable(pj) && v.can(me, 'manage_project', { project: pj });
     const rows = (await db.all(`SELECT id, project, name, version, description, sha256, size, has_scripts, roles, CASE WHEN substr(files, 1, 1) = '{' THEN files END AS pack_meta, ${TPL_HINT}, status, uploaded_by, uploaded_at, reviewed_by, reviewed_at, review_note FROM skills WHERE status != 'superseded' AND project IN (SELECT value FROM json_each(?)) ORDER BY uploaded_at DESC`, JSON.stringify(pjs)))
       .filter(r => manageOf(r.project) || r.status === 'published' || r.uploaded_by === me.id);
     const stats = await installStats(null, rows.filter(r => r.status === 'published'));
@@ -250,7 +246,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
     return {
       items: rows.map(r => ({ ...view(r, people), ...(stats.get(r.id) ? { install: stats.get(r.id) } : {}), canReview: r.status === 'pending' && manageOf(r.project) && r.uploaded_by !== me.id })),
       projects: pjs.map(pj => ({ id: pj, name: nameOf(pj), count: rows.filter(r => r.project === pj && r.status !== 'removed' && r.status !== 'rejected').length,
-        canUpload: me.kind === 'human' && inProject(me, pj) && !roIn(me, pj, ro), canManage: manageOf(pj),
+        canUpload: me.kind === 'human' && inProject(me, pj) && writable(pj), canManage: manageOf(pj),
         roles: opts.get(pj), // 可選的角色（平台角色＋專案自訂角色）
         ais: ais.filter(a => projectsOf(a).includes(pj)).map(a => ({ participantId: a.id, name: a.name, roleKey: a.role_key || '', owner: people.get(a.owner_id)?.name || '' })) })),
       roles: ROLES.map(r => r.key),
@@ -267,7 +263,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
     // 一般成員：已上架的＋自己上傳的；leader／管理員：除了舊版都看得到
     const shown = rows.filter(r => r.status !== 'superseded' && (manage || r.status === 'published' || r.uploaded_by === me.id));
     const stats = await installStats(pj, shown.filter(r => r.status === 'published'));
-    return { items: shown.map(r => ({ ...view(r, people), ...(stats.get(r.id) ? { install: stats.get(r.id) } : {}) })), canManage: manage, canUpload: me.kind === 'human' && inProject(me, pj) && !roIn(me, pj, await loadReadOnly()), roles: await roleOptions(pj) };
+    return { items: shown.map(r => ({ ...view(r, people), ...(stats.get(r.id) ? { install: stats.get(r.id) } : {}) })), canManage: manage, canUpload: me.kind === 'human' && inProject(me, pj) && await access.can(ctx, me, 'write', { project: pj }), roles: await roleOptions(pj) };
   });
   route('POST', '/api/projects/:id/skills', async ({ ctx, me, params, req, base }) => {
     const pj = params.id; requireProject(pj);
@@ -307,7 +303,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
   route('GET', '/api/skills/:id', async ({ ctx, me, params }) => {
     const r = await db.get('SELECT * FROM skills WHERE id = ?', params.id);
     if (!r || !(await canSee(ctx, me, r.project))) throw new ApiError(404, 'NOT_FOUND', '找不到這個技能');
-    const manage = await canManage(ctx, me, r.project) && !roIn(me, r.project, await loadReadOnly());
+    const manage = await canManage(ctx, me, r.project) && await access.can(ctx, me, 'write', { project: r.project });
     if (r.status !== 'published' && !manage && r.uploaded_by !== me.id) throw new ApiError(404, 'NOT_FOUND', '找不到這個技能');
     const prev = await db.get("SELECT * FROM skills WHERE project = ? AND name = ? AND status IN ('published', 'superseded') AND version < ? ORDER BY version DESC LIMIT 1", r.project, r.name, r.version);
     const people = await peopleMap(ctx);
