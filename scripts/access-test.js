@@ -139,6 +139,23 @@ try {
   assert.equal(solo.admin().id, 'admin');
   console.log('✓ 多位工作區管理員、最後一位');
 
+  // 建立專案：工作區設定是「所有成員」時一般成員也可以；AI 永遠不行（上面沒注入設定＝只有管理員）
+  let wsRead = 0;
+  const open = createAccess({
+    ApiError, requireHuman, nameOf: id => id, people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
+    isolatedFrom: () => false, isCrossRole: () => false, loadLeaders: async () => leaders, leadersOf: pj => leaders[pj] || [],
+    loadReadOnly: async () => readOnly, isReadOnly: () => false, titles: () => titles,
+    loadWorkspace: async force => { if (force) wsRead++; }, membersCreateProjects: () => true,
+  });
+  const ov = await open.load(ctx);
+  for (const p of [admin, lead, member, loner]) assert.ok(ov.can(p, 'create_project', 'workspace'), `所有成員：${p.id} 可以建立專案`);
+  assert.ok(!ov.can(bot, 'create_project', 'workspace'), 'AI 不能建立專案');
+  assert.ok(!ov.can({ ...member, status: 'disabled' }, 'create_project', 'workspace'), '停用的人不行');
+  assert.ok(!ov.can(member, 'manage_workspace', 'workspace'), '建立專案不等於管理工作區');
+  await open.check(ctx, member, 'create_project', 'workspace');
+  assert.equal(wsRead, 1, 'check 時重讀工作區設定（別份程式剛改過也算）');
+  console.log('✓ 建立專案');
+
   // check 的錯誤：預設訊息帶 what；可以換掉
   await assert.rejects(access.check(ctx, member, 'manage_workspace', 'workspace', { what: '改群組名稱' }), e => e.code === 'NOT_ADMIN' && e.message === '只有群組管理員（admin）能改群組名稱。');
   await assert.rejects(access.check(ctx, member, 'manage_project', { project: 'main' }, { deny: () => new ApiError(403, 'NOT_REVIEWER', 'x') }), e => e.code === 'NOT_REVIEWER');

@@ -17,6 +17,7 @@ import { registerBackup } from './backup.js'; // 備份匯出與匯入
 import { registerUpdateCheck } from './update.js'; // 管理頁「有新版本」
 import { registerDemo } from './demo.js'; // 示範資料
 import { createAccess, ACCESS_ROLE, isWorkspaceAdmin } from './access.js'; // 權限模組
+import { createWorkspaceSettings, CREATE_PROJECTS } from './workspace-settings.js'; // 工作區設定（誰可以建立專案）
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -1545,7 +1546,9 @@ ${ending}`;
   });
   // ---------- 專案與成員管理 ----------
   // 權限判斷全部走權限模組（src/access.js）：誰是什麼角色、能不能做什麼；它要讀的成員資料都來自成員資格模組（src/membership.js）
+  const workspace = createWorkspaceSettings({ db });
   const access = createAccess({
+    loadWorkspace: force => workspace.load(force), membersCreateProjects: () => workspace.membersCreateProjects(),
     ApiError, requireHuman, nameOf: id => nameOf(id), people: ctx => peopleMap(ctx), projects: () => PROJECTS, projectsOf, isolatedFrom,
     isCrossRole: p => membership.isCrossRole(p), titles: () => projRoles, memberProjectsOf: p => membership.projectsOf(p),
     loadLeaders: force => membership.loadLeaders(force), leadersOf: pj => membership.leadersOf(pj),
@@ -2004,7 +2007,7 @@ ${ending}`;
   // UX ：不屬於全部專案的人，專案清單只回自己所屬的專案（不露出別專案名稱）
   // PLAT-381：被隔離的成員也列出自己所屬、已封存的專案（leader 才能還原）
   const scopeProjects = (r, me) => { if (!isolatedFrom(me)) return r; const mine = [...new Set([...projectsOf(me), ...listOf(me)])]; return { ...r, items: r.items.filter(p => mine.includes(p.id)), leaders: Object.fromEntries(Object.entries(r.leaders || {}).filter(([k]) => mine.includes(k))), archivedLeaders: Object.fromEntries(Object.entries(r.archivedLeaders || {}).filter(([k]) => mine.includes(k))), readOnly: Object.fromEntries(Object.entries(r.readOnly || {}).filter(([k]) => mine.includes(k))), join: Object.fromEntries(Object.entries(r.join || {}).filter(([k]) => mine.includes(k))) }; };
-  route('GET', '/api/projects', async ({ ctx, me }) => scopeProjects(await projectsResponse(ctx), me));
+  route('GET', '/api/projects', async ({ ctx, me }) => ({ ...scopeProjects(await projectsResponse(ctx), me), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace') })); // canCreateProject：網頁要不要顯示「新增專案」
   // 群組名稱（登入頁也要顯示，所以讀取不用登入）；只有管理員能改
   route('GET', '/api/group', async () => ({ name: await groupName() }), { open: true });
   // 第一次設定引導做完或全部略過：之後不再出現（群組名稱、專案、邀請、AI 都在管理頁改得到）
@@ -2030,13 +2033,15 @@ ${ending}`;
     await db.batch(stmts);
     pageName = { at: 0, name: null }; // 網頁上的群組名立刻換新
   }
-  const groupSettings = async () => { const js = await joinSettings(); return { name: await groupName(), openJoin: js.openJoin, roomCodeSet: js.roomCodeSet, source: js.source }; };
-  // 加入設定（管理員）：開放註冊、群組密碼、群組名稱；存資料庫立刻生效。群組密碼只回「有沒有設」
-  route('GET', '/api/group/settings', async ({ ctx, me }) => {
+  const groupSettings = async () => { const js = await joinSettings(); return { name: await groupName(), openJoin: js.openJoin, roomCodeSet: js.roomCodeSet, source: js.source, createProjects: (await workspace.load(true)).createProjects }; };
+  // 工作區設定（工作區管理員）：開放註冊、群組密碼（房間碼）、工作區名稱、誰可以建立專案；存資料庫立刻生效。群組密碼只回「有沒有設」
+  // /api/workspace/settings 是新名字；/api/group/settings 留著給舊的網頁與整合（同一份）
+  for (const pattern of ['/api/workspace/settings', '/api/group/settings']) route('GET', pattern, async ({ ctx, me }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看加入設定' });
     return groupSettings();
   });
-  route('PUT', '/api/group/settings', async ({ ctx, me, req }) => {
+  const CREATE_PROJECTS_LABEL = { [CREATE_PROJECTS.MEMBERS]: '所有成員', [CREATE_PROJECTS.ADMINS]: '只有管理員' };
+  for (const pattern of ['/api/workspace/settings', '/api/group/settings']) route('PUT', pattern, async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '改加入設定' });
     const body = await readJson(req);
     const has = k => Object.prototype.hasOwnProperty.call(body, k);
@@ -2046,6 +2051,7 @@ ${ending}`;
       code = body.roomCode === null ? '' : String(body.roomCode);
       if (code && (code.length < 4 || code.length > 64 || /\s/.test(code))) throw invalid('群組密碼需為 4～64 字，不可有空白；要清除請送空字串');
     }
+    if (has('createProjects') && !Object.values(CREATE_PROJECTS).includes(body.createProjects)) throw invalid('createProjects 只能是 members（所有成員）或 admins（只有管理員）');
     let name = null;
     if (has('name')) {
       name = String(body.name ?? '').trim();
@@ -2061,7 +2067,11 @@ ${ending}`;
       stmts.push([upsert, ['room_code', code ? await hashPassword(code) : '']]);
       stmts.push(projEvent(GROUP_EVT, me.id, code ? `${me.name} 設定群組密碼` : `${me.name} 清除群組密碼`, at)); // 紀錄不寫密碼本身
     }
+    if (has('createProjects') && (await workspace.load(true)).createProjects !== body.createProjects) {
+      stmts.push(...workspace.setCreateProjectsStmts(body.createProjects), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以建立專案：${CREATE_PROJECTS_LABEL[body.createProjects]}`, at));
+    }
     if (stmts.length) await db.batch(stmts);
+    workspace.invalidate();
     if (name !== null) await saveGroupName(me, name);
     return groupSettings();
   });
@@ -2140,6 +2150,7 @@ ${ending}`;
       if (p.kind === 'system' || p.status !== 'active' || !(p.id === me.id || crossRole(p))) continue;
       stmts.push(...setProjectsStmts(p.id, [...listOf(p), id], at));
     }
+    stmts.push(...membership.makeProjectAdminStmts(me.id, id)); // 建立專案的人是該專案的專案管理員
     await db.batch(stmts);
     invalidatePeople(); invalidateProjects();
     await membership.loadMembers(true);
