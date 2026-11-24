@@ -136,6 +136,9 @@ try {
   assert.equal((await call(wang.token, '/api/workspace/settings', 'PUT', { createProjects: 'members' })).status, 200, '不是工作區成員也能管理工作區');
   assert.equal((await call(wang.token, `/api/projects/${A}/join-settings`, 'PUT', { open: true, note: '' })).status, 200, '也能管理專案');
   assert.ok(!(await call(boss.token, '/api/participants')).body.items.some(p => p.participantId === Wg), '不出現在成員名單');
+  assert.equal((await call(boss.token, '/api/projects/第二專案/visibility', 'PUT', { visibility: 'private' })).status, 200, '第二專案設成私人');
+  assert.equal((await call(wang.token, '/api/projects/第二專案/members')).status, 200, '平台管理員看得到私人專案（隱含權）');
+  assert.equal((await call(chen.token, '/api/projects/第二專案/visibility', 'PUT', { visibility: 'review' })).status, 200, '還原');
   console.log('✓ 平台管理員不是工作區成員也有工作區管理權');
 
   // ---- 停用帳號：登不進來、AI 失效；恢復後可以登入 ----
