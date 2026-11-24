@@ -358,8 +358,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   const adminInWorkspace = p => hasWorkspaceAdminRights(p, membership.isPlatformAdmin);
   // 實際能進的專案（規則在權限模組）：AI 不超出所屬人類能進的專案。所屬人類的列看成員快取（AI 發請求時一定先讀好，見 handleInner）；
   // 快取裡沒有就只看他明確加入的專案（寧可少給）
-  const projectsOf = effectiveProjects({ projects: () => PROJECTS, memberProjectsOf: membership.projectsOf, implicitAll: adminInWorkspace,
-    ownerOf: ai => peopleCache.map?.get(ai.owner_id) || { id: ai.owner_id, kind: 'human' } });
+  const ownerOf = ai => peopleCache.map?.get(ai.owner_id) || { id: ai.owner_id, kind: 'human' };
+  const projectsOf = effectiveProjects({ projects: () => PROJECTS, memberProjectsOf: membership.projectsOf, implicitAll: adminInWorkspace, ownerOf });
   // 專案可見度（權限模組 discover_project）：私人專案對看不到的人＝不存在（檢查、錯誤訊息列的專案都不提它）
   // 同步版，用目前的成員快取（非成員看私人專案才要判上層管理員）；me 沒帶＝平台自己，都看得到
   const visibleView = () => access.view({ people: peopleCache.map || new Map() });
@@ -761,7 +761,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     }
     const id = randId('msg');
     const createdAt = nowIso();
-    if (audience && project) { await loadProjectRoles(); const v = access.view({ people }); for (const rid of [...recipientIds]) if (!projectsOf(people.get(rid)).includes(project) || v.implicitOnlyIn(rid, project)) recipientIds.delete(rid); } // 沒角色的管理員不通知
+    if (audience && project) { const v = access.view({ people }); for (const rid of [...recipientIds]) if (!projectsOf(people.get(rid)).includes(project) || v.implicitOnlyIn(rid, project)) recipientIds.delete(rid); } // 沒加入專案的工作區管理員（隱含權限）不通知
     const reasons = new Map();
     for (const rid of recipientIds) reasons.set(rid, [audience ? 'all' : 'mention']);
     const replyPerson = replyTo && people.get(replyTo.author_id);
@@ -1566,13 +1566,13 @@ ${ending}`;
   // ---------- 專案與成員管理 ----------
   // 權限判斷全部走權限模組（src/access.js）：誰是什麼角色、能不能做什麼；它要讀的成員資料都來自成員資格模組（src/membership.js）
   const workspace = createWorkspaceSettings({ db, env: { openJoin: OPEN_JOIN, roomCode: ROOM_CODE }, hashPassword, verifyPassword });
-  // nameOf 在下面才定義（const），所以包一層；titles 是會換掉的變數，所以給讀取函式
+  // nameOf 在下面才定義（const），所以包一層
   const access = createAccess({
     loadWorkspace: workspace.load, membersCreateProjects: workspace.membersCreateProjects,
     ApiError, requireHuman, nameOf: id => nameOf(id), people: peopleMap, projects: () => PROJECTS, projectsOf, isolatedFrom,
-    titles: () => titles, memberProjectsOf: membership.projectsOf, visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
+    memberProjectsOf: membership.projectsOf, visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
     loadProjectAdmins: membership.loadProjectAdmins, projectAdminsOf: membership.projectAdminsOf,
-    loadReadOnly: membership.loadReadOnly, isReadOnly: membership.isReadOnly, isPlatformAdmin: membership.isPlatformAdmin,
+    loadReadOnly: membership.loadReadOnly, isReadOnly: membership.isReadOnly, isPlatformAdmin: membership.isPlatformAdmin, ownerOf,
   });
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
@@ -1735,7 +1735,7 @@ ${ending}`;
       visibility: access.visibilityOf(r.id), // 專案可見度：open｜review｜private
       roles: (rdefs[r.id] || []).map(d => ({ ...d, createdByName: people.get(d.createdBy)?.name || null, inUse: inUse(r.id, d) })), // 本專案角色
       dm: dms[r.id] ? { ...dms[r.id], byName: people.get(dms[r.id].by)?.name || null } : { on: false, by: null, at: null, byName: null },
-      memberCount: [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && (listOf(p).includes(r.id) || projectsOf(p).includes(r.id)) && !v.implicitOnlyIn(p.id, r.id)).length, // 工作區管理員：加入或有職稱才算
+      memberCount: [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && (listOf(p).includes(r.id) || projectsOf(p).includes(r.id)) && !v.implicitOnlyIn(p.id, r.id)).length, // 工作區管理員：明確加入才算（只有職稱不算）
       openCards: counts.get(r.id) || 0, statuses: book.list(r.id) })); // 看板狀態（順序＝看板欄順序）
   }
   async function projectsResponse(ctx, extra = {}) {
@@ -1899,7 +1899,7 @@ ${ending}`;
     if (role === PROJECT_ROLE.VIEWER && wsAdminIn(v, p)) throw invalid('工作區管理員不能設成唯讀成員');
   }
   // AI 在專案裡的角色：所屬人類是唯讀成員就是唯讀成員
-  const memberRoleOf = (p, pj) => (p.kind === 'ai' ? (membership.isReadOnly(p, pj) ? PROJECT_ROLE.VIEWER : PROJECT_ROLE.MEMBER) : membership.roleOf(p.id, pj));
+  const memberRoleOf = (p, pj) => (p.kind === 'ai' ? (access.readOnlyIn(p, pj) ? PROJECT_ROLE.VIEWER : PROJECT_ROLE.MEMBER) : membership.roleOf(p.id, pj));
   async function membersOf(ctx, row) {
     await loadProjectRoles();
     const v = await access.load(ctx), people = v.people;

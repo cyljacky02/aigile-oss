@@ -1544,7 +1544,7 @@
   // 不分專案的地方（名片、搜尋、沒有專案的訊息），管理員顯示「管理員」，不露出舊的跨專案角色
   const roleNoPj = p => (p?.memberType === 'human' && isAdmId(p.participantId) ? '管理員' : p?.role || '');
   // 工作區管理員看得到、管得了所有專案（隱含權限），但沒加入、也沒有職稱的專案不算成員（名單、人數、交接、@ 選人都不列）
-  const implicitOnlyAdmin = (p, pj) => { if (!p || p.memberType !== 'human' || !isAdmId(p.participantId) || !PROJECTS.includes(pj)) return false; const q = state.participants.get(p.participantId) || p; return !(q.memberProjects || []).includes(pj) && !q.projectRoles?.[pj]; };
+  const implicitOnlyAdmin = (p, pj) => { if (!p || p.memberType !== 'human' || !isAdmId(p.participantId) || !PROJECTS.includes(pj)) return false; const q = state.participants.get(p.participantId) || p; return !(q.memberProjects || []).includes(pj); }; // 只有職稱不算成員
   const memberIn = (p, pj) => (p?.projects || []).includes(pj) && !implicitOnlyAdmin(p, pj);
   // ---------- 找人：成員與權限、@ 選人、我的 AI 共用 ----------
   // 比對名字、代號（AB12）、角色名稱與代碼（PG），不分大小寫；篩選在網頁做，不加讀取
@@ -9111,9 +9111,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   matchMedia('(max-width: 899px)').addEventListener('change', () => { if (state.page === 'perm') drawPerm(); }); // 視窗跨過手機寬（旋轉、拉窄）時換版面
   const permProjects = () => (isAdmin() ? PROJECTS : myLeadProjects());
   const inProj = (p, pj) => permCur(p).projects.has(pj);
-  // 工作區管理員：明確加入或（照草稿）有職稱才算成員；其他專案只有隱含權限，不列
-  const pmMember = (p, pj) => inProj(p, pj) || (p.memberType === 'human' && isAdmId(p.participantId) && !!permCur(p).roles?.get(pj));
-  const pmGhost = (p, pj) => p.memberType === 'human' && isAdmId(p.participantId) && !pmMember(p, pj);
+  // 工作區管理員：明確加入才算成員（只有職稱不算）；其他專案只有隱含權限，不列
+  const pmMember = (p, pj) => inProj(p, pj);
+  const pmImplicit = (p, pj) => p.memberType === 'human' && isAdmId(p.participantId) && !pmMember(p, pj);
   const ownerOf = p => state.participants.get(p.ownerParticipantId);
   const permSub = p => (p.memberType === 'ai' ? L(`${ownerOf(p)?.name || ''}的`, `${ownerOf(p)?.name || ''}'s`) : '');
   const pmSw = (on, attrs, chg, label, extra = '') => `<button type="button" class="pm-sw${chg ? ' chg' : ''}" role="switch" aria-checked="${on}" aria-label="${esc(label)}" ${attrs} ${extra}></button>`;
@@ -9180,7 +9180,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       ${list.map(x => { const n = permPeople().filter(p => pmMember(p, x)).length, ch = projChanges(x); return `<button type="button" class="pm-li${x === pj ? ' sel' : ''}" data-pm-proj="${esc(x)}" aria-current="${x === pj}"><b>${esc(projName(x))}</b>${ch ? `<span class="pm-chg-tag">${ch} 變更</span>` : ''}<span class="muted small">${n}</span></button>`; }).join('') || '<p class="muted small pm-pad">找不到專案</p>'}</section>`;
     if (!pj) return `<div class="pm-split">${left}</div>`;
     const members = permPeople().filter(p => pmMember(p, pj));
-    const adms = permPeople().filter(p => pmGhost(p, pj)), adm = adms[0], admNote = adm
+    const adms = permPeople().filter(p => pmImplicit(p, pj)), adm = adms[0], admNote = adm
       ? `<p class="muted small pm-admin-note">管理員 ${esc(adms.map(x => x.name).join('、'))} 可以看所有專案${admin ? `，在這裡沒有角色所以不列在成員裡。<button type="button" class="link small" data-pm-goto-mem="${esc(adm.participantId)}">設定他在這個專案的角色</button>` : ''}</p>` : '';
     // 表格「成員｜角色｜leader｜移出」；名字可以點，跳到依成員
     const row = p => {
