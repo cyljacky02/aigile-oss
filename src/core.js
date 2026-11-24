@@ -1252,12 +1252,12 @@ ${waitEnd}
     const first = `## 二、這次要做什麼：初次接入（只做一次）
 省用量：規格讀一次存成 .aigile/${agent}/ai-integration.md（本設定是下載的 setup.md 時，拿掉 Token 那一行改名成 onboarding.md；直接貼進對話的不用另存），之後用搜尋或指定範圍讀，不整份重讀；命令、日誌只看最後 20 行，API 用 brief=1、limit。超過 40 回合還沒接好就停下，告訴 ${O} 卡在哪。
 1. 確認能呼叫 HTTP API；做不到就照實說，絕不假稱已連線。${tl === 'codex' && !trial ? 'Codex 連不上先看第五節的開網路說明。' : ''}
-2. 自己建 .aigile/${agent}/（找不到 .aigile 是正常的，不算受阻），Token 存 .token：不要照著打，用程式從本設定或 setup.md 擷取，存好馬上 GET /api/me 驗一次（照著打容易多一個或少一個字元，結果是 401）。短版接入下載的 .aigile/${agent}/setup.md 含 Token，存好 .token 後就刪掉。
+2. 自己建 .aigile/${agent}/（找不到 .aigile 是正常的，不算受阻），Token 存 .token：不要照著打，用程式從本設定或 setup.md 擷取，存好馬上 GET /api/me 驗一次（照著打常會錯一個字元，變成 401）。短版接入下載的 .aigile/${agent}/setup.md 含 Token，存好 .token 後就刪掉。
 3. 讀規格；GET /api/me 核對身分，順便讀 grants、repos。
 4. 建游標基準：GET /api/messages?limit=1 只記 nextCursor（歷史訊息不是新任務）。用 limit=1 建基準只有這一次，之後的游標照第三節。
 5. 先簽到，再處理收件匣：POST /api/messages，requestId "req_checkin_${ai.id}"，例「[AI 簽到] 我是 ${O} 的 ${shortName}，角色為 ${ai.role}。已成功連線，目前可接受指定任務。」只簽到這一次，之後重連不再簽到。
 6. 簽到後：GET /api/messages?after=<第 4 步的 nextCursor>&limit=50&brief=1 讀一次（自己的簽到略過），之後用這次回的 nextCursor（簽到之後的）當游標；再看既有通知：與你無關的靜默 ACK，指定給你的照第三節處理。
-7. 建 .aigile/${agent}/state.json：messagesCursor＝第 6 步的 nextCursor，cardsSince＝目前時間（ISO，例 2026-01-31T09:00:00.000Z）。
+7. 建 .aigile/${agent}/state.json：messagesCursor＝第 6 步的 nextCursor，cardsSince＝目前時間（ISO 格式）。
 ${report}${trial ? '' : `
 ${oneLine && (tl === 'codex' || tl === 'antigravity') ? `9. 接好就收尾：PUT /api/me/state 存進度，跟 ${O} 說可以關掉這個視窗，之後有事 watcher 會在背景叫醒你。` : oneLine && manual ? `9. 接好就收尾：PUT /api/me/state 存進度，跟 ${O} 說接好了；之後需要你時，他會開 Copilot CLI 叫你跑一輪。` : `9. 接好就換新對話：PUT /api/me/state 存進度，請 ${O} ${oneLine && tl === 'claude' ? '打 /clear（hook 會自動帶入「重新接上」設定）' : '開新對話、重新貼接入提示（那時會拿到「重新接上」的版本）'}，之後都在新對話。`}`}`;
     const again = `## 二、這次要做什麼：重新接上
@@ -1334,7 +1334,7 @@ ${mcp ? `1. 用 aigile_me 核對 participantId 是 ${ai.id}，不一致立刻停
    - 簽到、感謝、確認、重複、別人之間的協調、你只是知會 → 不回，靜默 ACK。
    - 不和其他 AI 無人監督多輪互聊。
 5. 處理完才 ACK，最後才存游標。${mcp ? 'aigile_ack 帶已處理的 notificationIds 與 cursor＝nextCursor，絕不用 messageId。' : 'ACK 只用 notificationId，絕不用 messageId（傳錯不會報錯，通知會一直叫你）；'}ACK 失敗只重試 ACK，不重複發文。
-6. 游標只存「這一輪實際讀到的那一頁」回應裡的 nextCursor。不要另外用 limit=1 取最新的來存：那會跳過還沒讀的訊息。
+6. 游標只存這一輪實際讀到那一頁回的 nextCursor；不要另用 limit=1 取最新的來存（會跳過沒讀的）。
 7. 沒有新訊息也沒有通知 → 沒事不發文。
 8. 你決定要等 ${O} 或別人做某件事才能繼續時，一定要發 [需確認] 用 replyFrom 指定對方、寫清楚在等什麼；不可以只在 [接單]／[進度] 提一句就停下來等。
 9. 手上排了多張卡：做完一張就接下一張並發 [接單]，不要等人點名。
@@ -1353,6 +1353,7 @@ ${mcp ? `1. 用 aigile_me 核對 participantId 是 ${ai.id}，不一致立刻停
 
 **卡片**
 - 只在接下任務、受阻或解除、要人類拍板（建決策卡）、完成（不要自己標已驗證）、交接時動卡片。
+- 各專案的狀態名稱可能不同，規則只看類別；清單在 ${mcp ? 'aigile_cards' : 'GET /api/cards'} 回的 statuses。
 - 發 [接單]／[進度] 帶 cardId＝認領（你是負責人卡會改到「進行中」類別）；回應有 cardClaim＝別人在做，先協調或 takeover 接手；交接用四欄。相關訊息都帶 cardId。
 - 完成與交接的順序：先發 [完成]（附交付內容或 40 碼 SHA），再呼叫 ${mcp ? 'aigile_card_handover' : 'POST /api/cards/:id/handover'} 交給驗收的人；平台會代你發 [交接] 並 @ 對方。[完成] 不會把卡改到已完成類別。
 - 交付物是只在你本機的檔案時：把內容全文貼在 [完成] 訊息裡，驗收的人讀不到你的檔案。
@@ -1365,8 +1366,8 @@ ${mcp ? `1. 用 aigile_me 核對 participantId 是 ${ai.id}，不一致立刻停
 ${standby}
 
 ## 六、出錯怎麼辦
-- 400：照錯誤訊息改。查詢參數打錯，伺服器會直接寫出正確寫法；不要換寫法亂試。
-- GET 的查詢參數有中文（例 project 代號是中文）要 URL 編碼（encodeURIComponent），不然會 400；POST 本文用 UTF-8。
+- 400：照錯誤訊息改（查詢參數打錯會寫出正確寫法），不要換寫法亂試。
+- GET 查詢參數有中文要 URL 編碼（encodeURIComponent），不然會 400；POST 本文用 UTF-8。
 - 401 INVALID_TOKEN／TOKEN_EXPIRED → 立刻停止 watcher 與所有排程並告訴 ${O}，請他重發 Token。
 - 403 READ_ONLY → 停下告訴 ${O}，不重試、不繞過。
 - 429 RATE_LIMITED → 依 Retry-After 的秒數再試。
