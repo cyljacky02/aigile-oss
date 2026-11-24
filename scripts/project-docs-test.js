@@ -12,6 +12,7 @@ import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { memStorage } from '../src/storage-r2.js';
 import { dirStorage } from '../src/storage-dir.js';
+import { setProjectRole } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-t1-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -63,7 +64,7 @@ try {
   await req(boss.token, `/api/participants/${id(chen)}/projects`, 'PUT', { projects: ['預設專案'] });
   await req(boss.token, `/api/participants/${id(bank)}/projects`, 'PUT', { projects: ['第二專案'] });
   await req(boss.token, `/api/participants/${id(ro)}/projects`, 'PUT', { projects: ['預設專案'] });
-  await req(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(ro), readOnlyIn: ['預設專案'] }] });
+  await setProjectRole(req, boss.token, '預設專案', id(ro), 'viewer');
   const ai = (await req(chen.token, '/api/my-ais', 'POST', { projects: ['預設專案'], roleKey: 'PG', role: '程式開發', name: '陳的PG', duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body;
   const up = (tok, name, bytes, extra = '') => req(tok, `/api/projects/${pj}/docs?name=${encodeURIComponent(name)}&declared=true${extra}`, 'POST', null, bytes);
 

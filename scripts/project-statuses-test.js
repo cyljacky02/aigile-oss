@@ -10,6 +10,7 @@ import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { testToken } from './test-token.js';
+import { addToProject, removeFromProject, setProjectRole } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pst-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -63,7 +64,7 @@ try {
   // 其他成員：leader（預設專案）、一般成員、AI
   const lead = (await call(null, '/api/join', 'POST', { name: '陳小美', role: 'SM' })).body;
   const member = (await call(null, '/api/join', 'POST', { name: '王大明', role: 'PG' })).body;
-  ok(await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: lead.participant.participantId, leaderOf: ['預設專案'] }] }), '指定 leader');
+  ok(await addToProject(call, boss.token, '預設專案', lead.participant.participantId, 'admin'), '以專案管理員加入');
   const mkAi = async name => { const a = ok(await call(boss.token, '/api/my-ais', 'POST', { projects: ['預設專案', '第二專案'], roleKey: 'PG', role: 'PG', name, duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' }), '建 AI'); return { id: a.participantId, name, tok: await testToken(db, a.participantId) }; };
   const ai = await mkAi('甲PG');
   const add = (body, tok = boss.token, pj = P) => call(tok, `/api/projects/${pj}/statuses`, 'POST', body);
@@ -271,21 +272,21 @@ try {
   {
     ok(await patchSt((await byName('待處理', P2)).id, { name: '排隊' }, boss.token, P2), '改名');
     const h = (await call(null, '/api/join', 'POST', { name: '趙小華', role: 'PG' })).body, hid = h.participant.participantId;
-    const join = async () => ok(await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: hid, projects: ['預設專案', '第二專案'] }] }), '加入兩個專案');
+    const join = async () => ok(await call(boss.token, `/api/participants/${hid}/projects`, 'PUT', { projects: ['預設專案', '第二專案'] }), '加入兩個專案');
     const mk2 = async owner => ok(await mkCard(boss.token, { project: '第二專案', ownerId: owner, status: '進行中' }), '第二專案的卡');
     const logged = async id => (await getCard(id)).log.map(l => l.text);
     const events = async () => ok(await call(boss.token, `/api/projects/${P2}/events`), '異動紀錄').items.map(e => e.text);
     await join();
     const removed = await mk2(hid);
-    ok(await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: hid, projects: ['預設專案'] }] }), '移出第二專案');
+    ok(await removeFromProject(call, boss.token, '第二專案', hid), '移出第二專案');
     assert.equal((await getCard(removed.cardId)).status, '排隊');
     assert.ok((await logged(removed.cardId)).some(t => t.includes('狀態 進行中 → 排隊')), '移出：紀錄寫狀態名稱');
     assert.ok((await events()).some(t => t.includes('1 張卡退回排隊')), '移出：專案異動寫狀態名稱');
     await join();
     const ro = await mk2(hid);
-    ok(await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: hid, readOnlyIn: ['第二專案'] }] }), '設唯讀');
+    ok(await setProjectRole(call, boss.token, '第二專案', hid, 'viewer'), '設唯讀');
     assert.ok((await logged(ro.cardId)).some(t => t.includes('狀態 進行中 → 排隊')), '唯讀：紀錄寫狀態名稱');
-    assert.ok((await events()).some(t => /設為唯讀（1 張卡退回排隊）/.test(t)), '唯讀：專案異動寫狀態名稱');
+    assert.ok((await events()).some(t => /設為唯讀成員（1 張卡退回排隊）/.test(t)), '唯讀：專案異動寫狀態名稱');
     const aiCard = await mk2(ai.id);
     ok(await call(boss.token, `/api/my-ais/${ai.id}/delete`, 'POST', { confirmName: ai.name }), '刪除 AI');
     assert.ok((await logged(aiCard.cardId)).some(t => t.includes('狀態 進行中 → 排隊')), 'AI 刪除：紀錄寫狀態名稱');

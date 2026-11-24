@@ -6,6 +6,7 @@
 // 本機暫存資料庫＋無頭 Chrome／Edge，不連正式站。用法：node scripts/project-entry-ui-test.js（找不到瀏覽器就略過）
 import assert from 'node:assert';
 import { startKit, findBrowser, until, sleep } from './browser-kit.js';
+import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('project-entry-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('projentry');
@@ -14,7 +15,7 @@ try {
   const liu = await join('林志明', 'PO'), wang = await join('陳小美', 'UX'), chen = await join('王大同', 'PG');
   const id = p => p.participant.participantId;
   for (const [p, pj] of [[wang, ['預設專案', '第二專案']], [chen, ['預設專案']]]) await kit.call(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: pj });
-  assert.equal((await kit.call(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(wang), leaderOf: ['預設專案'] }] })).status, 200, 'wang 當預設專案 leader');
+  assert.equal((await makeProjectAdmin(kit.call, liu.token, id(wang), ['預設專案'])).status, 200, 'wang 當預設專案 leader');
   const np = (await kit.call(liu.token, '/api/projects', 'POST', { name: '要封存的', code: 'ARC' })).body;
   const arc = np.items.find(p => p.name === '要封存的');
 

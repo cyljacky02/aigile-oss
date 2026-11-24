@@ -1,4 +1,4 @@
-// 每個專案各自的人類角色：上線帶入、新成員未設定、誰能改、?project=、成員與權限一起存、移出清掉、邀請、隔離。
+// 每個專案各自的職稱（API 欄位 projectRoles）：上線帶入、新成員未設定、誰能改（專案管理員、本人、管理員）、?project=、移出清掉、邀請、隔離。
 // 用法：node scripts/roles-test.js
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -7,6 +7,7 @@ import path from 'node:path';
 import assert from 'node:assert';
 import { fileURLToPath } from 'node:url';
 import { ROLES } from '../src/roles.js';
+import { addToProject, removeFromProject, makeProjectAdmin } from './test-members.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3991;
@@ -31,7 +32,7 @@ const call = async (token, p, method = 'GET', body) => {
     const amy = (await call(null, '/api/join', 'POST', { name: 'Amy', role: 'PO' })).body;
     const mate = (await call(null, '/api/join', 'POST', { name: '陳建宏', role: 'BA' })).body;
     const id = x => x.participant.participantId;
-    const M = (tok, changes, dryRun) => call(tok, '/api/members/matrix', 'PUT', { changes, dryRun });
+    const setPj = (p, projects) => call(boss.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects });
     // 準備「上線前」的狀態：用單人設定（不會先觸發角色帶入），模擬已經在專案裡的人
     for (const p of [amy, mate]) await call(boss.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: ['預設專案', '第二專案'] });
     const people = async (tok = boss.token, q = '') => new Map((await call(tok, '/api/participants' + q)).body.items.map(p => [p.participantId, p]));
@@ -47,7 +48,7 @@ const call = async (token, p, method = 'GET', body) => {
 
     // ⑤ 之後新加入的：未設定
     const wang = (await call(null, '/api/join', 'POST', { name: '王小明', role: 'UX' })).body;
-    await M(boss.token, [{ id: id(wang), projects: ['預設專案'] }]);
+    await setPj(wang, ['預設專案']);
     P = await people();
     assert.deepEqual(P.get(id(wang)).projectRoles, { 預設專案: '' }, '新加入專案的人類預設未設定');
 
@@ -56,10 +57,10 @@ const call = async (token, p, method = 'GET', body) => {
     assert.equal((await R(wang.token, id(wang), { 預設專案: 'PG' })).body.projectRoles['預設專案'], 'PG', '本人改自己');
     assert.equal((await R(wang.token, id(mate), { 預設專案: 'PG' })).status, 403, '不能改別人');
     assert.equal((await R(wang.token, id(wang), { 第二專案: 'PG' })).status, 400, '不在的專案不能設');
-    // ④ leader 只改自己專案
-    await M(boss.token, [{ id: id(amy), leaderOf: ['預設專案'] }]);
-    assert.equal((await R(amy.token, id(mate), { 預設專案: 'QA' })).status, 200, '平台 leader 改平台的角色');
-    assert.equal((await R(amy.token, id(mate), { 第二專案: 'QA' })).body.error?.code, 'NOT_PROJECT_LEADER', 'leader 不能改別的專案');
+    // ④ 專案管理員只改自己專案
+    await makeProjectAdmin(call, boss.token, id(amy), ['預設專案']);
+    assert.equal((await R(amy.token, id(mate), { 預設專案: 'QA' })).status, 200, '平台的專案管理員改平台的職稱');
+    assert.equal((await R(amy.token, id(mate), { 第二專案: 'QA' })).body.error?.code, 'NOT_PROJECT_LEADER', '專案管理員不能改別的專案');
     // ④ 管理員全部；「其他」最多 10 字
     assert.equal((await R(boss.token, id(mate), { 第二專案: '資料治理' })).body.projectRoles.第二專案, '資料治理', '管理員可改、可自填');
     assert.equal((await R(boss.token, id(mate), { 第二專案: '一二三四五六七八九十十一' })).status, 400, '自填超過 10 字擋下');
@@ -74,25 +75,22 @@ const call = async (token, p, method = 'GET', body) => {
     assert.equal(ts.role, 'QA', 'team-status 帶專案也給該專案的角色');
     assert.deepEqual(ts.projectRoles, { 預設專案: 'QA', 第二專案: '資料治理' }, 'team-status 也有 projectRoles');
 
-    // ① 成員與權限：角色跟加入／移出一起存（先預覽再存）
-    const dry = (await M(boss.token, [{ id: id(wang), projectRoles: { 預設專案: 'UX' } }], true)).body;
-    assert.deepEqual(dry.roleChanges.map(c => [c.name, c.project, c.role]), [['王小明', '預設專案', 'UX']], '預覽列出角色變更');
-    assert.equal((await people()).get(id(wang)).projectRoles['預設專案'], 'PG', '預覽不寫入');
-    await M(boss.token, [{ id: id(wang), projects: ['預設專案', '第二專案'], projectRoles: { 預設專案: 'UX', 第二專案: 'BU' } }]);
-    assert.deepEqual((await people()).get(id(wang)).projectRoles, { 預設專案: 'UX', 第二專案: 'BU' }, '加入專案同時設角色');
-    assert.equal((await M(amy.token, [{ id: id(wang), projectRoles: { 第二專案: 'PO' } }])).body.error?.code, 'NOT_PROJECT_LEADER', 'leader 不能在成員與權限改別的專案角色');
-    assert.equal((await M(amy.token, [{ id: id(wang), projectRoles: { 預設專案: 'QA' } }])).status, 200, 'leader 改自己專案的角色');
-    // 移出專案，那個專案的角色一起清掉；再加入＝未設定
-    await M(boss.token, [{ id: id(wang), projects: ['預設專案'] }]);
+    // ① 加入專案後設職稱；專案管理員只改自己專案的
+    assert.equal((await addToProject(call, boss.token, '第二專案', id(wang))).status, 201, '加入第二專案');
+    await R(boss.token, id(wang), { 預設專案: 'UX', 第二專案: 'BU' });
+    assert.deepEqual((await people()).get(id(wang)).projectRoles, { 預設專案: 'UX', 第二專案: 'BU' }, '每個專案各自的職稱');
+    assert.equal((await R(amy.token, id(wang), { 第二專案: 'PO' })).body.error?.code, 'NOT_PROJECT_LEADER', '專案管理員不能改別的專案的職稱');
+    assert.equal((await R(amy.token, id(wang), { 預設專案: 'QA' })).status, 200, '專案管理員改自己專案的職稱');
+    // 移出專案，那個專案的職稱一起清掉；再加入＝未設定
+    assert.equal((await removeFromProject(call, boss.token, '第二專案', id(wang))).status, 200);
     assert.deepEqual((await people()).get(id(wang)).projectRoles, { 預設專案: 'QA' }, '移出第二專案');
-    await M(boss.token, [{ id: id(wang), projects: ['預設專案', '第二專案'] }]);
+    await addToProject(call, boss.token, '第二專案', id(wang));
     assert.deepEqual((await people()).get(id(wang)).projectRoles, { 預設專案: 'QA', 第二專案: '' }, '再加入＝未設定');
 
     // ⑧ AI 角色不分專案
     const r = ROLES.find(x => x.key === 'PG');
     const ai = (await call(boss.token, '/api/my-ais', 'POST', { projects: ['預設專案'], roleKey: 'PG', role: r.role, name: '小幫手', duties: r.duties, style: r.style, autonomy: r.autonomy, mustConfirm: r.mustConfirm, handoff: r.handoff })).body;
     assert.equal((await R(boss.token, ai.participantId, { 預設專案: 'PO' })).status, 404, 'AI 不能設專案角色');
-    assert.equal((await M(boss.token, [{ id: ai.participantId, projectRoles: { 預設專案: 'PO' } }])).status, 400);
     assert.equal((await people()).get(ai.participantId).projectRoles, undefined, 'AI 沒有 projectRoles');
     assert.equal((await R(ai.token, id(wang), { 預設專案: 'PO' })).status, 403, 'AI 不能改人類的角色');
 
@@ -109,7 +107,7 @@ const call = async (token, p, method = 'GET', body) => {
 
     // 隔離：只屬平台的人看別人的 projectRoles 只看到平台
     const solo = (await call(null, '/api/join', 'POST', { name: '小平', role: 'UX' })).body;
-    await M(boss.token, [{ id: id(solo), projects: ['預設專案'] }]);
+    await setPj(solo, ['預設專案']);
     const seen = (await people(solo.token)).get(id(mate));
     assert.deepEqual(seen.projectRoles, { 預設專案: 'QA' }, '不露出別專案的角色');
     const seenTs = (await call(solo.token, '/api/team-status')).body.members.find(m => m.participantId === id(mate));
@@ -133,7 +131,7 @@ const call = async (token, p, method = 'GET', body) => {
 
     // 只在試用的人看團隊狀態：的目前工作、張數、待處理則數只算試用，看不到平台／第二專案的卡名
     const tryId = others.find(x => x !== '第二專案');
-    await M(boss.token, [{ id: id(solo), projects: [tryId] }]);
+    await setPj(solo, [tryId]);
     await call(boss.token, '/api/cards', 'POST', { requestId: 't1a', project: '預設專案', title: '成員與權限整頁改版', ownerId: id(boss), status: '進行中' });
     await call(boss.token, '/api/cards', 'POST', { requestId: 't1b', project: '第二專案', title: '第二專案的秘密卡', ownerId: id(boss), status: '待處理' });
     await call(mate.token, '/api/messages', 'POST', { requestId: 't1m', project: '第二專案', text: '[進度] 第二專案那邊的進度', recipientIds: [id(boss)] });
@@ -150,20 +148,12 @@ const call = async (token, p, method = 'GET', body) => {
     assert.equal(bossTry2.status?.cardId, tryCard.cardId, '試用的卡照常顯示');
     assert.equal(bossTry2.status.cardCount, 1, '張數只算試用');
 
-    // 新專案一開始的成員＝建立者＋「目前的」跨專案角色（關掉之後就不會自動加入）
-    const po = (await call(null, '/api/join', 'POST', { name: '產品負責人', role: 'PO' })).body; // 新成員角色是 PO 也不自動跨專案
-    await call(boss.token, `/api/participants/${id(po)}/projects`, 'PUT', { projects: ['預設專案', '第二專案'] });
-    assert.ok(!(await call(boss.token, '/api/projects')).body.crossRoleIds.includes(id(po)), '新成員角色是 PO 也不自動跨專案');
-    await M(boss.token, [{ id: id(po), crossRole: true }]); // 管理員手動開
-    const pA = (await call(boss.token, '/api/projects', 'POST', { name: '新專案甲' })).body.id;
-    assert.ok((await people()).get(id(po)).projects.includes(pA), '跨專案角色自動加入新專案');
-    await M(boss.token, [{ id: id(po), crossRole: false, projects: ['預設專案'] }]);
+    // 新專案一開始只有建立者（跨專案角色已取消；角色是 PO 也不會自動加入）
+    const po = (await call(null, '/api/join', 'POST', { name: '產品經理', role: 'PO' })).body;
+    await setPj(po, ['預設專案', '第二專案']);
     const pB = (await call(boss.token, '/api/projects', 'POST', { name: '新專案乙' })).body.id;
     const inB = [...(await people()).values()].filter(p => (p.projects || []).includes(pB)).map(p => p.name);
-    const everyone = await people();
-    const crossNow = (await call(boss.token, '/api/projects')).body.crossRoleIds.map(x => everyone.get(x)?.name);
-    assert.ok(!inB.includes('產品負責人'), '關掉跨專案角色後，新專案不再自動加入他');
-    assert.deepEqual(inB.sort(), ['林志明', ...crossNow.filter(n => n && n !== '林志明')].sort(), '新專案＝建立者＋目前的跨專案角色');
+    assert.deepEqual(inB, ['林志明'], '新專案＝只有建立者');
 
     console.log('roles: all checks passed');
   } catch (e) {

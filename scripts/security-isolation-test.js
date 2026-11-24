@@ -34,9 +34,8 @@ try {
   await call(admin, `/api/participants/${eve.participant.participantId}/projects`, 'PUT', { projects: [] }).catch(() => {});
   const eveProjects = (await call(eve.token, '/api/me')).body.projects || [];
   assert.ok(!eveProjects.includes(pB), '新來的不在 B');
-  // 跨專案 AI（所有人都看得到它），B 的訊息 @ 它
+  // B 的 AI，B 的訊息 @ 它
   const ai = (await call(admin, '/api/my-ais', 'POST', { projects: [pB], roleKey: 'PO', role: 'PO', name: '跨專案助手', ...S })).body;
-  await call(admin, '/api/members/matrix', 'PUT', { changes: [{ id: ai.participantId, crossRole: true }] });
 
   // B 的卡與訊息
   const card = (await call(bob.token, '/api/cards', 'POST', { requestId: rid(), project: pB, title: '機密：合併計畫', reason: '機密原因', next: '機密下一步' })).body;

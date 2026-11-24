@@ -14,6 +14,7 @@ import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { canonical } from '../src/skills.js';
+import { makeProjectAdmin } from './test-members.js';
 
 const pub = f => fileURLToPath(new URL('../public/' + f, import.meta.url));
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-skills-'));
@@ -41,7 +42,7 @@ try {
   const W = wang.participant.participantId, C = chen.participant.participantId;
   await call(boss.token, `/api/participants/${W}/projects`, 'PUT', { projects: ['預設專案'] });
   await call(boss.token, `/api/participants/${C}/projects`, 'PUT', { projects: ['預設專案'] });
-  await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: W, leaderOf: ['預設專案'] }] }); // 王小明是平台 leader
+  await makeProjectAdmin(call, boss.token, W, ['預設專案']); // 王小明是平台 leader
   const mkAi = async (owner, name, projects, roleKey = 'PG') => { const a = (await call(owner.token, '/api/my-ais', 'POST', { projects, roleKey, role: roleKey, name, duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body; const row = await db.get('SELECT token, code FROM participants WHERE id = ?', a.participantId); return { id: a.participantId, tok: a.token, code: row.code }; };
   const ai = await mkAi(boss, '平台助手', ['預設專案']);
   await mkAi(boss, '平台助手二號', ['預設專案']);

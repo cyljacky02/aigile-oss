@@ -11,6 +11,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import { startKit, findBrowser, until, sleep } from './browser-kit.js';
 import { SKILL_TEMPLATES, templateIn } from '../src/skill-templates.js';
+import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('tour-kb-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('tourkb');
@@ -21,7 +22,7 @@ try {
   const liu = await join('林志明', 'PO'), lead = await join('林小安', 'SM'), chen = await join('陳大文', 'PG');
   const id = x => x.participant.participantId;
   for (const p of [lead, chen]) await call(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: ['預設專案'] });
-  await call(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(lead), leaderOf: ['預設專案'] }] });
+  await makeProjectAdmin(call, liu.token, id(lead), ['預設專案']);
   const snap = async () => JSON.stringify({ ai: (await call(lead.token, `${KB}/settings`)).body.aiId, sk: (await call(lead.token, '/api/skills')).body.items.map(s => [s.skillId, s.status, s.version]) });
 
   const { js, login, cdp } = await kit.browser(1280, 900);

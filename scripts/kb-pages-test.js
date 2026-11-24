@@ -13,6 +13,7 @@ import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { memStorage } from '../src/storage-r2.js';
+import { makeProjectAdmin } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-kb-pages-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -41,7 +42,7 @@ try {
   const bank = (await req(null, '/api/join', 'POST', { name: '第二專案端', role: 'BA' })).body;
   const id = x => x.participant.participantId;
   for (const [p, ps] of [[lead, ['預設專案']], [chen, ['預設專案']], [bank, ['第二專案']]]) await req(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: ps });
-  await req(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(lead), leaderOf: ['預設專案'] }] });
+  await makeProjectAdmin(req, liu.token, id(lead), ['預設專案']);
   const mkAi = async (name, projects = ['預設專案']) => (await req(liu.token, '/api/my-ais', 'POST', { projects, roleKey: 'PO', role: '產品負責', name, duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body;
   const kbAi = await mkAi('整理助手'), other = await mkAi('另一隻'), bankAi = await mkAi('第二專案助手', ['第二專案']);
   // leader／管理員上傳到知識庫（kb=1）；一般成員只能上傳一般專案文件

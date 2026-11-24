@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
 import { startKit, findBrowser, until, sleep } from './browser-kit.js';
+import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('plat381-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('o381');
@@ -23,7 +24,7 @@ try {
   assert.equal(np.status, 201, JSON.stringify(np.body));
   const TP = np.body.id;
   await call(liu.token, `/api/participants/${id(wang)}/projects`, 'PUT', { projects: ['預設專案', TP] });
-  assert.equal((await call(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(wang), leaderOf: ['預設專案', TP] }] })).status, 200, 'wang 當預設專案、測試專案 leader');
+  assert.equal((await makeProjectAdmin(call, liu.token, id(wang), ['預設專案', TP])).status, 200, 'wang 當預設專案、測試專案 leader');
 
   // ---------- A 後端權限 ----------
   assert.equal((await call(wang.token, '/api/projects/預設專案', 'PATCH', { name: '預設專案二' })).status, 200, 'leader 能改自己專案的名稱');
