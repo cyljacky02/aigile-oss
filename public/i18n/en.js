@@ -3435,6 +3435,7 @@ window.AIGILE_EN = {
     "還有 {0} 張未決定的決策卡（{1}），先決定或刪掉它們，才能拿掉最後一個「待確認」狀態。": "{0} decision cards are still undecided ({1}). Decide or delete them before removing the last Awaiting confirmation status.",
     "還有 {0} 張暫緩中的決策卡（{1}），先恢復它們，才能拿掉最後一個「受阻」狀態。": "{0} decision cards are on hold ({1}). Resume them before removing the last Blocked status.",
     "「{0}」裡還有 {1} 張卡：請用 moveTo 指定要搬到哪個狀態。": "\"{0}\" still has {1} cards: use moveTo to choose the status to move them to.",
+    "「{0}」裡的卡片剛被別人改過，這次沒有刪除；請重新讀取後再試。": "Someone just changed a card in \"{0}\", so it wasn't deleted. Reload and try again.",
     "moveTo 要是這個專案的另一個狀態 ID": "moveTo must be the ID of another status in this project",
     "裡面有決策卡：決策卡要由決策者決定，不能直接搬到已完成。": "It contains decision cards: they must be decided by their decider and can't be moved straight to Done."
   },

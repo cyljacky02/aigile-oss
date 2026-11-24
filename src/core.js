@@ -3747,7 +3747,7 @@ ${ending}`;
   registerDemo({ route, db, ApiError, randId, nowIso, requireAdmin, requireHuman, newCode, newToken,
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });
   const cardsApi = registerCards({ route: cardRoute, statuses, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, canSeeMessage,archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
-  registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, requireAdminOrLeader, cardKey, projEvent, moveCardStmts: cardsApi.moveCardStmts, cardsMoved: cardsApi.cardsMoved,
+  registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, requireAdminOrLeader, cardKey, projEvent, moveCardStmts: cardsApi.moveCardStmts, invalidatePeople,
     canSeeProject: (me, pj) => !isolatedFrom(me) || projectsOf(me).includes(pj), projectExists: async pj => !!(await db.get('SELECT id FROM projects WHERE id = ?', pj)) });
   Object.assign(kbHooks, registerKbPages({ route, db, ApiError, invalid, readJson, randId, nowIso, peopleMap, identity, projectsOf, PROJECTS, assertWritable, roIn, kbManager, findSecret, getJson, setJson, createMessage, cardKey, cardsApi, claimsOf, kbSkillState: (pj, ais) => skillsApi.templateState(pj, 'kb-curation', ais) })); // 知識頁、整理卡
 

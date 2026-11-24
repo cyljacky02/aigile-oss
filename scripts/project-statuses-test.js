@@ -14,11 +14,16 @@ import { testToken } from './test-token.js';
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pst-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
 // 模擬寫入到一半失敗：開了之後，刪除狀態那一步會出錯（在交易裡就換成一步會失敗的語句，讓資料庫自己回復）
-let failStatusDelete = false;
-const isStatusDelete = sql => failStatusDelete && /^DELETE FROM project_statuses WHERE id\b/.test(sql);
+// 模擬同時有人改卡：beforeStatusDelete 在刪除狀態的交易開始前執行一次
+let failStatusDelete = false, beforeStatusDelete = null;
+const STATUS_DELETE = /^DELETE FROM project_statuses WHERE id\b/;
+const isStatusDelete = sql => failStatusDelete && STATUS_DELETE.test(sql);
 const appDb = { ...db,
   run: (sql, ...args) => (isStatusDelete(sql) ? Promise.reject(new Error('模擬寫入失敗')) : db.run(sql, ...args)),
-  batch: stmts => db.batch(stmts.map(([sql, args]) => (isStatusDelete(sql) ? ['SELECT x FROM no_such_table', []] : [sql, args]))) };
+  batch: async stmts => {
+    if (beforeStatusDelete && stmts.some(([sql]) => STATUS_DELETE.test(sql))) { const f = beforeStatusDelete; beforeStatusDelete = null; await f(); }
+    return db.batch(stmts.map(([sql, args]) => (isStatusDelete(sql) ? ['SELECT x FROM no_such_table', []] : [sql, args])));
+  } };
 const app = createApp({ db: appDb, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0' } });
 const call = async (token, p, method = 'GET', body) => {
   const r = await app(new Request('http://localhost' + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
@@ -293,6 +298,20 @@ try {
     const r = ok(await del(box.id, { moveTo: (await byName('開發中')).id }), '再刪一次');
     assert.equal(r.moved, 2);
     for (const c of cards) assert.equal((await getCard(c.cardId)).status, '開發中', '都搬過去了');
+  }
+
+  // 16) 刪除時剛好有人改了裡面的卡：整個不做、回 409（不然那張卡會留在已經沒有的「受阻」類別、從看板消失）
+  {
+    const blocked = await byName('受阻'), dev = await byName('開發中');
+    const c = ok(await mkCard(boss.token, { status: '受阻' }), '受阻的卡');
+    beforeStatusDelete = async () => ok(await patchCard(c.cardId, { title: '同時改的標題' }), '同時有人改卡');
+    assert.equal(fail(await del(blocked.id, { moveTo: dev.id }), 409, '卡片剛被改過').error.code, 'CONFLICT');
+    assert.equal(beforeStatusDelete, null, '真的有同時改卡');
+    assert.ok(await byName('受阻'), '狀態還在');
+    const d = await getCard(c.cardId);
+    assert.equal(d.status, '受阻', '卡片沒搬'); assert.equal(d.title, '同時改的標題', '別人的修改還在');
+    ok(await del(blocked.id, { moveTo: dev.id }), '重新讀取後再刪');
+    assert.equal((await getCard(c.cardId)).status, '開發中');
   }
 
   console.log('project-statuses-test：全部通過');

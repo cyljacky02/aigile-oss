@@ -124,8 +124,8 @@ export function readStatusList(raw, invalid) {
 }
 
 // 狀態管理 API：讀（看得到這個專案的人）；新增、改名／改色／改類別、排序、刪除（管理員或該專案 leader）
-// moveCardStmts(ctx, me, card, target, at)：刪除狀態時把卡搬到目標狀態的語句（跨類別照卡片規則），cardsMoved()：搬完後清快取；由 cards.js 提供
-export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, requireAdminOrLeader, canSeeProject, projectExists, cardKey, moveCardStmts, cardsMoved, projEvent }) {
+// moveCardStmts(ctx, me, card, target, at)：刪除狀態時把卡搬到目標狀態的語句（跨類別照卡片規則；卡片同時被改過就讓交易失敗），由 cards.js 提供
+export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, requireAdminOrLeader, canSeeProject, projectExists, cardKey, moveCardStmts, invalidatePeople, projEvent }) {
   const notFound = () => new ApiError(404, 'NOT_FOUND', '找不到這個狀態');
   async function projectOf(ctx, me, pj, { manage = false } = {}) {
     if (!(await projectExists(pj))) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
@@ -218,8 +218,14 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
     const at = nowIso(), stmts = [];
     for (const c of rows) stmts.push(...(await moveCardStmts(ctx, me, c, target, at)));
     stmts.push(['DELETE FROM project_statuses WHERE id = ?', [s.id]], ...eventStmt(pj, me, `刪除看板狀態「${s.name}」${target ? `（${rows.length} 張卡搬到「${target.name}」）` : ''}`, at));
-    await db.batch(stmts);
-    if (rows.length) cardsMoved();
+    try { await db.batch(stmts); }
+    catch (e) {
+      // 交易失敗：讀到之後有卡被別人改過（搬卡語句會讓交易失敗）就回 409，請重新讀取；其他錯誤照丟
+      const now = new Map((await cardsIn(s.id)).map(c => [c.seq, c.version]));
+      if (rows.length && (now.size !== rows.length || rows.some(c => now.get(c.seq) !== c.version))) throw new ApiError(409, 'CONFLICT', `「${s.name}」裡的卡片剛被別人改過，這次沒有刪除；請重新讀取後再試。`);
+      throw e;
+    }
+    if (rows.length) invalidatePeople();
     return reply(ctx, pj, { moved: rows.length });
   });
 }

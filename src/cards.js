@@ -1041,14 +1041,15 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
   }
   const cardLog = (seq, me, text) => db.batch(logStmt(seq, me, [text], nowIso()));
   // 刪除狀態時把卡搬到目標狀態（src/statuses.js 用）：跟 PATCH 改狀態同一套規則。
-  // 只回傳語句，由呼叫端跟刪除放進同一個交易（中途失敗就一張都不搬）；寫完要呼叫 cardsMoved()。
-  // 交易裡版本對不上的 UPDATE 不會報錯、只是 0 筆：紀錄排在 UPDATE 前面、只在版本還沒變時寫，
-  // 所以剛好同時被改的卡不搬也不留紀錄（狀態刪掉後它算在同類別第一個狀態，見 ADR 0001）
+  // 只回傳語句，由呼叫端跟刪除放進同一個交易（中途失敗就一張都不搬）；寫完要呼叫 invalidatePeople()。
+  // 交易裡版本對不上的 UPDATE 不會報錯、只是 0 筆：所以第一筆紀錄的 card_seq 只在這次 UPDATE 真的寫進去時才查得到，
+  // 查不到就是 NULL、違反 NOT NULL，整個交易回復（剛好同時被改的卡不會被留在已刪的狀態裡）
   async function moveCardStmts(ctx, me, c, target, at) {
     const mv = moveTo(c, target, me, at, await statuses.load(ctx));
-    const logs = mv.logs.map(t => [`INSERT INTO card_log (card_seq, at, by_id, via, text) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM cards WHERE seq = ? AND version = ?)`,
-      [c.seq, at, me.id, me.kind === 'human' ? '網頁' : 'API', t, c.seq, c.version]]);
-    return [...logs, updateStmt(c, mv.sets, at)];
+    const [first, ...rest] = logStmt(c.seq, me, mv.logs, at);
+    const guard = ['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES ((SELECT seq FROM cards WHERE seq = ? AND version = ? AND status_id = ? AND updated_at = ?),?,?,?,?)',
+      [c.seq, c.version + 1, target.id, at, ...first[1].slice(1)]];
+    return [updateStmt(c, mv.sets, at), guard, ...rest];
   }
-  return { listCards, createCardBy, cardLog, moveCardStmts, cardsMoved: invalidatePeople };
+  return { listCards, createCardBy, cardLog, moveCardStmts };
 }
