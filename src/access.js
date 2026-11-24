@@ -4,15 +4,15 @@
 //   can(人, 動作, 範圍)        能不能在這個範圍做某件事；check() 不行就丟 ApiError
 // 範圍：'platform'、'workspace'、{ project: 專案id }；要看對象的動作再帶 target（例：{ project, target }、{ target }）
 //
-// 目前的規則（之後的票只改這個檔案的規則）：
-// - 工作區管理員＝participants.workspace_role 是 admin 的啟用中人類，可以有多位（#8）
-// - 平台管理員＝帳號的 platform_role 是 admin（deps.isPlatformAdmin），可以有多位；對工作區有隱含的工作區管理權（不必是工作區成員）（#9）
+// 目前的規則（改權限規則只改這個檔案）：
+// - 工作區管理員＝participants.workspace_role 是 admin 的啟用中人類，可以有多位
+// - 平台管理員＝帳號的 platform_role 是 admin（deps.isPlatformAdmin），可以有多位；對工作區有隱含的工作區管理權（不必是工作區成員）
 // - 已移出工作區（workspace_status＝removed）的人不是工作區成員（平台管理員照樣有隱含權）
 // - 專案角色存在 project_members：admin＝專案管理員（工作區管理員有隱含權限，取較高者）、member＝專案成員、viewer＝唯讀成員
 // - 隱含權限不算成員資格：工作區管理員（含平台管理員）在沒加入、也沒有職稱的專案不列為成員（implicitOnlyIn）
 // - 唯讀成員的 AI 跟著唯讀；明確設成唯讀成員時一律不能寫（工作區管理員不能被設成唯讀成員）
 // - AI 不能做任何管理動作
-// - 成員名冊（#13）：工作區成員（含 AI）看得到工作區裡所有人（see_member）；已移出的人只有工作區管理員看得到（see_removed_members；待接受的邀請走 invite）
+// - 成員名冊：工作區成員（含 AI）看得到工作區裡所有人（see_member）；已移出的人只有工作區管理員看得到（see_removed_members；待接受的邀請走 invite）
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
 // - 專案可見度：開放＝直接加入、審核＝送申請、私人＝只有專案成員與有隱含權限的人知道它存在（discover_project；其他人各處都當它不存在，回 404）
 // 資料都由呼叫端注入（成員資料歸成員資格模組管），這裡只做判斷。
@@ -96,7 +96,7 @@ const ACTIONS = {
   write: { light: true, rule: (v, me, s) => !v.readOnlyAt(me, s.project) },
   see_project: { rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project) },
   see_project_events: { rule: (v, me, s) => v.projectsOf(me).includes(s.project) || workspaceAdmin(v, me) },
-  see_member: { rule: (v, me, { target: p }) => p.id === me.id || !!v.roleIn(me, 'workspace') }, // 成員名冊（#13）：工作區成員（含 AI）看得到工作區裡所有人；對象是不是啟用中的工作區成員由呼叫端過濾
+  see_member: { rule: (v, me, { target: p }) => p.id === me.id || !!v.roleIn(me, 'workspace') }, // 成員名冊：工作區成員（含 AI）看得到工作區裡所有人；對象是不是啟用中的工作區成員由呼叫端過濾
   see_ai_state: { light: true, rule: (v, me, { target }) => v.projectsOf(target).some(p => v.projectsOf(me).includes(p)) }, // 工作記憶：至少一個共同專案
 };
 export const ACCESS_ACTIONS = Object.freeze(Object.keys(ACTIONS));

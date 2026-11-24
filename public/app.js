@@ -1747,7 +1747,7 @@
     return n;
   }
   const PAGE_NAME = { messages: '訊息', inbox: '要你處理', work: '工作', team: '團隊', files: '文件', myai: '我的 AI', perm: '成員管理', dm: '私訊', releases: '版本紀錄', help: L('說明', 'Help') }; // 私訊整頁；「說明」在字典是交接的「Notes」，說明頁自己給英文
-  const pageNameOf = p => (p === 'perm' ? (state.permTab === 'admin' ? '管理員設定' : state.permTab === 'leadproj' ? '專案管理' : state.permTab === 'roster' ? '成員名冊' : '成員管理') : PAGE_NAME[p]); // 成員管理、管理員設定兩頁；成員名冊（#13）
+  const pageNameOf = p => (p === 'perm' ? (state.permTab === 'admin' ? '管理員設定' : state.permTab === 'leadproj' ? '專案管理' : state.permTab === 'roster' ? '成員名冊' : '成員管理') : PAGE_NAME[p]); // 成員管理、管理員設定兩頁；成員名冊
   const canSetProj = pj => PROJECTS.includes(pj) && (isAdmin() || leadersOf(pj).includes(meId())); // 專案卡 ⚙
   const TOP_PAGES = { myai: '/my-ai', perm: '/members', releases: '/releases', help: '/help' }; // 第一層頁面（不分專案）：版本紀錄、說明等
   const isTop = p => p === 'myai' || p === 'releases' || p === 'help' || p === 'perm'; // perm：成員名冊所有人都能進（管理的分頁在 drawPerm 擋）
@@ -1866,7 +1866,7 @@
       return { view: null, page: 'perm' };
     }
     if (seg[0] === 'projects') { perm.tab = 'leadproj'; return { view: null, page: 'perm' }; } // PLAT-381：leader 的專案管理
-    if (seg[0] === 'roster') { perm.tab = 'roster'; return { view: null, page: 'perm' }; } // 成員名冊（#13）
+    if (seg[0] === 'roster') { perm.tab = 'roster'; return { view: null, page: 'perm' }; } // 成員名冊
     if (seg[0] === 'admin') { Object.assign(perm, { tab: 'admin', adm: ADM_SECS.some(x => x[0] === seg[1]) ? seg[1] : null }); return { view: null, page: 'perm' }; }
     if (seg[0] === 'releases') return { view: null, page: 'releases' };
     if (seg[0] === 'help') { help.ch = helpChOf(seg[1]); return { view: null, page: 'help' }; } // 說明：/help 目錄、/help/1～5 各章
@@ -8849,7 +8849,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     Object.assign(perm, { tab: 'leadproj', picker: false, addOpen: false, moreOpen: null });
     permGo();
   }
-  // 成員名冊（#13）：所有工作區成員都看得到；每次打開都重讀
+  // 成員名冊：所有工作區成員都看得到；每次打開都重讀
   function openRoster() {
     Object.assign(perm, { tab: 'roster', roster: undefined, picker: false, addOpen: false, moreOpen: null });
     permGo();
@@ -8862,7 +8862,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     ['group', '🏷️', '工作區設定', '名稱、建立專案、AI 工具、開放註冊、附件保存'],
     ['projects', '📁', L('專案', 'Projects'), '新增、改名、程式庫、封存、永久刪除'], // 字典的「專案」是單數，目錄要複數
     ['invites', '✉️', '邀請', '邀請新的人、重發、作廢'],
-    ['accounts', '🔑', '帳號與救援', '重設登入、救援指令'], // 升降管理員、移出工作區、停用搬到成員名冊（#13）
+    ['accounts', '🔑', '帳號與救援', '重設登入、救援指令'], // 升降管理員、移出工作區、停用搬到成員名冊
     ['audit', '🔍', '稽核與儲存', '全站稽核紀錄、儲存空間'],
     ['system', '🛠️', '平台設定', '版本更新、備份與匯入、附件保存預設、範例資料'], // 只有平台管理員看得到（admSecs）
   ];
@@ -9586,9 +9586,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     bar.innerHTML = perm.draft.size ? `<span class="pm-bar-text">${s.length} 項變更：${esc(s.slice(0, 4).join('；'))}${s.length > 4 ? '…' : ''}</span><span class="grow"></span>
       <button type="button" class="btn small pm-undo" data-pm-act="undo">復原</button><button type="button" class="btn primary" data-pm-act="save">檢查並儲存</button>` : '';
   }
-  // ---------- 成員名冊（#13，GET /api/roster）----------
+  // ---------- 成員名冊（GET /api/roster）----------
   // 所有工作區成員看得到啟用中的人與 AI；工作區管理員另有「已移出」「待接受邀請」，平台管理員另有「所有帳號」（含停用）。
-  // 待接受的邀請只從 loadPendingInvites 讀（GET /api/invites?status=pending，#14；邀請的格式改了只要改這裡）
+  // 待接受的邀請只從 loadPendingInvites 讀（GET /api/invites?status=pending；邀請的格式改了只要改這裡）
   // 升降工作區管理員／平台管理員、移出工作區、停用帳號都從這裡做（按鈕照 roster.can；最後一位時停用並說明原因）
   const RS_FILTERS = [['active', '啟用中'], ['removed', '已移出'], ['pending', '待接受邀請'], ['accounts', '所有帳號']];
   const RS_ROLE = { admin: '專案管理員', member: '專案成員', viewer: '唯讀成員' };

@@ -1,4 +1,4 @@
-// 驗收測試：專案角色（專案管理員／專案成員／唯讀成員）與專案成員端點（#11；詞彙見 GLOSSARY「成員與權限」）
+// 驗收測試：專案角色（專案管理員／專案成員／唯讀成員）與專案成員端點（詞彙見 GLOSSARY「成員與權限」）
 // GET／POST /api/projects/:id/members、PUT／DELETE /api/projects/:id/members/:participantId
 // 用法：node scripts/project-members-test.js
 import fs from 'node:fs';

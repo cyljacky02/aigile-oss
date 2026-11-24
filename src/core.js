@@ -222,7 +222,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   const FILE_TTL_DEFAULT_H = Number(config.fileTtlHours) > 0 ? Number(config.fileTtlHours) : 24;
   const FILE_TTL_CHOICES = [1, 6, 24, 72, 168, 720]; // 1、6、24 小時，3、7、30 天
   const FILE_TTL_LOG_MAX = 20;
-  // 平台預設存 file_ttl（平台設定）；工作區可以覆寫，存 file_ttl_ws:<工作區>＝{ hours（null＝跟平台預設）, log }（#9）
+  // 平台預設存 file_ttl（平台設定）；工作區可以覆寫，存 file_ttl_ws:<工作區>＝{ hours（null＝跟平台預設）, log }
   async function platformTtlCfg() {
     const v = await getJson('file_ttl');
     return { hours: FILE_TTL_CHOICES.includes(v?.hours) ? v.hours : FILE_TTL_DEFAULT_H, set: FILE_TTL_CHOICES.includes(v?.hours), log: Array.isArray(v?.log) ? v.log : [] };
@@ -354,7 +354,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 「能不能」的判斷（唯讀、leader、管理員…）不在這裡，走權限模組 access（見「專案與成員管理」）
   const { allProjectsOf: listOf, setProjectsStmts, loadLeaders, leadersOf, loadReadOnly, readOnlyOf } = membership;
   // 隱含權限：工作區管理員看得到、進得去所有（未封存）專案，但不算成員資格（名單過濾見 access implicitOnlyIn；改成員資格一律用 listOf）
-  // 實際的工作區管理權：工作區管理員，或平台管理員（隱含，#9）。跟 access.adminInWorkspace 同一個規則
+  // 實際的工作區管理權：工作區管理員，或平台管理員（隱含）。跟 access.adminInWorkspace 同一個規則
   const adminInWorkspace = p => isWorkspaceAdmin(p) || membership.isPlatformAdmin(p);
   // 實際能進的專案（規則在權限模組）：AI 不超出所屬人類能進的專案。所屬人類的列看成員快取（AI 發請求時一定先讀好，見 handleInner）；
   // 快取裡沒有就只看他明確加入的專案（寧可少給）
@@ -2010,7 +2010,7 @@ ${ending}`;
   async function saveGroupName(me, name) {
     const old = await groupName();
     const stmts = [["INSERT INTO app_settings (key, value) VALUES ('group_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [name]],
-      ['UPDATE workspaces SET name = ? WHERE id = ?', [name, DEFAULT_WORKSPACE]]]; // 工作區名稱跟著（#10 改成工作區設定）
+      ['UPDATE workspaces SET name = ? WHERE id = ?', [name, DEFAULT_WORKSPACE]]]; // 工作區名稱存在工作區設定（工作區這一列）
     if (old !== name) stmts.push(projEvent(GROUP_EVT, me.id, `${me.name} 把工作區名稱從「${old}」改成「${name}」`, nowIso()));
     await db.batch(stmts);
     pageName = { at: 0, name: null }; // 網頁上的群組名立刻換新

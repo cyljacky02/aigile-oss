@@ -77,7 +77,7 @@ try {
   }
   console.log('✓ 平台、工作區動作只有管理員');
 
-  // 平台管理員（#9）：工作區管理員不等於平台管理員；平台管理員不是工作區成員也有工作區管理權、所有專案的專案管理權
+  // 平台管理員：工作區管理員不等於平台管理員；平台管理員不是工作區成員也有工作區管理權、所有專案的專案管理權
   assert.equal(v.roleIn(admin2, 'platform'), null, '工作區管理員不是平台管理員');
   for (const action of ['manage_platform', 'manage_accounts', 'assign_platform_admin']) assert.ok(!v.can(admin2, action, 'platform'), action + '：工作區管理員不行');
   assert.equal(v.roleIn(plat, 'platform'), PLATFORM_ADMIN);
@@ -141,7 +141,7 @@ try {
   assert.equal(await code(access.check(ctx, bot, 'manage_workspace', 'workspace')), 'NOT_ADMIN');
   console.log('✓ AI 不能做管理動作');
 
-  // 名冊可見範圍（誰看得到誰）：成員名冊（#13）所有工作區成員都看得到所有人
+  // 名冊可見範圍（誰看得到誰）：成員名冊所有工作區成員都看得到所有人
   assert.ok(v.can(admin, 'see_member', { target: sider }), '在所有專案的人看得到所有人');
   assert.ok(v.can(member, 'see_member', { target: lead }), '同專案看得到');
   assert.ok(v.can(member, 'see_member', { target: sider }), '不同專案也看得到');

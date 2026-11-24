@@ -1,6 +1,6 @@
 // 工作區設定（GLOSSARY「成員與權限」：工作區）：第一階段只有預設工作區。
 // - 誰可以建立專案（create_projects）：存在 workspaces 表的那一列
-// - 開放自行註冊、房間碼（#14）：預設工作區的值存 app_settings 的 open_join（'1'／'0'）與 room_code（密碼雜湊，''＝清除），
+// - 開放自行註冊、房間碼：預設工作區的值存 app_settings 的 open_join（'1'／'0'）與 room_code（密碼雜湊，''＝清除），
 //   沒改過才用環境變數 OPEN_JOIN／ROOM_CODE（升級的站照舊）。房間碼只存雜湊，不回傳、不寫日誌。每次從資料庫讀，多份程式也立刻生效
 // 工作區名稱、AI 工具、附件保存期限還在 core.js（由工作區設定 API 一起回傳）。
 // 預設值：新安裝（schema.sql）＝所有成員；升級的站（migrations/008、匯入舊備份）＝只有管理員。

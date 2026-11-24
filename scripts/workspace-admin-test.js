@@ -1,4 +1,4 @@
-// 驗收測試：工作區可以有多位工作區管理員（#8；詞彙見 GLOSSARY「成員與權限」）
+// 驗收測試：工作區可以有多位工作區管理員（詞彙見 GLOSSARY「成員與權限」）
 // 1. 工作區管理員可以把成員升為工作區管理員、把自己或別人降為成員；兩位都能做管理動作
 // 2. 最後一位工作區管理員不能被降級（也不能自己離開工作區）；「先升別人、再降自己」可以
 // 3. 一般成員、AI 不能升降；只能升降啟用中的人類
@@ -99,7 +99,7 @@ try {
   // ---- 先升別人、再降自己 ----
   const bossAi = (await call(boss.token, '/api/my-ais', 'POST', { projects: [B], roleKey: 'PG', role: '程式開發', name: '林的PG', ...S })).body;
   assert.ok(bossAi.participantId, '管理員靠隱含權限把 AI 放進沒加入的第二專案');
-  // 林志明也是平台管理員（對工作區有隱含管理權，#9）：平台管理員一樣先升別人、再降自己
+  // 林志明也是平台管理員（對工作區有隱含管理權）：平台管理員一樣先升別人、再降自己
   assert.equal((await call(boss.token, `/api/participants/${Cn}/platform-role`, 'PUT', { role: 'admin' })).status, 200);
   assert.equal((await call(boss.token, `/api/participants/${Bo}/platform-role`, 'PUT', { role: 'none' })).status, 200);
   const down = await setRole(boss.token, Bo, 'member');

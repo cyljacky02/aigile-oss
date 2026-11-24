@@ -2,7 +2,7 @@
 // docs/adr/0002 第一階段）
 // 舊站：單一管理員（is_admin）、逗號字串的專案歸屬、app_settings 的 leader／唯讀／跨專案角色／專案角色標籤、
 // 隱形管理員（在專案裡但沒有角色標籤）、已停用、已刪除。用新版打開後，透過 API 看到的成員、專案、權限跟升級前一樣；
-// 隱形管理員只在「沒有職稱也不是 leader」的專案移除成員資格，改靠隱含權限（#8）；
+// 隱形管理員只在「沒有職稱也不是 leader」的專案移除成員資格，改靠隱含權限；
 // 重複啟動不重複轉換；新站有預設工作區，第一位管理員是平台管理員兼工作區管理員。
 // SQLite 與 Postgres（設了 AIGILE_TEST_PG_URL）都跑。用法：node scripts/members-migrate-test.js
 import fs from 'node:fs';

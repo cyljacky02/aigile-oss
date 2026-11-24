@@ -2,7 +2,7 @@
 // 開放設定存在 app_settings 的 join_settings（{ 專案id: { open, note } }，一列）；申請存在 join_requests 表
 // 通知用帳號通知（account_notices）：送出→該專案 leader（沒有 leader 就管理員）；結果→申請人
 // 開放申請：沒設過＝開放（新專案、預設專案、引導建的專案都一樣）；leader 關掉才存 open: false
-// 專案可見度（#12）：開放專案工作區成員直接加入（POST /api/projects/:id/join）；審核專案走上面的申請；
+// 專案可見度：開放專案工作區成員直接加入（POST /api/projects/:id/join）；審核專案走上面的申請；
 // 私人專案不列出、不收申請，看不到的人拿到的錯誤跟「沒有這個專案」一樣。判斷都在權限模組（discover_project、join_project、request_join）
 import { ACCESS_ROLE, PROJECT_VISIBILITY } from './access.js';
 import { PROJECT_ROLE } from './membership.js';

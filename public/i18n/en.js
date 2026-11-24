@@ -3162,7 +3162,7 @@ window.AIGILE_EN = {
     "降為成員": "Make member",
     "disabled aria-disabled=\"true\" title=\"最後一位工作區管理員不能降級：請先把另一位成員升為工作區管理員\"": "disabled aria-disabled=\"true\" title=\"The last workspace admin can't be demoted. Make another member a workspace admin first\"",
     "最後一位工作區管理員不能降級：請先把另一位成員升為工作區管理員": "The last workspace admin can't be demoted. Make another member a workspace admin first",
-    // 成員名冊（#13）
+    // 成員名冊
     "救援指令（平台管理員自己登不進來時）": "Rescue command (when a platform admin can't sign in)",
     "其他人登不進來，用上面的「重設登入」。平台管理員自己完全登不進來（裝置都登出了、又忘了密碼），請有主機權限的人在程式資料夾執行：": "If someone else can't sign in, use \"Reset login\" above. If a platform admin can't sign in at all (signed out everywhere and forgot the password), ask someone with server access to run this in the app folder:",
     "會產生一次性的救援登入連結（15 分鐘內、只能用一次），只救平台管理員。平台管理員不只一位時要指定名字：": "It creates a one-time rescue login link (valid 15 minutes, single use) for a platform admin only. With more than one platform admin, name the one to rescue:",
@@ -3553,7 +3553,7 @@ window.AIGILE_EN = {
     "看板狀態或裡面的卡片剛好有人同時在改，這次沒有存；請重新讀取後再試。": "Someone changed these statuses or their cards at the same time, so nothing was saved. Reload and try again.",
     "moveTo 要是這個專案的另一個狀態 ID": "moveTo must be the ID of another status in this project",
     "裡面有決策卡：決策卡要由決策者決定，不能直接搬到已完成。": "It contains decision cards: they must be decided by their decider and can't be moved straight to Done.",
-    // 成員與權限收尾（#16）：專案管理員、工作區管理員的用詞
+    // 成員與權限：專案管理員、工作區管理員的用詞
     "填名稱、角色，再設一組帳號密碼（之後用它登入）。註冊後在主畫面加入開放的專案，或申請加入專案、由專案管理員核准後，就看得到專案的訊息與卡片。": "Enter your name and role, then set a username and password (you'll sign in with them). After signing up, join an open project from the home screen, or send a join request; once a project admin approves it, you'll see the project's messages and cards.",
     "建立工作區：輸入你的名稱與角色，你會是工作區管理員，之後用邀請連結加人。": "Create the workspace: enter your name and role. You'll be the workspace admin and can add people with invite links.",
     "請輸入工作區名稱（1～30 字）": "Enter a workspace name (1–30 characters)",

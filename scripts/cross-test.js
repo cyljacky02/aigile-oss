@@ -1,4 +1,4 @@
-// 遷移測試：跨專案角色取消（#11）。升級時跨專案角色的人（與 AI）變成每個未封存專案的明確成員資格，
+// 遷移測試：跨專案角色取消。升級時跨專案角色的人（與 AI）變成每個未封存專案的明確成員資格，
 // 原本的專案角色照舊（負責人＝專案管理員、唯讀成員）；設定裡不再有跨專案角色（cross_roles 轉完就刪掉），重跑不會再加回來。
 // 舊規則：還沒寫成固定名單（沒有 frozen）時，角色是 PO／SM 的人算跨專案角色。
 // SQLite 與 Postgres（設了 AIGILE_TEST_PG_URL）都跑。用法：node scripts/cross-test.js
@@ -87,7 +87,7 @@ try {
   assert.deepEqual(sorted((await call(tok.p_cross, '/api/me')).body.projects), sorted([A, B]), '重新啟動不會再加回來');
   console.log('✓ 重複啟動不重複轉換');
 
-  // 3) 已經轉過新資料表、但還留著 cross_roles 的資料庫（例如 #7 之後、#11 之前的版本）：一樣轉
+  // 3) 已經轉過新資料表、但還留著 cross_roles 的資料庫（例如已轉到新資料表、還沒取消跨專案角色的版本）：一樣轉
   await db.run("INSERT INTO app_settings (key, value) VALUES ('cross_roles', ?)", JSON.stringify({ add: ['p_sm'], remove: [], frozen: '2026-01-01T00:00:00.000Z' }));
   call = mkApp(db);
   assert.deepEqual(sorted((await call(tok.p_sm, '/api/me')).body.projects), sorted([A, B, C]), '已轉過新表的站：跨專案角色一樣轉');

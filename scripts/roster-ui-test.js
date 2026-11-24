@@ -1,4 +1,4 @@
-// 畫面測試：成員名冊（#13）
+// 畫面測試：成員名冊
 // A. 一般成員：頭像選單有「成員名冊」；名冊列出所有人（包括沒有專案的人）；只有「啟用中」，沒有升降、移出、停用
 // B. 平台管理員：可篩選啟用中／已移出／待接受邀請／所有帳號
 // C. 從名冊升降工作區管理員、平台管理員；最後一位時按鈕停用並說明原因
@@ -19,7 +19,7 @@ try {
   for (const id of [Cn, Wg]) assert.equal((await call(boss.token, `/api/participants/${id}/projects`, 'PUT', { projects: ['預設專案'] })).status, 200);
   assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '張新人', projects: [{ project: '預設專案', role: 'viewer' }] })).status, 201);
   assert.equal((await call(boss.token, `/api/participants/${Zo}/remove`, 'POST')).status, 200);
-  assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '趙前同事' })).status, 201, '邀請已移出的人回來（#14 rejoin）');
+  assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '趙前同事' })).status, 201, '邀請已移出的人回來（rejoin）');
 
   const { js, login, cdp } = await kit.browser(1280, 860);
   const size = (w, h) => cdp('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: w < 700 });

@@ -1,4 +1,4 @@
-// 畫面測試：成員名冊可以升降工作區管理員（#8；#13 起入口從管理員設定 › 帳號與救援搬到成員名冊）
+// 畫面測試：成員名冊可以升降工作區管理員（入口從管理員設定 › 帳號與救援搬到成員名冊）
 // 最後一位工作區管理員的「降為成員」停用並說明原因；升別人之後可以降自己；沒有「交接管理員」
 // 升降規則本身在 workspace-admin-test.js 驗。需要 Chrome 或 Edge；找不到就略過。用法：node scripts/workspace-admin-ui-test.js
 import assert from 'node:assert';

@@ -1,5 +1,5 @@
 // 驗收測試：唯讀成員（專案角色 viewer，以專案為單位）與他的 AI 在該專案只能看、不能寫
-// 設定方式：PUT /api/projects/:id/members/:participantId { role: 'viewer' }（#11；舊的成員矩陣已移除）
+// 設定方式：PUT /api/projects/:id/members/:participantId { role: 'viewer' }（舊的成員矩陣已移除）
 // 用法：node scripts/readonly-test.js
 import fs from 'node:fs';
 import os from 'node:os';

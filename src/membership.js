@@ -22,7 +22,7 @@ const PLATFORM_SQL = "SELECT p.id FROM participants p JOIN accounts a ON a.id = 
 export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) {
   // ---------- 快照：project_members 整張 ----------
   // byId：成員 id → [{ project, role }]（照專案建立順序）；leaderMap／roMap：{ 專案id: [成員id] }（含封存專案、含停用的人）
-  // platform：帳號是平台管理員、帳號啟用中的成員 id（#9）
+  // platform：帳號是平台管理員、帳號啟用中的成員 id
   let snap = { byId: new Map(), leaders: {}, ro: {}, platform: new Set() }, snapAt = 0;
   async function loadMembers(force = false) {
     if (!force && snapAt && Date.now() - snapAt < 10_000) return snap;
@@ -198,7 +198,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 舊欄位 is_admin、projects 由 migrations/009 抄到 legacy_members 再拿掉；009 還沒套的資料庫（例：D1 先換程式、後跑升級）照舊讀欄位。
   // 舊資料：projects 逗號字串（NULL＝所有未封存專案）、project_leaders → 專案管理員、read_only → 唯讀成員（leader 優先）、
   // is_admin（沒有就最早加入的啟用人類）→ 工作區管理員＋平台管理員、停用 → 停用帳號、已刪除（人類）→ 已移出工作區。
-  // 跨專案角色 → 每個未封存專案的明確成員資格（migrateCrossRoles）。隱形管理員（#8）：現任管理員在「沒有職稱（project_roles）也不是 leader」的專案
+  // 跨專案角色 → 每個未封存專案的明確成員資格（migrateCrossRoles）。隱形管理員：現任管理員在「沒有職稱（project_roles）也不是 leader」的專案
   // 移除成員資格，改靠隱含權限（升級前這些專案本來就不列他），其他保留；跨專案角色的轉換也照這個規則。匯入備份中（restore_state）不做，回 false。
   // 每個人都轉完後，刪掉抄起來的舊資料與舊設定（project_leaders、read_only、cross_roles）。
   async function migrateLegacy() {
@@ -282,7 +282,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     const people = (await db.all("SELECT id, kind, status, role, role_key, workspace_role FROM participants WHERE status = 'active' AND kind != 'system' ORDER BY created_at, id")).filter(p => crossOf(cr, p));
     const ids = people.map(p => p.id);
     const active = (await db.all('SELECT id FROM projects WHERE archived = 0')).map(r => r.id);
-    // 工作區管理員靠隱含權限：只在有職稱的專案成為成員（#8 隱形管理員的規則；是專案管理員的專案本來就有成員資格）
+    // 工作區管理員靠隱含權限：只在有職稱的專案成為成員（隱形管理員的規則；是專案管理員的專案本來就有成員資格）
     const titles = (await readJson('project_roles')) || {};
     const wsAdmin = p => p.kind === 'human' && p.workspace_role === 'admin';
     const rows = JSON.stringify(people.flatMap(x => active.filter(pj => !wsAdmin(x) || titles[x.id]?.[pj]).map(p => ({ p, id: x.id }))));
