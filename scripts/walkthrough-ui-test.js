@@ -61,7 +61,7 @@ try {
   await type('#jn-user', 'ab c!d');
   assert.equal(await js("document.querySelector('#jn-user-hint').textContent"), '只能用英文、數字和 . _ -，不能有：空白、!');
   assert.equal(await js("document.querySelector('#jn-user').getAttribute('aria-invalid')"), 'true', '紅框');
-  assert.match(await js("document.querySelector('#join-desc').textContent"), /加入申請/, '註冊說明是申請加入的流程');
+  assert.match(await js("document.querySelector('#join-desc').textContent"), /申請加入專案/, '註冊說明是申請加入的流程');
   console.log('✓ 登入頁提示、註冊錯誤分開列');
 
   // 改好帳密：提示不見

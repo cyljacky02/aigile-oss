@@ -3545,7 +3545,7 @@ window.AIGILE_EN = {
     "moveTo 要是這個專案的另一個狀態 ID": "moveTo must be the ID of another status in this project",
     "裡面有決策卡：決策卡要由決策者決定，不能直接搬到已完成。": "It contains decision cards: they must be decided by their decider and can't be moved straight to Done.",
     // 成員與權限收尾（#16）：專案管理員、工作區管理員的用詞
-    "填名稱、角色，再設一組帳號密碼（之後用它登入）。註冊後在主畫面加入開放的專案，或送出加入申請、專案管理員核准後，就看得到專案的訊息與卡片。": "Enter your name and role, then set a username and password (you'll sign in with them). After signing up, join an open project from the home screen, or send a join request; once a project admin approves it, you'll see the project's messages and cards.",
+    "填名稱、角色，再設一組帳號密碼（之後用它登入）。註冊後在主畫面加入開放的專案，或申請加入專案、由專案管理員核准後，就看得到專案的訊息與卡片。": "Enter your name and role, then set a username and password (you'll sign in with them). After signing up, join an open project from the home screen, or send a join request; once a project admin approves it, you'll see the project's messages and cards.",
     "建立工作區：輸入你的名稱與角色，你會是工作區管理員，之後用邀請連結加人。": "Create the workspace: enter your name and role. You'll be the workspace admin and can add people with invite links.",
     "請輸入工作區名稱（1～30 字）": "Enter a workspace name (1–30 characters)",
     "工作區名稱與專案": "Workspace name & projects",

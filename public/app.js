@@ -237,7 +237,7 @@
     $('#join-form').hidden = !form;
     $('#login-main').hidden = form;
     $('#join-title').textContent = mode === 'setup' ? '建立群組' : mode === 'register' ? '註冊' : '歡迎回來';
-    $('#join-desc').textContent = mode === 'register' ? '填名稱、角色，再設一組帳號密碼（之後用它登入）。註冊後在主畫面加入開放的專案，或送出加入申請、專案管理員核准後，就看得到專案的訊息與卡片。' : '建立工作區：輸入你的名稱與角色，你會是工作區管理員，之後用邀請連結加人。';
+    $('#join-desc').textContent = mode === 'register' ? '填名稱、角色，再設一組帳號密碼（之後用它登入）。註冊後在主畫面加入開放的專案，或申請加入專案、由專案管理員核准後，就看得到專案的訊息與卡片。' : '建立工作區：輸入你的名稱與角色，你會是工作區管理員，之後用邀請連結加人。';
     $('#join-submit').textContent = mode === 'register' ? '註冊' : '建立群組';
     $('#join-back').hidden = mode !== 'register';
     $('#self-join-wrap').hidden = !h.openJoin;
