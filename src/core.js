@@ -2003,8 +2003,10 @@ ${ending}`;
     if (membership.roleOf(p.id, row.id) === PROJECT_ROLE.ADMIN) await access.check(ctx, me, 'assign_project_admin', { project: row.id }, { what: '任免專案管理員' });
     const next = listOf(p).filter(x => PROJECTS.includes(x) && x !== row.id);
     if (p.kind !== 'human' && !next.length) throw new ApiError(400, 'NEEDS_ONE_PROJECT', `${p.name} 至少要屬於一個專案。`);
-    const [impact] = await applyMembership(ctx, me, [{ id: p.id, projects: next, allowEmpty: true }], { dryRun, byLeader: !wsAdminIn(v, me) });
-    return { project: row.id, participantId: p.id, removed: !dryRun, dryRun, returnedCards: impact?.returnedCards || [] };
+    // 他的 AI 一起移出（AI 的專案不超出所屬人類）：AI 負責的卡也退回，預覽就列出來（returnedCards 含 AI 的卡；ais 分開列）
+    const impacts = await applyMembership(ctx, me, [{ id: p.id, projects: next, allowEmpty: true }], { dryRun, byLeader: !wsAdminIn(v, me) });
+    const ais = impacts.filter(x => x.participantId !== p.id).map(x => ({ participantId: x.participantId, name: x.name, returnedCards: x.returnedCards }));
+    return { project: row.id, participantId: p.id, removed: !dryRun, dryRun, returnedCards: impacts.flatMap(x => x.returnedCards), ais };
   });
   // 舊的管理用端點：已移除
   const goneMembers = () => { throw new ApiError(410, 'GONE', '這個端點已移除：專案成員請改用 GET／POST /api/projects/:id/members（列出、加入）與 PUT／DELETE /api/projects/:id/members/:participantId（設定專案角色、移出）；要讓人在每個專案，請把他加進各專案。'); };

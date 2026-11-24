@@ -9992,11 +9992,11 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const plan = permPlan();
     try {
       const rmInfo = [];
-      for (const r of plan.rms) rmInfo.push({ ...r, cards: (await api(memPath(r.pj, r.id), { method: 'DELETE', body: { dryRun: true } })).returnedCards || [] });
+      for (const r of plan.rms) { const d = await api(memPath(r.pj, r.id), { method: 'DELETE', body: { dryRun: true } }); rmInfo.push({ ...r, cards: d.returnedCards || [], ais: d.ais || [] }); } // returnedCards 含跟著離開的 AI 的卡
       const lines = [
         ...plan.titles.flatMap(t => Object.entries(t.roles).map(([pj, v]) => `${esc(t.name)}：在${esc(projName(pj))}的職稱改成${esc(v || '未設定')}`)),
         ...[...plan.adds].flatMap(([pj, ids]) => ids.map(id => `${esc(P2(id)?.name || '')}：加入 ${esc(projName(pj))}`)),
-        ...rmInfo.map(x => `${esc(P2(x.id)?.name || '')}：離開 ${esc(projName(x.pj))}${x.cards.length ? `（<b>${x.cards.length} 張卡退回待處理</b>：${x.cards.join('、')}）` : ''}`),
+        ...rmInfo.map(x => `${esc(P2(x.id)?.name || '')}：離開 ${esc(projName(x.pj))}${x.cards.length ? `（<b>${x.cards.length} 張卡退回待處理</b>：${x.cards.join('、')}）` : ''}${x.ais.length ? `；他的 AI ${esc(x.ais.map(a => a.name).join('、'))} 一起離開` : ''}`),
       ];
       if (!await confirmDialog({ title: '確定儲存這些變更？', confirmText: '儲存', danger: rmInfo.some(x => x.cards.length),
         message: `<ul class="pm-impact">${lines.map(l => `<li>${l}</li>`).join('') || '<li>沒有實際變更</li>'}</ul>` })) return;
