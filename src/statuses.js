@@ -40,11 +40,15 @@ function makeBook(rows, invalid) {
     return s && s.project === c.project && s.category === c.status ? s : first(c.project, c.status);
   };
   const names = pj => list(pj).map(s => s.name).join('、');
+  // status 輸入的前兩步：這個專案的狀態名稱 → 狀態 ID（改卡片的 resolve 與卡片清單的篩選共用）
+  const match = (pj, input) => {
+    const raw = String(input ?? '').trim(), l = list(pj);
+    return l.find(s => s.name === raw) || (/^\d+$/.test(raw) ? l.find(s => s.id === Number(raw)) : null) || null;
+  };
   // 依序比對：這個專案的狀態名稱 → 狀態 ID → 狀態類別名稱（對到該類別第一個狀態；沒有待整理就用待處理）
   function resolve(pj, input) {
     const raw = String(input ?? '').trim();
-    const l = list(pj);
-    const hit = l.find(s => s.name === raw) || (/^\d+$/.test(raw) ? l.find(s => s.id === Number(raw)) : null);
+    const hit = match(pj, raw);
     if (hit) return hit;
     if (raw === ARCHIVED) return ARCHIVED_ROW;
     if (CATEGORIES.includes(raw)) {
@@ -54,7 +58,7 @@ function makeBook(rows, invalid) {
     throw invalid(`status 需為這個專案的狀態：${names(pj)}（也可以用狀態 ID 或狀態類別名稱）`);
   }
   return {
-    list: pj => list(pj).map(pub), first, has, of, resolve, names,
+    list: pj => list(pj).map(pub), first, has, of, match, resolve, names,
     byId: id => byId.get(Number(id)) || null,
     // 卡片對外的狀態欄位：status＝狀態名稱、category＝狀態類別、statusId
     fields: c => { const s = of(c); return { status: s ? s.name : c.status, category: c.status, statusId: s ? s.id : null }; },

@@ -294,18 +294,19 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     const q = url.searchParams, limit = (q.get('q') || '').trim() ? Math.min(parseLimit(url, 100, 200), 20) : parseLimit(url, 100, 200); // 有關鍵字最多 20 筆
     const offset = Math.max(0, Math.min(Number.parseInt(q.get('offset') || '0', 10) || 0, 100_000)); // 已封存分頁
     const where = [], args = [];
-    const status = q.get('status');
+    const status = (q.get('status') || '').trim().replace(/^all$/, ''); // all＝不篩（跟沒帶一樣）
     if (status === 'open') where.push(`status IN ${UNFINISHED_SQL}`);
     else if (status) { // 跟 PATCH 同一個順序，各專案各自比對：狀態名稱 → 狀態 ID → 狀態類別名稱（整個類別）
       const pjs = PROJECTS.includes(q.get('project')) ? [q.get('project')] : isolatedFrom(me) ? projectsOf(me) : PROJECTS;
       const isCategory = CATEGORIES.includes(status);
       const hits = pjs.flatMap(pj => {
-        const l = book.list(pj), s = l.find(x => x.name === status) || (/^\d+$/.test(status) ? l.find(x => String(x.id) === status) : null);
-        return s ? [{ ...s, pj, only: l.filter(x => x.category === s.category).length === 1 }] : [];
+        const s = book.match(pj, status);
+        return s ? [{ ...s, pj, only: book.list(pj).filter(x => x.category === s.category).length === 1 }] : [];
       }).filter(s => !(isCategory && s.only)); // 類別裡只有這一個狀態：等於依類別篩（沒自訂過的專案 SQL 跟以前一樣）
       if (!hits.length && !isCategory) throw invalid(`找不到狀態「${status}」：status 可以是 open、狀態類別（${CATEGORIES.join('、')}），或專案的狀態名稱、狀態 ID`);
-      // status_id 空的卡算在該類別第一個狀態；類別裡只有一個狀態就不看 status_id
-      const conds = hits.map(s => `(project = ? AND status = ?${s.only ? '' : ` AND (status_id = ?${book.first(s.pj, s.category)?.id === s.id ? ' OR status_id IS NULL' : ''})`})`);
+      // status_id 空的或對不上（別的專案、別的類別、已刪除）的卡算在該類別第一個狀態（ADR 0001）；類別裡只有一個狀態就不看 status_id
+      const stray = ' OR status_id IS NULL OR status_id NOT IN (SELECT ps.id FROM project_statuses ps WHERE ps.project = cards.project AND ps.category = cards.status)';
+      const conds = hits.map(s => `(project = ? AND status = ?${s.only ? '' : ` AND (status_id = ?${book.first(s.pj, s.category)?.id === s.id ? stray : ''})`})`);
       args.push(...hits.flatMap(s => (s.only ? [s.pj, s.category] : [s.pj, s.category, s.id])));
       if (isCategory) { // 其他專案：依類別
         conds.push(`(status = ?${hits.length ? ` AND project NOT IN (${hits.map(() => '?').join(',')})` : ''})`);

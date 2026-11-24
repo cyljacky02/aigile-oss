@@ -108,7 +108,7 @@ B. 不接受，等全部完成
 
 | 動作 | 端點 |
 |---|---|
-| 列表 | `GET /api/cards?status=open&owner=<你>&project=&q=`（`status` 可為 `open`，或跟修改同一個順序比對：狀態名稱 → 狀態 ID → 類別名稱〔整個類別〕，各專案各自比對；`include=archived` 才含已封存） |
+| 列表 | `GET /api/cards?status=open&owner=<你>&project=&q=`（`status` 可為 `open`、`all`〔不篩，同沒帶〕，或跟修改同一個順序比對：狀態名稱 → 狀態 ID → 類別名稱〔整個類別〕，各專案各自比對；`include=archived` 才含已封存） |
 | 增量 | `GET /api/cards?since=<nextSince>`：輪詢用這個 |
 | 詳情 | `GET /api/cards/:id`（最前面 `claim` 誰在做、`handover` 上一棒） |
 | 建立 | `POST /api/cards`：`{ requestId, project, title, type?, reason?, ownerId?, status?, next?, blocker?, waitForId?, criteria?, messageIds? }` |

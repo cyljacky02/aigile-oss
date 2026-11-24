@@ -363,6 +363,23 @@ try {
     assert.deepEqual((await statuses(encodeURIComponent(pj))).map(s => s.name), ['待整理', '待處理', '進行中', '待確認', '已完成'], '拿掉的受阻沒有被加回來');
   }
 
+  // 20) 卡片清單的 status 篩選跟 PATCH 一樣解讀輸入：前後空白、前面補 0 的 ID；all＝不篩；
+  //     status_id 對不上的卡（舊資料）算在同類別第一個狀態（ADR 0001）
+  {
+    const todo = await byName('待處理'), later = await byName('待辦');
+    const a = ok(await mkCard(boss.token, { status: '待處理', title: '狀態對不上的卡' }), '卡');
+    const b = ok(await mkCard(boss.token, { status: '待辦' }), '待辦的卡');
+    await db.run('UPDATE cards SET status_id = 999999 WHERE project = ? AND title = ?', '預設專案', '狀態對不上的卡'); // 舊資料：指向不存在的狀態
+    assert.equal((await getCard(a.cardId)).status, '待處理', '讀卡時算在第一個待處理類別的狀態');
+    const list = async qs => ok(await call(boss.token, `/api/cards?limit=200&project=${P}&${qs}`), '篩選').items.map(x => x.cardId);
+    for (const v of ['待處理', ' 待處理 ', String(todo.id), '00' + todo.id]) {
+      const ids = await list(`status=${encodeURIComponent(v)}`);
+      assert.ok(ids.includes(a.cardId) && !ids.includes(b.cardId), `status=「${v}」：只有待處理那個狀態，含 status_id 對不上的卡`);
+    }
+    assert.ok((await list(`status=${encodeURIComponent(' ' + later.id)}`)).includes(b.cardId), 'ID 前後空白');
+    assert.deepEqual((await list('status=all')).sort(), (await list('')).sort(), 'all＝不篩（跟 MCP 一樣）');
+  }
+
   console.log('project-statuses-test：全部通過');
 } finally {
   db.close?.();
