@@ -1529,9 +1529,9 @@ ${ending}`;
   // 權限判斷全部走權限模組（src/access.js）：誰是什麼角色、能不能做什麼；這裡只注入它要讀的成員資料
   const access = createAccess({
     ApiError, requireHuman, nameOf: id => nameOf(id), people: ctx => peopleMap(ctx), projects: () => PROJECTS, projectsOf, isolatedFrom,
-    crossRole: p => crossRole(p), titles: () => projRoles,
-    leaders: { load: force => loadLeaders(force), now: () => leadersMap },
-    readOnly: { load: force => loadReadOnly(force), now: () => roMap },
+    isCrossRole: p => crossRole(p), titles: () => projRoles,
+    loadLeaders: force => loadLeaders(force), leadersOf: pj => leadersMap[pj] || [],
+    loadReadOnly: force => loadReadOnly(force), isReadOnly: (p, pj) => (roMap[pj] || []).includes(p.kind === 'ai' ? p.owner_id : p.id), // 唯讀名單；AI 跟著所屬人類
   });
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 跨專案角色：固定屬於所有專案，不能移出。預設是 PO、SM（含人類 PO）； 起管理員可在「成員與權限」開關，
@@ -2185,7 +2185,7 @@ ${ending}`;
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    await access.check(ctx, me, 'configure_project', { project: row.id }, { what: '改程式庫設定' });
+    await access.check(ctx, me, 'configure_project', { project: row.id }, { deny: () => new ApiError(403, 'NOT_ADMIN', `只有群組管理員或「${row.name}」的 leader 能改程式庫設定。`) });
     const repo = readRepo(await readJson(req));
     const at = nowIso();
     await db.batch([
@@ -2274,7 +2274,7 @@ ${ending}`;
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    await access.check(ctx, me, 'configure_project', { project: row.id }, { what: '開關私訊' });
+    await access.check(ctx, me, 'configure_project', { project: row.id }, { deny: () => new ApiError(403, 'NOT_ADMIN', `只有群組管理員或「${row.name}」的 leader 能開關私訊。`) });
     const body = await readJson(req);
     if (typeof body.on !== 'boolean') throw invalid('on 需為 true 或 false');
     const at = nowIso();

@@ -67,24 +67,25 @@ const scopeOf = scope => {
   return { kind: 'project' in s ? 'project' : 'workspace', project: s.project ?? null, target: s.target ?? null };
 };
 
-// deps：
+// deps（成員資料的讀法，名字跟成員資格模組 src/membership.js 一致）：
 //   ApiError、requireHuman、nameOf(專案id)
-//   people(ctx)            → Map<id, participant>
-//   projects()             → 未封存的專案 id
-//   projectsOf(p)          → 他所在、未封存的專案
-//   isolatedFrom(p)        → 不在所有專案（看不到別專案的東西）
-//   crossRole(p)           → 跨專案角色
-//   leaders/readOnly       → { load(force) 非同步重讀, now() 目前快取 }：{ 專案id: [成員id] }
-//   titles()               → { 成員id: { 專案id: 職稱 } }（目前快取）
+//   people(ctx)              → Map<id, participant>
+//   projects()               → 未封存的專案 id
+//   projectsOf(p)            → 他所在、未封存的專案
+//   isolatedFrom(p)          → 不在所有專案（看不到別專案的東西）
+//   isCrossRole(p)           → 跨專案角色
+//   loadLeaders(force)       → 讀 leader 名單（10 秒快取；force 重讀）；leadersOf(pj) → 目前快取裡該專案的 leader id（含封存專案）
+//   loadReadOnly(force)      → 讀唯讀名單；isReadOnly(p, pj) → 目前快取裡 p 在 pj 唯讀（AI 跟著所屬人類）
+//   titles()                 → { 成員id: { 專案id: 職稱 } }（目前快取）
 export function createAccess(deps) {
-  const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, crossRole, leaders, readOnly, titles } = deps;
+  const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, isCrossRole, leadersOf, isReadOnly, titles } = deps;
 
-  const readOnlyIn = (p, pj, ro = readOnly.now()) => !!p && !!pj && (ro[pj] || []).includes(p.kind === 'ai' ? p.owner_id : p.id);
-  const readOnlyList = (p, ro = readOnly.now()) => projects().filter(pj => readOnlyIn(p, pj, ro));
+  const readOnlyIn = (p, pj) => !!p && !!pj && isReadOnly(p, pj);
+  const readOnlyList = p => projects().filter(pj => readOnlyIn(p, pj));
   const readOnlyError = (p, pj) => new ApiError(403, 'READ_ONLY', `${p?.kind === 'ai' ? '你的所屬人類' : '你'}在「${nameOf(pj)}」是唯讀，只能看，不能發訊息、回覆、建卡、改卡、交接、上傳或私訊。需要權限請找管理員或該專案 leader。AI 收到這個就停下、在本機對話告訴所屬人類，不要重試。`);
 
-  // 判斷視圖：一份成員、leader、唯讀名單的快照，判斷都是同步的（可以放在 filter 裡）
-  function view({ people = null, leaderMap = leaders.now(), roMap = readOnly.now() } = {}) {
+  // 判斷視圖：綁定一份成員資料，判斷都是同步的（可以放在 filter 裡）；leader、唯讀看目前快取（load() 會先讀好）
+  function view({ people = null } = {}) {
     let admin;
     const adminNow = () => {
       if (admin === undefined) { if (!people) throw new Error('權限判斷需要成員資料（access.load 沒讀成員）'); admin = adminOf(people); }
@@ -92,10 +93,10 @@ export function createAccess(deps) {
     };
     const isAdmin = p => !!p && p.kind === 'human' && adminNow()?.id === p.id;
     const v = {
-      people, admin: adminNow, projects, projectsOf, isolatedFrom, crossRole,
+      people, admin: adminNow, projects, projectsOf, isolatedFrom, crossRole: isCrossRole,
       active: pj => projects().includes(pj),
-      leads: (p, pj) => !!p && (leaderMap[pj] || []).includes(p.id),
-      readOnlyAt: (p, pj) => (pj ? readOnlyIn(p, pj, roMap) : readOnlyList(p, roMap).length > 0),
+      leads: (p, pj) => !!p && leadersOf(pj).includes(p.id),
+      readOnlyAt: (p, pj) => (pj ? readOnlyIn(p, pj) : readOnlyList(p).length > 0),
       roleIn(p, scope) {
         if (!p) return null;
         const s = scopeOf(scope);
@@ -103,7 +104,7 @@ export function createAccess(deps) {
         if (s.kind === 'workspace') return isAdmin(p) ? R.WORKSPACE_ADMIN : p.status === 'active' && (p.kind === 'human' || p.kind === 'ai') ? R.MEMBER : null;
         if (isAdmin(p) || v.leads(p, s.project)) return R.PROJECT_ADMIN; // 隱含權限、leader
         if (!projectsOf(p).includes(s.project)) return null;
-        return readOnlyIn(p, s.project, roMap) ? R.VIEWER : R.PROJECT_MEMBER;
+        return readOnlyIn(p, s.project) ? R.VIEWER : R.PROJECT_MEMBER;
       },
       can(me, action, scope) {
         const def = ACTIONS[action];
@@ -118,24 +119,26 @@ export function createAccess(deps) {
   }
 
   async function load(ctx, { fresh = false, light = false } = {}) {
-    if (light) return view({ roMap: await readOnly.load() });
-    const [people, leaderMap, roMap] = [await deps.people(ctx), await leaders.load(fresh), await readOnly.load()];
-    return view({ people, leaderMap, roMap });
+    await deps.loadReadOnly();
+    if (light) return view();
+    const people = await deps.people(ctx);
+    await deps.loadLeaders(fresh);
+    return view({ people });
   }
 
   // 不行就丟錯。opts.what：預設訊息裡「能…」的部分；opts.deny()：自己給錯誤
+  // （訊息都要在 public/i18n/en.js 有英文，i18n-test 會掃；新訊息請沿用既有句型或一起加翻譯）
   function denial(v, me, action, s, { what, deny } = {}) {
     if (deny) return deny();
     const adminName = () => v.admin()?.name || '未設定';
     switch (action) {
       case 'write': return readOnlyError(me, s.project || readOnlyList(me)[0]);
-      case 'manage_project': return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）或這個專案的 leader 能${what}。`);
-      case 'configure_project': return new ApiError(403, 'NOT_ADMIN', `只有群組管理員或「${nameOf(s.project)}」的 leader 能${what}。`);
-      case 'manage_project_members': return new ApiError(403, 'NOT_PROJECT_LEADER', `你不是「${nameOf(s.project)}」的 leader，不能改那個專案的成員。`);
+      case 'manage_project': case 'configure_project': case 'manage_project_members':
+        return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）或這個專案的 leader 能${what || '管理這個專案'}。`);
       case 'set_title': return new ApiError(403, 'NOT_PROJECT_LEADER', `只有管理員、「${nameOf(s.project)}」的 leader 或 ${s.target?.name || ''} 本人能改他在這個專案的角色。`);
       case 'see_project': return new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
       case 'see_ai_state': return new ApiError(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。');
-      case 'see_member': return new ApiError(404, 'NOT_FOUND', '找不到這位成員');
+      case 'see_member': return new ApiError(404, 'NOT_FOUND', `找不到成員 ${s.target?.id || ''}`);
       default: return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）能${what || '管理專案與成員所屬專案'}。`);
     }
   }

@@ -26,9 +26,9 @@ const titles = { lead: { main: 'PO' } };
 const access = createAccess({
   ApiError, requireHuman, nameOf: id => ({ main: '主專案', side: '副專案', old: '舊專案' })[id] || id,
   people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
-  isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)), crossRole: () => false,
-  leaders: { load: async () => leaders, now: () => leaders },
-  readOnly: { load: async () => readOnly, now: () => readOnly },
+  isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)), isCrossRole: () => false,
+  loadLeaders: async () => leaders, leadersOf: pj => leaders[pj] || [],
+  loadReadOnly: async () => readOnly, isReadOnly: (p, pj) => (readOnly[pj] || []).includes(p.kind === 'ai' ? p.owner_id : p.id),
   titles: () => titles,
 });
 const ctx = {};
