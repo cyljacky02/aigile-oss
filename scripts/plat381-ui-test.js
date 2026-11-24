@@ -90,8 +90,8 @@ try {
     await click('[data-pm-more="預設專案"]');
     await until(() => js("!!document.querySelector('.pm-more-menu')"), 5000, L + '⋯ 選單');
     const mi = await J("[...document.querySelectorAll('.pm-more-menu [role=menuitem]')].map(b => b.innerText.replace(/\\s+/g, ' ').trim())");
-    assert.deepEqual(mi.map(x => x.replace(/^\S+\s*/, '').split(' ')[0]), ['改名', '程式庫與分支', '成員與專案角色', '看板狀態', '異動紀錄', '封存專案', '永久刪除'], L + '⋯ 選單：' + mi.join(' / '));
-    assert.match(mi[6], /只有管理員/, L + '永久刪除寫只有管理員');
+    assert.deepEqual(mi.map(x => x.replace(/^\S+\s*/, '').split(' ')[0]), ['改名', '程式庫與分支', '專案可見度', '成員與專案角色', '看板狀態', '異動紀錄', '封存專案', '永久刪除'], L + '⋯ 選單：' + mi.join(' / '));
+    assert.match(mi[7], /只有管理員/, L + '永久刪除寫只有管理員');
     assert.equal(await js("document.querySelector('.pm-more-menu [data-pp=\"archive\"]').classList.contains('danger')"), false, L + '封存可還原，用一般色（UX #6479）');
     assert.equal(await js("document.querySelector('.pm-more-menu [data-pp=\"noop\"]').getAttribute('aria-disabled')"), 'true', L + '永久刪除灰掉');
     assert.ok(!(await hscroll()), L + '專案管理頁不橫向捲動');
@@ -103,7 +103,7 @@ try {
     await js("(() => { const b = document.querySelector('[data-pset=\"預設專案\"]'); b.scrollIntoView(); b.click(); return true; })()");
     await until(() => js("!document.querySelector('#pset-menu')?.hidden"), 5000, L + '⚙ 選單');
     const ps = await J("[...document.querySelectorAll('#pset-menu [data-pset-act]')].map(b => b.dataset.psetAct + '=' + b.innerText.replace(/\\s+/g, ' ').trim())");
-    assert.deepEqual(ps.map(x => x.split('=')[0]), ['rename', 'repo', 'members', 'kbai'], L + 'leader 的 ⚙（沒有封存）：' + ps.join(' / '));
+    assert.deepEqual(ps.map(x => x.split('=')[0]), ['rename', 'repo', 'visibility', 'members', 'kbai'], L + 'leader 的 ⚙（沒有封存）：' + ps.join(' / '));
     await shot(`PLAT-381-3-${tag}-leader-專案齒輪`);
     await js("document.body.click(); true");
     // ---------- E leader 的要你處理 ----------
@@ -132,7 +132,7 @@ try {
     await until(() => js("!!document.querySelector('[data-pset=\"預設專案\"]')"), 10000, L + '管理員的專案 ⚙');
     await js("(() => { const b = document.querySelector('[data-pset=\"預設專案\"]'); b.scrollIntoView(); b.click(); return true; })()");
     await until(() => js("!document.querySelector('#pset-menu')?.hidden"), 5000, L + '管理員 ⚙ 選單');
-    assert.equal(await js("[...document.querySelectorAll('#pset-menu [data-pset-act]')].map(b => b.dataset.psetAct).join(',')"), 'rename,repo,members,kbai', L + '管理員的 ⚙ 跟 leader 一樣、沒有封存');
+    assert.equal(await js("[...document.querySelectorAll('#pset-menu [data-pset-act]')].map(b => b.dataset.psetAct).join(',')"), 'rename,repo,visibility,members,kbai', L + '管理員的 ⚙ 跟 leader 一樣、沒有封存');
     await shot(`PLAT-381-5b-${tag}-管理員-專案齒輪`);
     await js("document.body.click(); true");
     await login(liu.token, '/p/main/inbox');

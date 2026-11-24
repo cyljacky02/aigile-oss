@@ -12,6 +12,7 @@
 // - 唯讀成員的 AI 跟著唯讀；明確設成唯讀成員時一律不能寫（工作區管理員不能被設成唯讀成員）
 // - AI 不能做任何管理動作
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
+// - 專案可見度：開放＝直接加入、審核＝送申請、私人＝只有專案成員與有隱含權限的人知道它存在（discover_project；其他人各處都當它不存在，回 404）
 // 資料都由呼叫端注入（成員資料歸成員資格模組管），這裡只做判斷。
 export const ACCESS_ROLE = Object.freeze({
   PLATFORM_ADMIN: 'platform_admin',
@@ -19,6 +20,11 @@ export const ACCESS_ROLE = Object.freeze({
   PROJECT_ADMIN: 'project_admin', PROJECT_MEMBER: 'project_member', VIEWER: 'viewer',
 });
 const R = ACCESS_ROLE;
+// 專案可見度（存在 projects.visibility）：open＝開放（工作區成員直接加入）、review＝審核（申請後由專案管理員核准）、
+// private＝私人（只有專案成員與有隱含權限的人看得到，其他人查不到它的存在）。舊專案與新專案預設審核
+export const PROJECT_VISIBILITY = Object.freeze({ OPEN: 'open', REVIEW: 'review', PRIVATE: 'private' });
+export const PROJECT_VISIBILITIES = Object.freeze(Object.values(PROJECT_VISIBILITY));
+const VIS = PROJECT_VISIBILITY;
 
 // 這一列是不是工作區管理員（啟用中的人類、workspace_role＝admin）。只看這一列，不必讀成員資料
 export const isWorkspaceAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && p.workspace_role === 'admin';
@@ -63,9 +69,14 @@ const ACTIONS = {
   manage_project_members: { admin: true, leads: true, rule: activeProjectAdmin }, // 專案成員：從工作區成員挑人加入、移出、設專案成員／唯讀成員
   assign_project_admin: { admin: true, leads: true, rule: activeProjectAdmin }, // 任免專案管理員：工作區管理員，以及該專案的專案管理員
   set_title: { admin: true, leads: true, rule: (v, me, s) => activeProjectAdmin(v, me, s) || (!!s.target && s.target.id === me.id) },
+  set_visibility: { admin: true, leads: true, rule: activeProjectAdmin }, // 專案可見度：開放／審核／私人
+  // 專案可見度
+  discover_project: { rule: (v, me, s) => v.discovers(me, s.project) }, // 知道這個專案存在（專案清單、卡片代號、搜尋、訊息、MCP、名冊）；看內容另外看 see_project
+  join_project: { human: true, rule: (v, me, s) => !!v.roleIn(me, 'workspace') && v.visibilityOf(s.project) === VIS.OPEN }, // 自己直接加入：開放專案
+  request_join: { human: true, rule: (v, me, s) => !!v.roleIn(me, 'workspace') && v.visibilityOf(s.project) === VIS.REVIEW }, // 送加入申請：審核專案
   // 一般
   write: { light: true, rule: (v, me, s) => !v.readOnlyAt(me, s.project) },
-  see_project: { light: true, rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project) },
+  see_project: { rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project) },
   see_project_events: { rule: (v, me, s) => v.projectsOf(me).includes(s.project) || workspaceAdmin(v, me) },
   see_member: { rule: (v, me, { target: p }) => !v.isolatedFrom(me) || p.id === me.id || v.projectsOf(p).some(x => v.projectsOf(me).includes(x))
     || (p.kind === 'human' && !v.projectsOf(p).length && v.projects().some(pj => v.leads(me, pj))) }, // 專案管理員另外看得到「還沒有任何專案」的人類，才能把新成員加進自己的專案
@@ -90,6 +101,7 @@ const scopeOf = scope => {
 //   titles()                 → { 成員id: { 專案id: 職稱 } }（目前快取）
 //   memberProjectsOf(p)      → 他明確加入的（未封存）專案（不含隱含權限；沒給就用 projectsOf）
 //   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
+//   visibilityOf(pj)         → 專案可見度（PROJECT_VISIBILITY；沒注入或不認得的值＝審核）
 export function createAccess(deps) {
   const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, leadersOf, isReadOnly, titles } = deps;
   const memberProjectsOf = deps.memberProjectsOf || projectsOf;
@@ -116,6 +128,12 @@ export function createAccess(deps) {
       lastAdmin: (p, scope = 'workspace') => scopeOf(scope).kind !== 'project' && isAdmin(p) && !adminsOf(needPeople()).some(x => x.id !== p.id),
       active: pj => projects().includes(pj),
       membersCreateProjects: () => !!deps.membersCreateProjects?.(),
+      visibilityOf: pj => { const x = deps.visibilityOf?.(pj); return PROJECT_VISIBILITIES.includes(x) ? x : VIS.REVIEW; },
+      // 私人專案只有專案成員與有隱含權限的人（工作區管理員等）看得到它存在；開放、審核所有人都看得到
+      // （成員先判，不必讀成員資料；非成員看私人專案才要判上層管理員）
+      discovers: (p, pj) => !!p && (p.kind === 'system' || v.visibilityOf(pj) !== VIS.PRIVATE || projectsOf(p).includes(pj) || v.roleIn(p, { project: pj }) !== null),
+      // 看得到存在的專案（未封存）；錯誤訊息列可選的專案也用這個，不洩漏私人專案
+      visibleProjects: p => projects().filter(pj => v.discovers(p, pj)),
       leads: (p, pj) => !!p && leadersOf(pj).includes(p.id),
       readOnlyAt: (p, pj) => (pj ? readOnlyIn(p, pj) : readOnlyList(p).length > 0),
       roleIn(p, scope) {
@@ -150,16 +168,26 @@ export function createAccess(deps) {
   // 不行就丟錯。opts.what：預設訊息裡「能…」的部分；opts.deny()：自己給錯誤
   // （訊息都要在 public/i18n/en.js 有英文，i18n-test 會掃；新訊息請沿用既有句型或一起加翻譯）
   function denial(v, me, action, s, { what, deny } = {}) {
+    // 私人專案對看不到的人＝沒有這個專案（跟專案不存在一樣回 404，不說「你不屬於」）
+    if (s.project && v.people && !v.discovers(me, s.project)) return new ApiError(404, 'NOT_FOUND', '找不到這個專案');
     if (deny) return deny();
     const adminName = () => v.admin()?.name || '未設定';
     switch (action) {
       case 'write': return readOnlyError(me, s.project || readOnlyList(me)[0]);
-      case 'manage_project': case 'configure_project': case 'manage_project_members':
+      case 'manage_project': case 'configure_project': case 'manage_project_members': case 'set_visibility':
         return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）或這個專案的專案管理員能${what || '管理這個專案'}。`);
       case 'set_title': return new ApiError(403, 'NOT_PROJECT_LEADER', `只有管理員、「${nameOf(s.project)}」的專案管理員或 ${s.target?.name || ''} 本人能改他在這個專案的職稱。`);
       case 'see_project': return new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
       case 'see_ai_state': return new ApiError(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。');
       case 'see_member': return new ApiError(404, 'NOT_FOUND', `找不到成員 ${s.target?.id || ''}`);
+      case 'discover_project': return new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+      case 'join_project': case 'request_join': {
+        const vis = v.visibilityOf(s.project); // （看不到的私人專案上面已經回 404）
+        if (vis === VIS.PRIVATE) return new ApiError(403, 'JOIN_PRIVATE', `「${nameOf(s.project)}」是私人專案，只能由專案管理員把人加入。`);
+        if (vis === VIS.OPEN) return new ApiError(409, 'JOIN_DIRECTLY', `「${nameOf(s.project)}」是開放專案，直接加入就好，不用申請。`);
+        if (vis === VIS.REVIEW && action === 'join_project') return new ApiError(403, 'JOIN_NEEDS_APPROVAL', `「${nameOf(s.project)}」要送加入申請、由專案管理員核准才能加入。`);
+        return new ApiError(403, 'FORBIDDEN', '只有工作區成員能加入專案。');
+      }
       default: return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）能${what || '管理專案與成員所屬專案'}。`);
     }
   }
@@ -173,7 +201,7 @@ export function createAccess(deps) {
   }
 
   return {
-    load, view, check, adminOf, adminsOf, isWorkspaceAdmin, implicitOnly, readOnlyIn, readOnlyError,
+    load, view, check, adminOf, adminsOf, isWorkspaceAdmin, implicitOnly, readOnlyIn, readOnlyError, visibilityOf: pj => view().visibilityOf(pj),
     roleIn: async (ctx, p, scope) => (await load(ctx)).roleIn(p, scope),
     can: async (ctx, me, action, scope) => (await load(ctx, { light: ACTIONS[action]?.light })).can(me, action, scope),
   };

@@ -2,7 +2,10 @@
 // 開放設定存在 app_settings 的 join_settings（{ 專案id: { open, note } }，一列）；申請存在 join_requests 表
 // 通知用帳號通知（account_notices）：送出→該專案 leader（沒有 leader 就管理員）；結果→申請人
 // 開放申請：沒設過＝開放（新專案、預設專案、引導建的專案都一樣）；leader 關掉才存 open: false
-import { ACCESS_ROLE } from './access.js';
+// 專案可見度（#12）：開放專案工作區成員直接加入（POST /api/projects/:id/join）；審核專案走上面的申請；
+// 私人專案不列出、不收申請，看不到的人拿到的錯誤跟「沒有這個專案」一樣。判斷都在權限模組（discover_project、join_project、request_join）
+import { ACCESS_ROLE, PROJECT_VISIBILITY } from './access.js';
+import { PROJECT_ROLE } from './membership.js';
 
 export const joinOpen = (set, pj) => (set && set[pj] ? set[pj].open !== false : true);
 export const JOIN_NOTE_MAX = 200;
@@ -11,7 +14,7 @@ export const JOIN_DESC_MAX = 100;
 export function registerJoin(d) {
   const { route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf,
     loadProjects, projectRows, loadLeaders, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles, readRole,
-    addReadOnly, invalidatePeople, projEvent, liveTo = () => {} } = d; // liveTo：內建即時通道（本機／Docker），申請結果幾秒內推給申請人
+    addReadOnly, addMemberStmts, loadMembers, invalidatePeople, projEvent, liveTo = () => {} } = d; // liveTo：內建即時通道（本機／Docker），申請結果幾秒內推給申請人
 
   async function joinSettings() {
     const r = await db.get("SELECT value FROM app_settings WHERE key = 'join_settings'").catch(() => null);
@@ -43,31 +46,54 @@ export function registerJoin(d) {
     return { project: row.id, ...v, pending: (await db.get("SELECT COUNT(*) AS n FROM join_requests WHERE project = ? AND status = 'pending'", row.id)).n };
   });
 
-  // 同仁：可以申請的專案（只列開放、沒封存、自己還不在的）；附自己的申請狀態與上次被拒原因
+  // 同仁：可以加入或申請的專案（沒封存、自己還不在的；開放專案一律列出、審核專案要開放申請，私人專案不列）；
+  // visibility 決定按鈕：open＝加入、review＝申請加入；附自己的申請狀態與上次被拒原因
   route('GET', '/api/join/projects', async ({ ctx, me }) => {
     requireHuman(me);
     await loadProjects();
-    const [set, leaders, people] = [await joinSettings(), await loadLeaders(), await peopleMap(ctx)];
-    const mine = projectsOf(me), admin = adminOf(people);
+    const [set, leaders, v] = [await joinSettings(), await loadLeaders(), await access.load(ctx)];
+    const people = v.people, mine = projectsOf(me), admin = adminOf(people);
     const reqs = await db.all('SELECT * FROM join_requests WHERE participant_id = ? ORDER BY created_at DESC LIMIT 200', me.id);
     const last = pj => reqs.find(r => r.project === pj);
-    const members = pj => [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && projectsOf(p).includes(pj)).length;
-    const items = projectRows().filter(r => !r.archived && !mine.includes(r.id) && (joinOpen(set, r.id) || last(r.id)?.status === 'pending')).map(r => {
+    const members = pj => [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && projectsOf(p).includes(pj) && !v.implicitOnlyIn(p.id, pj)).length; // 工作區管理員的隱含權限不算成員
+    const listed = r => { const vis = v.visibilityOf(r.id); return vis === PROJECT_VISIBILITY.OPEN || (vis === PROJECT_VISIBILITY.REVIEW && (joinOpen(set, r.id) || last(r.id)?.status === 'pending')); };
+    const items = projectRows().filter(r => !r.archived && !mine.includes(r.id) && listed(r)).map(r => {
       const l = last(r.id), ls = (leaders[r.id] || []).map(id => people.get(id)?.name).filter(Boolean);
-      return { id: r.id, name: r.name, note: set[r.id]?.note || '', open: joinOpen(set, r.id), leaders: ls, admin: ls.length ? null : admin?.name || null, members: members(r.id),
+      return { id: r.id, name: r.name, visibility: v.visibilityOf(r.id), note: set[r.id]?.note || '', open: joinOpen(set, r.id), leaders: ls, admin: ls.length ? null : admin?.name || null, members: members(r.id),
         status: l?.status === 'pending' ? 'pending' : null, lastRejected: l?.status === 'rejected' ? { reason: l.reason, at: l.decided_at } : null };
     });
     return { items };
   });
 
-  // 同仁送出申請：只建申請，不會加入
+  // 看得到的專案（私人專案對非成員＝沒有這個專案）
+  async function joinTarget(ctx, me, id) {
+    await loadProjects();
+    const row = activeProject(id), v = await access.load(ctx);
+    if (!row || !v.can(me, 'discover_project', { project: row.id })) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    return row;
+  }
+  // 開放專案：工作區成員直接加入，成為專案成員（審核專案回 JOIN_NEEDS_APPROVAL，要送申請）
+  route('POST', '/api/projects/:id/join', async ({ ctx, me, params }) => {
+    requireHuman(me);
+    const row = await joinTarget(ctx, me, params.id);
+    if (row.archived) throw new ApiError(409, 'PROJECT_ARCHIVED', '這個專案已封存');
+    if (projectsOf(me).includes(row.id)) throw new ApiError(409, 'ALREADY_MEMBER', '你已經在這個專案');
+    await access.check(ctx, me, 'join_project', { project: row.id });
+    const at = nowIso();
+    await db.batch([...addMemberStmts(me.id, row.id, PROJECT_ROLE.MEMBER), ['UPDATE participants SET updated_at = ? WHERE id = ?', [at, me.id]],
+      projEvent(row.id, me.id, `${me.name} 加入專案（開放專案，專案成員）`, at)]);
+    invalidatePeople(); await loadMembers(true); ctx.people = null;
+    return { __status: 201, project: row.id, participantId: me.id, role: PROJECT_ROLE.MEMBER };
+  });
+
+  // 同仁送出申請：只建申請，不會加入（只有審核專案；開放專案回 JOIN_DIRECTLY）
   route('POST', '/api/projects/:id/join-requests', async ({ ctx, me, req, params }) => {
     requireHuman(me);
-    await loadProjects();
-    const row = activeProject(params.id), set = await joinSettings();
-    if (!row || (!joinOpen(set, params.id) && !projectsOf(me).includes(params.id))) throw new ApiError(403, 'JOIN_CLOSED', '這個專案目前不開放申請');
+    const row = await joinTarget(ctx, me, params.id), set = await joinSettings();
     if (projectsOf(me).includes(row.id)) throw new ApiError(409, 'ALREADY_MEMBER', '你已經在這個專案');
     if (row.archived) throw new ApiError(409, 'PROJECT_ARCHIVED', '這個專案已封存');
+    await access.check(ctx, me, 'request_join', { project: row.id });
+    if (!joinOpen(set, row.id)) throw new ApiError(403, 'JOIN_CLOSED', '這個專案目前不開放申請');
     const body = await readJson(req);
     const note = String(body.note ?? '').trim();
     if (note.length > JOIN_NOTE_MAX) throw invalid(`想做什麼最多 ${JOIN_NOTE_MAX} 字`);
