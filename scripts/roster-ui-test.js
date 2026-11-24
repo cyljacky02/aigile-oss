@@ -34,6 +34,11 @@ try {
   const has = async name => (await rows()).some(t => t.includes(name));
   const filters = () => js("[...document.querySelectorAll('[data-rs-filter]')].map(b => b.dataset.rsFilter).join(',')");
   const okConfirm = async () => { await until(() => js("!!document.querySelector('.confirm-root [data-ok]')"), 8000, '確認框'); await click('.confirm-root [data-ok]'); };
+  // 按了要跳確認框的按鈕再按確定：名冊剛重讀、按鈕剛換掉時按到舊的就再按一次（不是固定等幾毫秒）
+  const confirmVia = async sel => {
+    await until(async () => (await js("!!document.querySelector('.confirm-root [data-ok]')")) || (await click(sel), false), 8000, '確認框：' + sel);
+    await click('.confirm-root [data-ok]');
+  };
   const filter = k => until(async () => { // 名冊重讀中按鈕還沒出來就再按一次
     if (await js(`document.querySelector('[data-rs-filter="${k}"]')?.getAttribute('aria-pressed') === 'true'`)) return true;
     await click(`[data-rs-filter="${k}"]`);
@@ -102,14 +107,14 @@ try {
   console.log('✓ 從名冊升降工作區管理員、平台管理員；最後一位時按鈕停用');
 
   // ---- D 移出、停用 ----
-  await click(`.rs-table [data-pm-remove="${Wg}"]`); await okConfirm();
+  await confirmVia(`.rs-table [data-pm-remove="${Wg}"]`);
   await until(async () => !(await api(boss.token, Wg)), 8000, '王小美移出工作區');
   await until(async () => !(await has('王小美')), 8000, '王小美不在啟用中');
   await filter('removed');
   await until(() => has('王小美'), 8000, '王小美在已移出');
   await filter('active');
   await until(() => js(`!!document.querySelector('.rs-table [data-pm-disable="${Ln}"]')`), 8000, '停用按鈕');
-  await click(`.rs-table [data-pm-disable="${Ln}"]`); await okConfirm();
+  await confirmVia(`.rs-table [data-pm-disable="${Ln}"]`);
   await until(async () => (await call(lin.token, '/api/me')).status === 401, 8000, '林小新停用後登不進來');
   await filter('accounts');
   await until(() => js(`!!document.querySelector('.rs-table [data-pm-enable="${Ln}"]')`), 8000, '所有帳號裡可以恢復林小新');

@@ -21,6 +21,8 @@ try {
 
   const { js, login, cdp } = await kit.browser(1280, 900);
   const click = sel => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true; })()`);
+  // 打開專案切換清單：畫面剛重畫、按到舊按鈕時再按一次，直到清單打開
+  const openSwitch = () => until(async () => (await js("!!document.querySelector('.proj-switch .ps-btn[aria-expanded=\"true\"]')")) || (await click('.proj-switch .ps-btn'), false), 5000, '專案清單打開');
   const text = sel => js(`document.querySelector(${JSON.stringify(sel)})?.textContent || ''`);
   const crumbs = () => text('#crumbs');
   const menuItems = () => js("[...document.querySelectorAll('#pset-menu [data-pset-act]')].map(b => b.dataset.psetAct).join(',')");
@@ -72,7 +74,7 @@ try {
   await until(() => js("!!document.querySelector('.pm-ptable')"), 8000, '管理專案… 開專案管理');
   await login(liu.token, '/p/main/messages');
   await until(() => js("!!document.querySelector('.proj-switch [data-ps-act=\"newproj\"]')"), 8000, '管理員選項畫好'); // 登入後要等成員資料載入，管理員選項才會畫出來（平台 plat359 同修法）
-  await click('.proj-switch .ps-btn'); await until(() => js("!!document.querySelector('.proj-switch .ps-btn[aria-expanded=\"true\"]')"), 5000, '專案清單打開');
+  await openSwitch();
   await click('.proj-switch [data-ps-act="newproj"]');
   await until(() => js("!!document.querySelector('#np-form')"), 5000, '新增專案視窗');
   await js("document.querySelector('#modal-root [data-close]')?.click(); true"); await until(() => js("!document.querySelector('#modal-root [data-close]')"), 5000, '視窗關掉');
@@ -124,13 +126,13 @@ try {
   await login(wang.token, '/p/second/messages');
   await until(() => js("!!document.querySelector('.proj-switch .ph-card')"), 8000, '第二專案');
   assert.ok(!(await js("!!document.querySelector('.proj-switch [data-pset]')")), '不是 leader 的專案沒有齒輪');
-  await click('.proj-switch .ps-btn'); await until(() => js("!!document.querySelector('.proj-switch .ps-btn[aria-expanded=\"true\"]')"), 5000, '專案清單打開');
+  await openSwitch();
   // 工作區設定「所有成員」（新安裝預設）：清單有新增專案，但沒有管理專案（只有管理員）
   assert.equal(await js("[...document.querySelectorAll('.proj-switch:not(.sheet-proj) .ps-list [data-ps-act]')].map(b => b.textContent.trim()).join('|')"), '＋ 新增專案', '所有成員能建專案：leader 清單只有新增專案');
   assert.equal((await kit.call(liu.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' })).status, 200, '工作區設定改成只有管理員能建立專案');
   await login(wang.token, '/p/second/messages');
   await until(() => js("!!document.querySelector('.proj-switch .ph-card')"), 8000, '第二專案（只有管理員能建專案）');
-  await click('.proj-switch .ps-btn'); await until(() => js("!!document.querySelector('.proj-switch .ps-btn[aria-expanded=\"true\"]')"), 5000, '專案清單打開');
+  await openSwitch();
   assert.ok(!(await js("!!document.querySelector('.proj-switch [data-ps-act]')")), 'leader 的清單沒有新增專案');
   // 一般成員：沒有齒輪、手機選單沒有新增專案
   await login(chen.token, '/p/main/messages');
