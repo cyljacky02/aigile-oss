@@ -380,6 +380,23 @@ try {
     assert.deepEqual((await list('status=all')).sort(), (await list('')).sort(), 'all＝不篩（跟 MCP 一樣）');
   }
 
+  // 21) 兩個人同時刪「待處理」類別僅有的兩個狀態：各自讀到的清單都還有另一個，但後做完的那個要 409，必要類別不能被清空
+  {
+    const r = ok(await call(boss.token, '/api/projects', 'POST', { name: '同時刪待處理', statuses: [{ name: 'A', category: '待處理' }, { name: 'B', category: '待處理' }, { name: '做', category: '進行中' }, { name: '完', category: '已完成' }] }), '建專案');
+    const PJ = encodeURIComponent(r.id), sts = r.items.find(p => p.id === r.id).statuses, A = sts.find(s => s.name === 'A'), B = sts.find(s => s.name === 'B');
+    beforeStatusDelete = async () => ok(await del(B.id, {}, boss.token, PJ), '另一個人先刪掉 B');
+    assert.equal(fail(await del(A.id, {}, boss.token, PJ), 409, '後做完的刪除').error.code, 'CONFLICT');
+    assert.equal(beforeStatusDelete, null, '真的有同時刪');
+    assert.deepEqual((await statuses(PJ)).filter(s => s.category === '待處理').map(s => s.name), ['A'], '待處理類別還有一個狀態');
+  }
+
+  // 22) 資料庫回報兩個交易互等（Postgres deadlock）：回 409 請重試，不是 500
+  {
+    const c = ok(await mkCard(boss.token, { status: '開發中' }), '卡');
+    beforeCardWrite = async () => { throw Object.assign(new Error('deadlock detected'), { code: '40P01' }); };
+    assert.equal(fail(await patchCard(c.cardId, { status: '已完成' }), 409, 'deadlock').error.code, 'CONFLICT');
+  }
+
   console.log('project-statuses-test：全部通過');
 } finally {
   db.close?.();

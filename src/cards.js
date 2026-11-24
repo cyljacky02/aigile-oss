@@ -220,20 +220,21 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     return { sets: { ...ch.sets, status_id: target.id }, logs: [`狀態 ${book.of(c)?.name ?? c.status} → ${target.name}`, ...ch.logs.slice(1)] };
   }
   // 卡片寫完會落在哪個狀態：指定了 status_id 就是它；換了類別或專案、沒指定就是那個類別排最前面的（auto；已封存沒有狀態）。
-  // check＝那個狀態還在（而且還是這個類別）的條件：讀完狀態清單之後狀態剛被刪掉或改了類別，就不寫（不然卡片會留在已經沒有的欄）。
-  // 寫入時對狀態加列鎖（LOCK_STATUS），跟刪除狀態互相等：Postgres 兩個交易同時進行也不會錯過
+  // check＝[那個狀態還在（而且還是這個類別）的 SQL 條件, 參數]：讀完狀態清單之後狀態剛被刪掉或改了類別，就不寫（不然卡片會留在已經沒有的欄）。
+  // 寫入時對狀態加列鎖（LOCK_STATUS），跟刪除狀態互相等：Postgres 兩個交易同時進行也不會錯過。
+  // auto 的檢查用跟 SET 一樣的「排最前面的狀態」子查詢，鎖的是同一列（不會跟重新排序各鎖一列、互等）
   function landing(c, sets) {
     const pj = sets.project ?? c.project, cat = sets.status ?? c.status;
-    if ('status_id' in sets) return { auto: false, check: sets.status_id == null ? null : ['ps.id = ? AND ps.project = ? AND ps.category = ?', [sets.status_id, pj, cat]] };
+    if ('status_id' in sets) return { auto: false, check: sets.status_id == null ? null : [`EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.id = ? AND ps.project = ? AND ps.category = ?${LOCK_STATUS})`, [sets.status_id, pj, cat]] };
     const auto = (sets.status !== undefined && sets.status !== c.status) || sets.project !== undefined; // 類別沒變就留在原本的欄
-    return { auto, pj, cat, check: auto && cat !== '已封存' ? ['ps.project = ? AND ps.category = ?', [pj, cat]] : null };
+    return { auto, pj, cat, check: auto && cat !== '已封存' ? [`${FIRST_STATUS_SQL} IS NOT NULL`, [pj, cat]] : null };
   }
   const STATUS_GONE = () => new ApiError(409, 'STATUS_DELETED', '要改到的狀態剛被刪除或改了類別，請重新讀取後再試。');
-  const statusExists = check => db.get(`SELECT 1 AS x FROM project_statuses ps WHERE ${check[0]}`, ...check[1]);
+  const statusExists = check => db.get(`SELECT 1 AS x WHERE ${check[0]}`, ...check[1]);
   // 版本相符、要落腳的狀態還在才更新；D1／SQLite 都用同一條語句，0 筆代表同時有人改過（或狀態剛被刪）
   function updateStmt(c, sets, at) {
     const keys = Object.keys(sets), l = landing(c, sets);
-    const sql = `UPDATE cards SET ${keys.map(k => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}${l.auto ? `status_id = ${FIRST_STATUS_SQL}, ` : ''}updated_at = ?, version = version + 1 WHERE seq = ? AND version = ?${l.check ? ` AND EXISTS (SELECT 1 FROM project_statuses ps WHERE ${l.check[0]}${LOCK_STATUS})` : ''}`;
+    const sql = `UPDATE cards SET ${keys.map(k => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}${l.auto ? `status_id = ${FIRST_STATUS_SQL}, ` : ''}updated_at = ?, version = version + 1 WHERE seq = ? AND version = ?${l.check ? ` AND ${l.check[0]}` : ''}`;
     return [sql, [...keys.map(k => sets[k]), ...(l.auto ? [l.pj, l.cat] : []), at, c.seq, c.version, ...(l.check ? l.check[1] : [])]];
   }
   async function save(c, sets, logs, me, at) {
@@ -468,7 +469,7 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
       ...[`建立卡片（類型：${type}）`, ...(type === '決策' ? [`等 ${people.get(dec.decider_id)?.name} 決定`] : [])]
         .map(t => [`INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (${seqOf},?,?,?,?)`, [uid, at, me.id, me.kind === 'human' ? '網頁' : 'API', t]]),
       ...messageIds.map(m => [`INSERT OR IGNORE INTO card_msgs (card_seq, message_id) VALUES (${seqOf},?)`, [uid, m]]),
-    ]).catch(async e => { throw (await statusExists(['ps.id = ? AND ps.category = ?', [target.id, target.category]])) ? e : STATUS_GONE(); });
+    ]).catch(async e => { throw (await statusExists(['EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.id = ? AND ps.category = ?)', [target.id, target.category]])) ? e : STATUS_GONE(); });
     const c = await db.get('SELECT * FROM cards WHERE uid = ?', uid);
     // 建卡時指定了別人（負責人、等誰、決策者）就通知對方，和交接一樣會叫醒 AI
     const who = [owner && `負責人 ${people.get(owner)?.name}`, waitFor && (type === '決策' ? `等 ${people.get(waitFor)?.name} 決定` : `等 ${people.get(waitFor)?.name}`)].filter(Boolean).join('；');

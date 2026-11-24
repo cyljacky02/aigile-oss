@@ -1,5 +1,5 @@
 // Postgres 轉接用的 SQL 轉譯（純函式）：業務程式照寫 SQLite／D1 的 SQL，連 Postgres 時在這裡換成 Postgres 寫法。
-// 只改字串常值與註解以外的部分。查詢（queryToPg）與建表（ddlToPg）分開：
+// 只改字串常值與 -- 註解以外的部分（/* */ 不跳過，/* FOR SHARE */ 才轉得到）。查詢（queryToPg）與建表（ddlToPg）分開：
 //   查詢：? → $1…、IN (SELECT value FROM json_each(?)) → = ANY($n)（參數改成陣列）、FROM json_each(?) → json_array_elements、INSERT OR IGNORE → ON CONFLICT DO NOTHING、instr → strpos、json_valid、
 //         LIKE → ILIKE（SQLite 的 LIKE 本來就不分英文大小寫）、索引提示 +欄位 拿掉、CAST(… AS INTEGER) → BIGINT、PRAGMA table_info、
 //         /* FOR SHARE */ → FOR SHARE（列鎖；SQLite／D1 的寫入一次一個交易、不需要，對它們只是註解）

@@ -3979,6 +3979,8 @@ ${ending}`;
       }
       throw new ApiError(404, 'NOT_FOUND', '找不到此 API');
     } catch (e) {
+      // Postgres 偵測到兩個交易互等（deadlock）會中止其中一個：交易已回復，請對方重試
+      if (e?.code === '40P01') e = new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
       if (!(e instanceof ApiError)) {
         console.error(`500 ${req.method} ${url.pathname}`, e); // Workers Logs 看得出是哪支 API
         e = new ApiError(500, 'INTERNAL', '伺服器錯誤');

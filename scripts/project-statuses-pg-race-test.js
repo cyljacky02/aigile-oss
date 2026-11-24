@@ -151,6 +151,18 @@ try {
     assert.deepEqual(await stranded(), [], '沒有卡指向別的類別的狀態');
   }
 
+  // 7) 兩個人同時刪「待處理」類別僅有的兩個狀態（第一個停在提交前）：第二個要等第一個做完，然後回 409，待處理類別還有狀態
+  {
+    await fresh('競態七');
+    const todo2 = await add('待處理二', '待處理');
+    const todo = (await items()).find(s => s.name === '待處理');
+    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: del(todo.id), second: del(todo2.id), secondSql: '%UPDATE projects%' });
+    assert.equal(r1.status, 200, '第一個刪除：' + JSON.stringify(r1.body).slice(0, 200));
+    assert.ok(blocked, '第二個刪除要等第一個做完');
+    assert.equal(r2.status, 409, '第二個刪除：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'CONFLICT');
+    assert.deepEqual((await items()).filter(s => s.category === '待處理').map(s => s.name), ['待處理二'], '待處理類別還有狀態');
+  }
+
   console.log('project-statuses-pg-race-test：全部通過');
 } finally {
   await ctl.end();
