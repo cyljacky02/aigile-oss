@@ -231,11 +231,17 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   const FILE_TTL_DEFAULT_H = Number(config.fileTtlHours) > 0 ? Number(config.fileTtlHours) : 24;
   const FILE_TTL_CHOICES = [1, 6, 24, 72, 168, 720]; // 1、6、24 小時，3、7、30 天
   const FILE_TTL_LOG_MAX = 20;
-  async function fileTtlCfg() {
+  // 平台預設存 file_ttl（平台設定）；工作區可以覆寫，存 file_ttl_ws:<工作區>＝{ hours（null＝跟平台預設）, log }（#9）
+  async function platformTtlCfg() {
     const v = await getJson('file_ttl');
     return { hours: FILE_TTL_CHOICES.includes(v?.hours) ? v.hours : FILE_TTL_DEFAULT_H, set: FILE_TTL_CHOICES.includes(v?.hours), log: Array.isArray(v?.log) ? v.log : [] };
   }
-  const fileTtlHours = async () => (await fileTtlCfg()).hours;
+  const WS_TTL_KEY = 'file_ttl_ws:' + DEFAULT_WORKSPACE;
+  async function wsTtlCfg() {
+    const v = await getJson(WS_TTL_KEY);
+    return { hours: FILE_TTL_CHOICES.includes(v?.hours) ? v.hours : null, log: Array.isArray(v?.log) ? v.log : [] };
+  }
+  const fileTtlHours = async () => { const [p, w] = await Promise.all([platformTtlCfg(), wsTtlCfg()]); return w.hours ?? p.hours; };
   // 「1 小時」「24 小時」「3 天」；不到 1 小時（測試用）寫分鐘
   const ttlLabel = ms => { const m = Math.round(ms / 60_000), h = Math.round(m / 60); return m < 60 ? `${Math.max(1, m)} 分鐘` : h >= 48 && h % 24 === 0 ? `${h / 24} 天` : `${h} 小時`; };
   const MAX_TOTAL = (Number(config.fileMaxTotalMb) || 0) * 1048576 || MAX_TOTAL_BYTES; // 測試用可調低
@@ -356,7 +362,9 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 「能不能」的判斷（唯讀、leader、管理員…）不在這裡，走權限模組 access（見「專案與成員管理」）
   const { allProjectsOf: listOf, setProjectsStmts, loadLeaders, leadersOf, loadReadOnly, readOnlyOf } = membership;
   // 隱含權限：工作區管理員看得到、進得去所有（未封存）專案，但不算成員資格（名單過濾見 access implicitOnlyIn；改成員資格一律用 listOf）
-  const projectsOf = p => (isWorkspaceAdmin(p) ? [...PROJECTS] : membership.projectsOf(p));
+  // 實際的工作區管理權：工作區管理員，或平台管理員（隱含，#9）。跟 access.adminInWorkspace 同一個規則
+  const adminInWorkspace = p => isWorkspaceAdmin(p) || membership.isPlatformAdmin(p);
+  const projectsOf = p => (adminInWorkspace(p) ? [...PROJECTS] : membership.projectsOf(p));
   function readProjects(raw) {
     if (!Array.isArray(raw)) throw invalid('projects 需為陣列，例如 ["預設專案"]');
     const list = [...new Set(raw.map(x => String(x).trim()))];
@@ -403,9 +411,11 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const out = { participantId: p.id, name: p.status === 'deleted' ? p.name + '（已刪除）' : p.name, role: p.role, roleKey: p.role_key || null, avatar: p.avatar || null, avatarImg: p.avatar_v || null, shortCode: p.code, memberType: p.kind, projects: projectsOf(p) };
     if (p.status === 'deleted') out.deleted = true; // 已刪除成員的舊訊息仍顯示原名稱，前端加註（已刪除）
     if (p.kind === 'human' && p.status === 'disabled') out.disabled = true;
-    out.workspaceRole = isWorkspaceAdmin(p) ? 'admin' : 'member';
-    if (out.workspaceRole === 'admin') {
-      out.isAdmin = true; // 舊欄位：等同工作區管理員（將移除）
+    out.workspaceRole = isWorkspaceAdmin(p) ? 'admin' : 'member'; // 明確的工作區角色（平台管理員的隱含權不算）
+    out.platformRole = membership.isPlatformAdmin(p) ? 'admin' : 'none';
+    if (p.workspace_status === 'removed') out.removed = true; // 已移出工作區：歷史紀錄照樣顯示名字
+    if (adminInWorkspace(p)) {
+      out.isAdmin = true; // 舊欄位：等同工作區管理員（含平台管理員的隱含權；將移除）
       out.memberProjects = membership.projectsOf(p); // projects 含隱含權限的專案；這裡只列他明確加入的
     }
     if (p.kind === 'ai') {
@@ -547,6 +557,9 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const { p, dev } = await login.resolve(token);
     if (!p || p.status !== 'active') throw new ApiError(401, 'INVALID_TOKEN', 'Token 不存在、已重設或已撤銷');
     await membership.refreshOne(p.id); // 發請求的人：專案與角色看最新的（以前存在他那列，每次驗證都重讀）
+    // 已移出工作區：進不來（平台管理員除外，他對工作區有隱含權）；AI 的所屬人類被移出也一樣
+    if ((p.workspace_status === 'removed' && !membership.isPlatformAdmin(p)) || p.owner_ws_status === 'removed') throw new ApiError(401, 'INVALID_TOKEN', '你已不是這個工作區的成員');
+    delete p.owner_ws_status;
     p.authKind = dev ? 'device' : 'code';
     p.deviceId = dev?.id || null;
     if (p.owner_id) {
@@ -1552,6 +1565,7 @@ ${ending}`;
     titles: () => projRoles, memberProjectsOf: p => membership.projectsOf(p),
     loadLeaders: force => membership.loadLeaders(force), leadersOf: pj => membership.leadersOf(pj),
     loadReadOnly: force => membership.loadReadOnly(force), isReadOnly: (p, pj) => membership.isReadOnly(p, pj),
+    isPlatformAdmin: p => membership.isPlatformAdmin(p),
   });
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
@@ -1749,7 +1763,7 @@ ${ending}`;
       if (target.kind === 'ai' && added.length) {
         // AI 的專案不能超出所屬人類；所屬人類同一批被加入也算
         const owner = people.get(target.owner_id);
-        const ownerNext = isWorkspaceAdmin(owner) ? [...PROJECTS] : changes.find(c => String(c.id) === target.owner_id)?.projects ?? listOf(owner); // 工作區管理員：隱含權限算在內
+        const ownerNext = adminInWorkspace(owner) ? [...PROJECTS] : changes.find(c => String(c.id) === target.owner_id)?.projects ?? listOf(owner); // 工作區管理員：隱含權限算在內
         const outside = added.filter(x => !ownerNext.includes(x));
         if (outside.length) throw new ApiError(400, 'OWNER_NOT_IN_PROJECT', `${target.name} 的所屬人類 ${owner?.name || ''} 不在「${outside.map(nameOf).join('、')}」，AI 的專案不能超出所屬人類。`);
       }
@@ -1880,7 +1894,7 @@ ${ending}`;
     for (const p of targets) {
       if (listOf(p).includes(row.id)) throw new ApiError(409, 'ALREADY_MEMBER', `${p.name} 已經在「${row.name}」`);
       roleAllowed(v, p, role);
-      if (p.kind === 'ai' && !ids.includes(p.owner_id) && !isWorkspaceAdmin(v.people.get(p.owner_id)) && !listOf(v.people.get(p.owner_id)).includes(row.id)) { // 工作區管理員的 AI：隱含權限算在內
+      if (p.kind === 'ai' && !ids.includes(p.owner_id) && !adminInWorkspace(v.people.get(p.owner_id)) && !listOf(v.people.get(p.owner_id)).includes(row.id)) { // 工作區管理員的 AI：隱含權限算在內
         throw new ApiError(400, 'OWNER_NOT_IN_PROJECT', `${p.name} 的所屬人類 ${v.people.get(p.owner_id)?.name || ''} 不在「${row.name}」，AI 的專案不能超出所屬人類。`);
       }
     }
@@ -2035,20 +2049,46 @@ ${ending}`;
       ...(opened.length ? [projEvent(GROUP_EVT, me.id, `${me.name} 打開 AI 工具：${names(opened)}`, at)] : [])]);
     return toolsOut(off);
   });
-  // 訊息附件保存時間（全站一份）。誰都能讀（網頁、AI 寫說明要用），只有管理員能改、看紀錄
-  // envHours：主機 FILE_TTL_HOURS（沒設＝null）；custom：管理員改過（之後就不看 FILE_TTL_HOURS）
+  // 訊息附件保存時間：平台預設（平台設定，只有平台管理員）＋工作區覆寫（工作區設定，工作區管理員）。誰都能讀實際生效的值（網頁、AI 寫說明要用）
+  // 平台預設的 envHours：主機 FILE_TTL_HOURS（沒設＝null）；custom：平台管理員改過（之後就不看 FILE_TTL_HOURS）
   const fileTtlOut = (cfg, admin) => ({ hours: cfg.hours, defaultHours: FILE_TTL_DEFAULT_H, choices: FILE_TTL_CHOICES,
     ...(admin ? { custom: cfg.set, envHours: Number(config.fileTtlHours) > 0 ? Number(config.fileTtlHours) : null, log: cfg.log } : {}) });
-  route('GET', '/api/file-ttl', async ({ ctx, me }) => fileTtlOut(await fileTtlCfg(), await access.can(ctx, me, 'manage_workspace', 'workspace')));
+  const readTtlHours = (v, field) => {
+    if (!FILE_TTL_CHOICES.includes(v)) throw invalid(`${field} 只能是 ${FILE_TTL_CHOICES.join('、')}（小時）`);
+    return v;
+  };
+  // 工作區：hours＝實際生效的值；defaultHours＝平台預設（沒覆寫時用它）；workspaceHours＝工作區覆寫（null＝跟平台預設）
+  async function wsTtlOut(admin) {
+    const [plat, ws] = await Promise.all([platformTtlCfg(), wsTtlCfg()]);
+    return { hours: ws.hours ?? plat.hours, defaultHours: plat.hours, workspaceHours: ws.hours, choices: FILE_TTL_CHOICES, ...(admin ? { custom: ws.hours !== null, log: ws.log } : {}) };
+  }
+  route('GET', '/api/file-ttl', async ({ ctx, me }) => wsTtlOut(await access.can(ctx, me, 'manage_workspace', 'workspace')));
+  // 工作區覆寫：hours 是選項之一，或 null（不覆寫，跟平台預設）
   route('PUT', '/api/file-ttl', async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '設定訊息附件保存時間' });
-    const hours = (await readJson(req)).hours;
-    if (!FILE_TTL_CHOICES.includes(hours)) throw invalid(`hours 只能是 ${FILE_TTL_CHOICES.join('、')}（小時）`);
-    const cur = await fileTtlCfg();
-    if (cur.hours === hours) return fileTtlOut(cur, true); // 沒變：不存、不記（還沒改過的話照舊跟著 FILE_TTL_HOURS）
-    const next = { hours, log: [{ at: nowIso(), by: me.id, byName: me.name, from: cur.hours, to: hours }, ...cur.log].slice(0, FILE_TTL_LOG_MAX) };
-    await setJson('file_ttl', next);
-    return fileTtlOut({ ...next, set: true }, true);
+    const body = await readJson(req);
+    const hours = body.hours === null ? null : readTtlHours(body.hours, 'hours');
+    const cur = await wsTtlCfg();
+    if (cur.hours === hours) return wsTtlOut(true); // 沒變：不存、不記
+    await setJson(WS_TTL_KEY, { hours, log: [{ at: nowIso(), by: me.id, byName: me.name, from: cur.hours, to: hours }, ...cur.log].slice(0, FILE_TTL_LOG_MAX) });
+    return wsTtlOut(true);
+  });
+  // ---------- 平台設定（只有平台管理員）：附件保存期限預設值。更新檢查、備份與還原、示範資料各有自己的端點（也只有平台管理員） ----------
+  // PUT { fileTtlHours }：平台預設的附件保存時間（工作區沒覆寫就用它）
+  const platformOut = async () => ({ fileTtl: fileTtlOut(await platformTtlCfg(), true) });
+  route('GET', '/api/platform/settings', async ({ ctx, me }) => {
+    await access.check(ctx, me, 'manage_platform', 'platform', { what: '看平台設定' });
+    return platformOut();
+  });
+  route('PUT', '/api/platform/settings', async ({ ctx, me, req }) => {
+    await access.check(ctx, me, 'manage_platform', 'platform', { what: '改平台設定' });
+    const body = await readJson(req);
+    if (!('fileTtlHours' in body)) throw invalid('要帶 fileTtlHours');
+    const hours = readTtlHours(body.fileTtlHours, 'fileTtlHours');
+    const cur = await platformTtlCfg();
+    if (cur.hours === hours) return platformOut(); // 沒變：不存、不記（還沒改過的話照舊跟著 FILE_TTL_HOURS）
+    await setJson('file_ttl', { hours, log: [{ at: nowIso(), by: me.id, byName: me.name, from: cur.hours, to: hours }, ...cur.log].slice(0, FILE_TTL_LOG_MAX) });
+    return platformOut();
   });
   route('GET', '/api/projects/:id/events', async ({ ctx, me, params, url }) => {
     // 只有該專案成員或管理員看得到（含程式庫網址、成員異動）
@@ -2859,18 +2899,20 @@ ${ending}`;
     return t;
   }
   const lastAdminError = () => new ApiError(409, 'LAST_WORKSPACE_ADMIN', '這是最後一位工作區管理員：請先把另一位成員升為工作區管理員。');
-  // 最後一位工作區管理員不能被降級、停用、自己離開（讀最新的成員資料）
-  async function assertNotLastAdmin(ctx, p) {
+  // 最後一位工作區管理員不能被降級、移出、停用、自己離開；最後一位平台管理員不能被停用、自己離開（platform；讀最新的成員資料）
+  async function assertNotLastAdmin(ctx, p, { platform = false } = {}) {
     invalidatePeople();
-    if (access.view({ people: await peopleMap(ctx) }).lastAdmin(p)) throw lastAdminError();
+    const v = access.view({ people: await peopleMap(ctx) });
+    if (v.lastAdmin(p)) throw lastAdminError();
+    if (platform && v.lastAdmin(p, 'platform')) throw lastPlatformError();
   }
+  // 停用帳號（只有平台管理員）：所有工作區都進不去。工作區角色、平台角色照舊留著（停用中不算管理員），恢復後回到停用前的樣子
   route('POST', '/api/participants/:id/disable', async ({ ctx, me, params }) => {
     const t = await humanTarget(ctx, me, params.id);
     if (t.status === 'disabled') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyDisabled: true };
-    await assertNotLastAdmin(ctx, t);
+    await assertNotLastAdmin(ctx, t, { platform: true });
     const now = Date.now(), at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
     await db.batch([
-      ...(isWorkspaceAdmin(t) ? membership.setWorkspaceRoleStmts(t.id, 'member', at) : []), // 停用的人不再是工作區管理員
       ["UPDATE participants SET status = 'disabled', token = ?, updated_at = ?, version = version + 1 WHERE id = ?", [await tokenKey(newToken()), at, t.id]],
       ...membership.accountStatusStmts(t.id, 'disabled', at),
       ['UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL', [now, t.id]],
@@ -2891,6 +2933,34 @@ ${ending}`;
     invalidatePeople();
     return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)) };
   });
+  // ---------- 移出工作區（工作區管理員）----------
+  // 工作區成員資格結束：workspace_status＝removed、不再是工作區管理員、專案成員資格一併結束（未結案的卡退回待處理）；
+  // 他名下的 AI 停用、Token 失效。歷史紀錄與名字保留；帳號不受影響（不是停用，登入資料留著），但登入、驗證時擋（平台管理員除外：隱含權）。
+  // 不能移出自己（SELF）、最後一位工作區管理員（LAST_WORKSPACE_ADMIN）；移出平台管理員要是平台管理員（CANNOT_MANAGE_ADMIN）
+  route('POST', '/api/participants/:id/remove', async ({ ctx, me, params }) => {
+    const v = await access.check(ctx, me, 'remove_member', 'workspace', { what: '把成員移出工作區' });
+    const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human'", params.id);
+    if (!t || t.status === 'deleted') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員');
+    if (t.id === me.id) throw new ApiError(400, 'SELF', '不能把自己移出工作區。');
+    if (t.workspace_status === 'removed') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyRemoved: true };
+    if (membership.isPlatformAdmin(t) && v.roleIn(me, 'platform') !== ACCESS_ROLE.PLATFORM_ADMIN) throw new ApiError(403, 'CANNOT_MANAGE_ADMIN', `${t.name} 是平台管理員，只有平台管理員能把他移出工作區。`);
+    await assertNotLastAdmin(ctx, t);
+    const at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
+    await db.batch([
+      ...(isWorkspaceAdmin(t) ? membership.setWorkspaceRoleStmts(t.id, 'member', at) : []), // 移出的人不再是工作區管理員（最後一位時這句不改，下一句也就不移出）
+      ["UPDATE participants SET workspace_status = 'removed', updated_at = ?, version = version + 1 WHERE id = ? AND workspace_role = 'member'", [at, t.id]],
+      ...await Promise.all(ais.map(async a => ["UPDATE participants SET status = 'disabled', workspace_status = 'removed', token = ?, token_expires_at = 1, updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')",
+        [await tokenKey(newToken()), at, a.id, t.id]])),
+    ]);
+    invalidatePeople();
+    const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
+    if (after.workspace_status !== 'removed') throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
+    const [impact] = t.status === 'active' ? await applyMembership(ctx, me, [{ id: t.id, projects: [], allowEmpty: true }]) : []; // 專案成員資格結束：卡片退回、專案紀錄
+    live?.dropPerson?.(t.id);
+    for (const a of ais) live?.dropPerson?.(a.id);
+    console.log(`成員已移出工作區：${t.name}（${me.name} 操作）`);
+    return { participant: publicParticipant(after, await peopleMap(ctx)), revokedAiTokens: ais.length, returnedCards: impact?.returnedCards || [] };
+  });
   // 已停用的人類（只有管理員看）：成員頁列出來、可以恢復
   route('GET', '/api/participants/disabled', async ({ ctx, me }) => {
     await access.check(ctx, me, 'manage_accounts', 'platform', { what: '看已停用的成員' });
@@ -2909,6 +2979,7 @@ ${ending}`;
     const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human' AND status = 'active'", params.id);
     if (!t) throw new ApiError(404, 'NOT_WORKSPACE_MEMBER', '找不到這位工作區成員（只能升降啟用中的人類）');
     if (role === 'member') await assertNotLastAdmin(ctx, t);
+    if (role === 'admin' && t.workspace_status === 'removed') throw new ApiError(404, 'NOT_WORKSPACE_MEMBER', '找不到這位工作區成員（只能升降啟用中的人類）');
     if ((role === 'admin') !== isWorkspaceAdmin(t)) {
       const at = nowIso(), stmts = membership.setWorkspaceRoleStmts(t.id, role, at);
       if (role === 'member') {
@@ -2927,11 +2998,31 @@ ${ending}`;
     if (after.workspace_role !== t.workspace_role) console.log(`工作區管理員：${me.name} 把 ${t.name} ${role === 'admin' ? '升為工作區管理員' : '降為成員'}`);
     return { participant: publicParticipant(after, await peopleMap(ctx)) };
   });
+  // 升降平台管理員（只有平台管理員；AI 不行）。role：admin | none。立刻生效；不能降最後一位。平台管理員對工作區有隱含的管理權，不必是工作區管理員
+  const lastPlatformError = () => new ApiError(409, 'LAST_PLATFORM_ADMIN', '這是最後一位平台管理員：請先把另一個帳號升為平台管理員。');
+  route('PUT', '/api/participants/:id/platform-role', async ({ ctx, me, req, params }) => {
+    await access.check(ctx, me, 'assign_platform_admin', 'platform', { what: '升降平台管理員' });
+    const role = (await readJson(req)).role;
+    if (role !== 'admin' && role !== 'none') throw invalid('role 只能是 admin（平台管理員）或 none（一般帳號）');
+    const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human' AND status = 'active' AND account_id IS NOT NULL", params.id);
+    if (!t) throw new ApiError(404, 'NOT_FOUND', '找不到這個帳號（只能升降啟用中的人類帳號）');
+    invalidatePeople();
+    const v = access.view({ people: await peopleMap(ctx) });
+    if (role === 'none' && v.lastAdmin(t, 'platform')) throw lastPlatformError();
+    if ((role === 'admin') !== membership.isPlatformAdmin(t)) {
+      await db.batch(membership.setPlatformRoleStmts(t.id, role, nowIso()));
+      invalidatePeople();
+      await membership.loadMembers(true);
+      if ((role === 'admin') !== membership.isPlatformAdmin(t)) throw lastPlatformError(); // 另一位剛好同時被降：資料庫那句檢查擋下來了
+      console.log(`平台管理員：${me.name} 把 ${t.name} ${role === 'admin' ? '升為平台管理員' : '降為一般帳號'}`);
+    }
+    return { participant: publicParticipant(t, await peopleMap(ctx)) };
+  });
   route('GET', '/api/participants', async ({ ctx, me, url }) => {
     await loadProjectRoles();
     const v = await access.load(ctx), people = v.people;
     const now = Date.now();
-    const items = [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && v.can(me, 'see_member', { target: p }))
+    const items = [...people.values()].filter(p => p.status === 'active' && p.workspace_status !== 'removed' && p.kind !== 'system' && v.can(me, 'see_member', { target: p })) // 已移出工作區的不列
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
       .map(p => publicParticipant(p, people, now));
     if (v.can(me, 'reset_login', 'workspace')) { // 管理員看得到誰匯入後還要重設登入
@@ -3539,7 +3630,7 @@ ${ending}`;
     }
 
     const aiStates = new Map(aiRows.map(r => [r.participant_id, { ...JSON.parse(r.state), updatedAt: r.updated_at }]));
-    const members = [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system')
+    const members = [...people.values()].filter(p => p.status === 'active' && p.workspace_status !== 'removed' && p.kind !== 'system')
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
       .map(p => ({
         ...identity(p, people),
@@ -3735,7 +3826,7 @@ ${ending}`;
 
   route('POST', '/api/leave', async ({ ctx, me }) => {
     requireHuman(me);
-    await assertNotLastAdmin(ctx, me); // 最後一位工作區管理員要先升別人
+    await assertNotLastAdmin(ctx, me, { platform: true }); // 最後一位工作區管理員、平台管理員要先升別人
     invalidatePeople();
     const at = nowIso();
     // 比照刪除 AI：一併登出所有裝置、清掉本人與他的 AI 的待處理通知（不留殘留資料）

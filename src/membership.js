@@ -15,14 +15,20 @@ const PR = PROJECT_ROLE;
 const accountIdOf = id => 'acct_' + id; // 第一階段一人一個工作區：帳號 id 由成員 id 推得（升級轉換可以重跑）
 const pairKey = (id, pj) => `${id} ${pj}`; // SQL 端：participant_id || ' ' || project_id（成員 id 沒有空白）
 const PAIR_SQL = "(participant_id || ' ' || project_id)";
+// 平台管理員：帳號 platform_role＝admin、帳號啟用中（快照與單人重讀共用；單人重讀另加 AND p.id = ?）
+const PLATFORM_SQL = "SELECT p.id FROM participants p JOIN accounts a ON a.id = p.account_id WHERE a.platform_role = 'admin' AND a.status = 'active' AND p.kind = 'human'";
 
 export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) {
   // ---------- 快照：project_members 整張 ----------
   // byId：成員 id → [{ project, role }]（照專案建立順序）；leaderMap／roMap：{ 專案id: [成員id] }（含封存專案、含停用的人）
-  let snap = { byId: new Map(), leaders: {}, ro: {} }, snapAt = 0;
+  // platform：帳號是平台管理員、帳號啟用中的成員 id（#9）
+  let snap = { byId: new Map(), leaders: {}, ro: {}, platform: new Set() }, snapAt = 0;
   async function loadMembers(force = false) {
     if (!force && snapAt && Date.now() - snapAt < 10_000) return snap;
-    const rows = await db.all('SELECT m.project_id, m.participant_id, m.role FROM project_members m LEFT JOIN projects p ON p.id = m.project_id ORDER BY p.created_at, m.project_id, m.rowid');
+    const [rows, plat] = await Promise.all([
+      db.all('SELECT m.project_id, m.participant_id, m.role FROM project_members m LEFT JOIN projects p ON p.id = m.project_id ORDER BY p.created_at, m.project_id, m.rowid'),
+      db.all(PLATFORM_SQL).catch(() => []),
+    ]);
     const byId = new Map(), leaders = {}, ro = {};
     for (const r of rows) {
       if (!byId.has(r.participant_id)) byId.set(r.participant_id, []);
@@ -30,12 +36,20 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       if (r.role === PR.ADMIN) (leaders[r.project_id] ||= []).push(r.participant_id);
       if (r.role === PR.VIEWER) (ro[r.project_id] ||= []).push(r.participant_id);
     }
-    snap = { byId, leaders, ro }; snapAt = Date.now();
+    snap = { byId, leaders, ro, platform: new Set(plat.map(r => r.id)) }; snapAt = Date.now();
     return snap;
   }
   // 只重讀一個人（發請求的人）：他的權限一定看最新的（別份程式剛改過也算），別人的照快取
   async function refreshOne(id) {
-    const rows = await db.all('SELECT m.project_id, m.role FROM project_members m LEFT JOIN projects p ON p.id = m.project_id WHERE m.participant_id = ? ORDER BY p.created_at, m.project_id', id);
+    const [rows, plat] = await Promise.all([
+      db.all('SELECT m.project_id, m.role FROM project_members m LEFT JOIN projects p ON p.id = m.project_id WHERE m.participant_id = ? ORDER BY p.created_at, m.project_id', id),
+      db.get(PLATFORM_SQL + ' AND p.id = ?', id).catch(() => null),
+    ]);
+    if (!!plat !== snap.platform.has(id)) { // 平台角色也看最新的
+      const platform = new Set(snap.platform);
+      if (plat) platform.add(id); else platform.delete(id);
+      snap = { ...snap, platform };
+    }
     const key = l => JSON.stringify(l.map(r => [r.project ?? r.project_id, r.role]));
     if (key(rows) === key(snap.byId.get(id) || [])) return; // 沒變（幾乎都是）：不動，順序照舊
     const drop = map => { for (const pj of Object.keys(map)) if (map[pj].includes(id)) map[pj] = map[pj].filter(x => x !== id); };
@@ -46,7 +60,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       if (r.role === PR.VIEWER) ro[r.project_id] = [...(ro[r.project_id] || []), id];
     }
     if (rows.length) byId.set(id, rows.map(r => ({ project: r.project_id, role: r.role }))); else byId.delete(id);
-    snap = { byId, leaders, ro };
+    snap = { ...snap, byId, leaders, ro };
   }
 
   // ---------- 專案歸屬 ----------
@@ -154,7 +168,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   ];
   // 升降工作區管理員（role：admin | member；只有啟用中的人類能升）。降級在同一句 SQL 裡檢查「還有別的啟用中工作區管理員」，
   // 沒有就什麼都不改（呼叫端再讀一次看有沒有改到）。第一句先鎖工作區這列：兩位管理員同時互降時排隊，後到的看得到前一位的結果（Postgres）。
-  // is_admin 與平台管理員跟著工作區角色走（第一階段平台管理員＝工作區管理員；#9 分開、#16 拿掉 is_admin）
+  // is_admin 跟著工作區角色走（#16 拿掉 is_admin）；平台角色另外管（setPlatformRoleStmts）
   const setWorkspaceRoleStmts = (id, role, at) => [
     ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
     role === 'admin'
@@ -162,8 +176,17 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       : [`UPDATE participants SET workspace_role = 'member', updated_at = ? WHERE id = ? AND workspace_role = 'admin'
           AND EXISTS (SELECT 1 FROM participants o WHERE o.workspace_id = ? AND o.workspace_role = 'admin' AND o.kind = 'human' AND o.status = 'active' AND o.id != ?)`, [at, id, DEFAULT_WORKSPACE, id]],
     ["UPDATE participants SET is_admin = CASE WHEN workspace_role = 'admin' THEN 1 ELSE 0 END WHERE id = ?", [id]],
-    [`UPDATE accounts SET platform_role = CASE WHEN EXISTS (SELECT 1 FROM participants p WHERE p.account_id = accounts.id AND p.workspace_role = 'admin') THEN 'admin' ELSE 'none' END
-      WHERE id IN (SELECT account_id FROM participants WHERE id = ?)`, [id]],
+  ];
+  // 平台管理員（帳號的 platform_role）：是平台管理員、帳號啟用中、成員列是啟用中的人類（平台管理員被移出工作區也還是）
+  const isPlatformAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && snap.platform.has(p.id);
+  // 升降平台管理員（role：admin | none；只有啟用中的人類帳號能升）。跟工作區管理員一樣：降級在同一句檢查「還有別的啟用中平台管理員」，
+  // 沒有就不改（呼叫端再讀一次）；先鎖工作區這列讓同時互降的人排隊（第一階段只有一個工作區，拿它當全平台的鎖）
+  const setPlatformRoleStmts = (id, role, at) => [
+    ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    role === 'admin'
+      ? ["UPDATE accounts SET platform_role = 'admin', updated_at = ? WHERE platform_role != 'admin' AND status = 'active' AND id IN (SELECT account_id FROM participants WHERE id = ? AND kind = 'human' AND status = 'active')", [at, id]]
+      : [`UPDATE accounts SET platform_role = 'none', updated_at = ? WHERE platform_role = 'admin' AND id IN (SELECT account_id FROM participants WHERE id = ?)
+          AND EXISTS (SELECT 1 FROM accounts o JOIN participants op ON op.account_id = o.id WHERE o.platform_role = 'admin' AND o.status = 'active' AND op.status = 'active' AND op.kind = 'human' AND o.id != accounts.id)`, [at, id]],
   ];
   // 停用／恢復（人類）：帳號狀態跟著
   const accountStatusStmts = (id, status, at) => [['UPDATE accounts SET status = ?, updated_at = ? WHERE id IN (SELECT account_id FROM participants WHERE id = ?)', [status, at, id]]];
@@ -255,6 +278,6 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     makeProjectAdminStmts,
     loadReadOnly, isReadOnlyHuman, isReadOnly, readOnlyProjectsOf, readOnlyOf, setReadOnlyStmts, addReadOnly,
     fetchProjectsOf, fetchMembersOf, removeProjectStmts,
-    enterWorkspaceStmts, setWorkspaceRoleStmts, accountStatusStmts, forgetStmts, migrateLegacy,
+    enterWorkspaceStmts, setWorkspaceRoleStmts, isPlatformAdmin, setPlatformRoleStmts, accountStatusStmts, forgetStmts, migrateLegacy,
     loadMembers, refreshOne, load, invalidate };
 }

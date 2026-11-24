@@ -226,7 +226,7 @@ export function registerLogin(d) {
   // authenticate 用：把 Bearer 換成成員；回傳 { p, dev }，找不到回 null
   // 一次查完（每次查詢都可能要跨洲來回）：裝置＋成員 JOIN；AI 的所屬人類狀態一起帶回（owner_status）
   // 登入碼／AI Token：資料庫只存雜湊（h: 開頭），比對雜湊。還沒轉成雜湊的舊資料（原文）也認，認到就順手轉
-  const PERSON_SQL = 'SELECT p.*, o.status AS owner_status FROM participants p LEFT JOIN participants o ON o.id = p.owner_id WHERE p.token = ?';
+  const PERSON_SQL = 'SELECT p.*, o.status AS owner_status, o.workspace_status AS owner_ws_status FROM participants p LEFT JOIN participants o ON o.id = p.owner_id WHERE p.token = ?';
   async function byToken(token) {
     const key = await tokenKey(token), row = await db.get(PERSON_SQL, key);
     if (row || token.startsWith('h:')) return row || null; // 拿雜湊本身來登入不算數
@@ -584,6 +584,8 @@ export function registerLogin(d) {
     if (needCaptcha(req)) await captcha.verify(body.turnstileToken, req);
     const p = await prov.verify(body, ctx, req);
     if (!p) { failed(req); throw new ApiError(400, params.method === 'invite' ? 'INVITE_INVALID' : params.method === 'rescue' ? 'RESCUE_INVALID' : 'LOGIN_FAILED', FAIL_MSG[params.method], { captchaRequired: needCaptcha(req) }); }
+    // 已移出工作區：帳號還在（沒停用），但進不了這個工作區（平台管理員除外）
+    if (p.workspace_status === 'removed' && !(await access.load(ctx)).roleIn(p, 'workspace')) throw new ApiError(403, 'NOT_WORKSPACE_MEMBER', '你已不是這個工作區的成員，要回來請找工作區管理員重新邀請你。');
     if (params.method === 'rescue') await signOutOthers(p.id, null); // 救援＝帳號可能被別人拿走：先把別人的登入全部收掉
     const label = prov.device ? deviceLabelAs(prov.device, req.headers.get('user-agent') || '') : undefined;
     const token = await issueDevice(p.id, req, label);

@@ -5,10 +5,11 @@
 // 範圍：'platform'、'workspace'、{ project: 專案id }；要看對象的動作再帶 target（例：{ project, target }、{ target }）
 //
 // 目前的規則（之後的票只改這個檔案的規則）：
-// - 工作區管理員＝participants.workspace_role 是 admin 的啟用中人類，可以有多位（#8）；
-//   平台管理員暫時等同工作區管理員（第一階段只有一個工作區；#9 才改看 accounts.platform_role）
+// - 工作區管理員＝participants.workspace_role 是 admin 的啟用中人類，可以有多位（#8）
+// - 平台管理員＝帳號的 platform_role 是 admin（deps.isPlatformAdmin），可以有多位；對工作區有隱含的工作區管理權（不必是工作區成員）（#9）
+// - 已移出工作區（workspace_status＝removed）的人不是工作區成員（平台管理員照樣有隱含權）
 // - 專案角色存在 project_members：admin＝專案管理員（工作區管理員有隱含權限，取較高者）、member＝專案成員、viewer＝唯讀成員
-// - 隱含權限不算成員資格：工作區管理員在沒加入、也沒有職稱的專案不列為成員（implicitOnlyIn）
+// - 隱含權限不算成員資格：工作區管理員（含平台管理員）在沒加入、也沒有職稱的專案不列為成員（implicitOnlyIn）
 // - 唯讀成員的 AI 跟著唯讀；明確設成唯讀成員時一律不能寫（工作區管理員不能被設成唯讀成員）
 // - AI 不能做任何管理動作
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
@@ -45,10 +46,11 @@ const ACTIONS = {
   // 平台
   manage_platform: { admin: true, rule: platformAdmin }, // 備份與還原、示範資料、更新檢查
   manage_accounts: { admin: true, rule: platformAdmin }, // 停用／恢復帳號、已停用清單
-  assign_platform_admin: { admin: true, rule: platformAdmin }, // 任免平台管理員（#9）
+  assign_platform_admin: { admin: true, rule: platformAdmin }, // 任免平台管理員
   // 工作區
   manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區（群組）設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
   assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
+  remove_member: { admin: true, rule: workspaceAdmin }, // 把人移出工作區（帳號不受影響）
   invite: { admin: true, rule: workspaceAdmin },
   reset_login: { admin: true, rule: workspaceAdmin },
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
@@ -90,11 +92,15 @@ const scopeOf = scope => {
 //   titles()                 → { 成員id: { 專案id: 職稱 } }（目前快取）
 //   memberProjectsOf(p)      → 他明確加入的（未封存）專案（不含隱含權限；沒給就用 projectsOf）
 //   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
+//   isPlatformAdmin(p)       → 他的帳號是平台管理員（沒注入＝沒有平台管理員）
 export function createAccess(deps) {
   const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, leadersOf, isReadOnly, titles } = deps;
   const memberProjectsOf = deps.memberProjectsOf || projectsOf;
-  // 隱含權限不算成員：工作區管理員在沒加入、也沒有職稱的專案不列為成員（名單、人數、團隊狀態、@所有人都不算）
-  const implicitOnly = (p, pj) => !!pj && isWorkspaceAdmin(p) && !memberProjectsOf(p).includes(pj) && !titles()[p.id]?.[pj];
+  // 平台管理員（啟用中的人類）；實際的工作區管理權＝工作區管理員或平台管理員（隱含）
+  const isPlatformAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && !!deps.isPlatformAdmin?.(p);
+  const adminInWorkspace = p => isWorkspaceAdmin(p) || isPlatformAdmin(p);
+  // 隱含權限不算成員：工作區管理員（含平台管理員）在沒加入、也沒有職稱的專案不列為成員（名單、人數、團隊狀態、@所有人都不算）
+  const implicitOnly = (p, pj) => !!pj && adminInWorkspace(p) && !memberProjectsOf(p).includes(pj) && !titles()[p.id]?.[pj];
 
   const readOnlyIn = (p, pj) => !!p && !!pj && isReadOnly(p, pj);
   const readOnlyList = p => projects().filter(pj => readOnlyIn(p, pj));
@@ -108,12 +114,17 @@ export function createAccess(deps) {
       if (admin === undefined) admin = adminOf(needPeople());
       return admin;
     };
-    const isAdmin = isWorkspaceAdmin;
+    const isAdmin = adminInWorkspace;
     const v = {
       people, admin: adminNow, projects, projectsOf, isolatedFrom,
       admins: () => adminsOf(needPeople()),
-      // 最後一位保護：p 是工作區管理員，而且除了他沒有別的（降級、移出、停用、離開都要先問）
-      lastAdmin: (p, scope = 'workspace') => scopeOf(scope).kind !== 'project' && isAdmin(p) && !adminsOf(needPeople()).some(x => x.id !== p.id),
+      platformAdmins: () => [...needPeople().values()].filter(isPlatformAdmin).sort(byJoined),
+      // 最後一位保護：p 是該層的管理員，而且除了他沒有別的（降級、移出、停用、離開都要先問）。工作區只算明確的工作區管理員
+      lastAdmin: (p, scope = 'workspace') => {
+        const kind = scopeOf(scope).kind;
+        if (kind === 'platform') return isPlatformAdmin(p) && !v.platformAdmins().some(x => x.id !== p.id);
+        return kind !== 'project' && isWorkspaceAdmin(p) && !adminsOf(needPeople()).some(x => x.id !== p.id);
+      },
       active: pj => projects().includes(pj),
       membersCreateProjects: () => !!deps.membersCreateProjects?.(),
       leads: (p, pj) => !!p && leadersOf(pj).includes(p.id),
@@ -121,8 +132,8 @@ export function createAccess(deps) {
       roleIn(p, scope) {
         if (!p) return null;
         const s = scopeOf(scope);
-        if (s.kind === 'platform') return isAdmin(p) ? R.PLATFORM_ADMIN : null;
-        if (s.kind === 'workspace') return isAdmin(p) ? R.WORKSPACE_ADMIN : p.status === 'active' && (p.kind === 'human' || p.kind === 'ai') ? R.MEMBER : null;
+        if (s.kind === 'platform') return isPlatformAdmin(p) ? R.PLATFORM_ADMIN : null;
+        if (s.kind === 'workspace') return isAdmin(p) ? R.WORKSPACE_ADMIN : p.status === 'active' && (p.workspace_status ?? 'active') === 'active' && (p.kind === 'human' || p.kind === 'ai') ? R.MEMBER : null;
         if (isAdmin(p) || v.leads(p, s.project)) return R.PROJECT_ADMIN; // 隱含權限、專案管理員
         if (!projectsOf(p).includes(s.project)) return null;
         return readOnlyIn(p, s.project) ? R.VIEWER : R.PROJECT_MEMBER;
@@ -152,6 +163,7 @@ export function createAccess(deps) {
   function denial(v, me, action, s, { what, deny } = {}) {
     if (deny) return deny();
     const adminName = () => v.admin()?.name || '未設定';
+    if (s.kind === 'platform' && ACTIONS[action]?.rule === platformAdmin) return new ApiError(403, 'NOT_ADMIN', `只有平台管理員能${what || '管理平台'}。`);
     switch (action) {
       case 'write': return readOnlyError(me, s.project || readOnlyList(me)[0]);
       case 'manage_project': case 'configure_project': case 'manage_project_members':
@@ -173,7 +185,7 @@ export function createAccess(deps) {
   }
 
   return {
-    load, view, check, adminOf, adminsOf, isWorkspaceAdmin, implicitOnly, readOnlyIn, readOnlyError,
+    load, view, check, adminOf, adminsOf, isWorkspaceAdmin, isPlatformAdmin, adminInWorkspace, implicitOnly, readOnlyIn, readOnlyError,
     roleIn: async (ctx, p, scope) => (await load(ctx)).roleIn(p, scope),
     can: async (ctx, me, action, scope) => (await load(ctx, { light: ACTIONS[action]?.light })).can(me, action, scope),
   };
