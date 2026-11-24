@@ -16,7 +16,7 @@ import { registerKbPages } from './kb-pages.js'; // 知識頁、整理卡
 import { registerBackup } from './backup.js'; // 備份匯出與匯入
 import { registerUpdateCheck } from './update.js'; // 管理頁「有新版本」
 import { registerDemo } from './demo.js'; // 示範資料
-import { createAccess, ACCESS_ROLE, isWorkspaceAdmin } from './access.js'; // 權限模組
+import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
 import { createWorkspaceSettings, CREATE_PROJECTS } from './workspace-settings.js'; // 工作區設定（誰可以建立專案）
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
@@ -341,13 +341,14 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   const pubNo = c => cardKey(c) || `C-${c.seq + 100}`; // 對外只給專案卡號（沒有專案代號才退回 C-xxx）
   // MAIN-12 → 卡片 seq；找不到回 null（C-xxx 照舊由各路由自己解析）
   // 舊代號（改代號前）與移到別專案的卡的舊號也查得到
-  async function cardSeqByKey(id) {
+  // me：私人專案對看不到的人算沒有這個代號（跟打錯代號一樣找不到）
+  async function cardSeqByKey(id, me = null) {
     const m = /^([A-Za-z]{2,5})-(\d+)$/.exec(String(id || '').trim());
     if (!m || /^C$/i.test(m[1])) return null;
     await loadProjects();
     const code = m[1].toUpperCase(), no = Number(m[2]);
     const pj = Object.keys(projCodes).find(k => projCodes[k] === code) || (PROJECTS.includes(oldCodes[code]) ? oldCodes[code] : null);
-    if (!pj) return null;
+    if (!pj || !discovers(me, pj)) return null;
     const hit = (await db.get('SELECT seq FROM cards WHERE project = ? AND proj_no = ?', pj, no))?.seq;
     if (hit) return hit;
     const moved = await db.get('SELECT value FROM app_settings WHERE key = ?', `cardmoved:${pj}:${no}`).catch(() => null);
@@ -365,10 +366,15 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 實際的工作區管理權：工作區管理員，或平台管理員（隱含，#9）。跟 access.adminInWorkspace 同一個規則
   const adminInWorkspace = p => isWorkspaceAdmin(p) || membership.isPlatformAdmin(p);
   const projectsOf = p => (adminInWorkspace(p) ? [...PROJECTS] : membership.projectsOf(p));
-  function readProjects(raw) {
+  // 專案可見度（權限模組 discover_project）：私人專案對看不到的人＝不存在（檢查、錯誤訊息列的專案都不提它）
+  // 同步版，用目前的成員快取（非成員看私人專案才要判上層管理員）；me 沒帶＝平台自己，都看得到
+  const visibleView = () => access.view({ people: peopleCache.map || new Map() });
+  const discovers = (me, pj) => !me || visibleView().discovers(me, pj);
+  const visibleProjects = me => (me ? visibleView().visibleProjects(me) : PROJECTS);
+  function readProjects(raw, me = null) {
     if (!Array.isArray(raw)) throw invalid('projects 需為陣列，例如 ["預設專案"]');
     const list = [...new Set(raw.map(x => String(x).trim()))];
-    if (!list.length || list.some(x => !PROJECTS.includes(x))) throw invalid(`projects 至少選一個，且只能是（專案編號）：${PROJECTS.join('、')}`);
+    if (!list.length || list.some(x => !PROJECTS.includes(x) || !discovers(me, x))) throw invalid(`projects 至少選一個，且只能是（專案編號）：${visibleProjects(me).join('、')}`);
     return PROJECTS.filter(x => list.includes(x)); // 固定順序
   }
   // ?project= 過濾：專案代號｜mine（我的專案）；回傳 SQL 片段（含「全部專案」的訊息）；兩邊成員的 mine 不過濾
@@ -376,8 +382,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (!raw) return null;
     let list;
     if (raw === 'mine') list = projectsOf(me);
-    else if (PROJECTS.includes(raw)) list = [raw];
-    else throw invalid(`project 需為：${PROJECTS.join('、')}、mine`);
+    else if (PROJECTS.includes(raw) && discovers(me, raw)) list = [raw];
+    else throw invalid(`project 需為：${visibleProjects(me).join('、')}、mine`);
     if (list.length === PROJECTS.length) return null;
     if (!list.length) return { sql: withNull ? `(${col} IS NULL)` : '(1 = 0)', args: [] };
     // 多個專案要用 IN，不然只綁得到第一個參數
@@ -399,13 +405,15 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const since = await isolationSince();
     if (!since) return null;
     const c = col ? col + '.' : '', mine = projectsOf(me), joined = me.created_at || '';
-    return { sql: `(${mine.length ? `${c}project IN (${mine.map(() => '?').join(',')}) OR ` : ''}(${c}created_at >= ? AND ${c}project IS NULL) OR (${c}created_at < ? AND ${c}created_at >= ?))`, args: [...mine, since, since, joined] };
+    const hidden = PROJECTS.filter(pj => !discovers(me, pj)); // 私人專案的舊訊息也不給看不到的人
+    const notHidden = hidden.length ? ` AND (${c}project IS NULL OR ${c}project NOT IN (${hidden.map(() => '?').join(',')}))` : '';
+    return { sql: `(${mine.length ? `${c}project IN (${mine.map(() => '?').join(',')}) OR ` : ''}(${c}created_at >= ? AND ${c}project IS NULL) OR (${c}created_at < ? AND ${c}created_at >= ?${notHidden}))`, args: [...mine, since, since, joined, ...hidden] };
   }
   async function canSeeMessage(me, m) {
     if (!isolatedFrom(me) || (m.project && projectsOf(me).includes(m.project))) return true;
     const since = await isolationSince();
     if (!since) return true;
-    return m.created_at >= since ? !m.project : m.created_at >= (me.created_at || '');
+    return m.created_at >= since ? !m.project : m.created_at >= (me.created_at || '') && (!m.project || discovers(me, m.project));
   }
   function identity(p, people) {
     const out = { participantId: p.id, name: p.status === 'deleted' ? p.name + '（已刪除）' : p.name, role: p.role, roleKey: p.role_key || null, avatar: p.avatar || null, avatarImg: p.avatar_v || null, shortCode: p.code, memberType: p.kind, projects: projectsOf(p) };
@@ -733,13 +741,13 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       else if (checkProject && mine.length > 1) throw new ApiError(400, 'PROJECT_REQUIRED', `你屬於多個專案，發訊息一定要帶 project（${mine.map(nameOf).join('、')}）；要發給全部專案請明確帶 project: "all"。`);
       else project = replyTo?.project && (!isolatedFrom(me) || mine.includes(replyTo.project)) ? replyTo.project : null; // 不屬於那個專案就不繼承
     } else if (body.project === 'all') project = null;
-    else if (PROJECTS.includes(body.project)) {
+    else if (PROJECTS.includes(body.project) && discovers(me, body.project)) {
       if (!mine.includes(body.project)) throw new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案，只能發自己專案或全部專案（project: "all"）的訊息。');
       project = body.project;
-    } else throw invalid(`project 需為：${PROJECTS.join('、')}、all`);
+    } else throw invalid(`project 需為：${visibleProjects(me).join('、')}、all`);
     if (checkProject) {
       const head = /^\s*(?:\[[^\]\n]{1,12}\]\s*)?【([^】\n]{1,20})】/.exec(text || '');
-      const named = head && projectRows.find(p => p.name === head[1] || p.id === head[1]);
+      const named = head && projectRows.find(p => (p.name === head[1] || p.id === head[1]) && discovers(me, p.id)); // 私人專案對看不到的人不對名稱
       if (named && project !== named.id) throw new ApiError(400, 'PROJECT_TEXT_MISMATCH', `訊息開頭寫【${named.name}】，project 必須帶 ${named.id}（目前是${project ? '「' + nameOf(project) + '」' : '全部專案'}）。真的要發給全部專案，請把開頭改成【全部專案】。`);
     }
     if (!systemNotice) await assertWritable(me, project); // （平台自動發的通知，例如「X 已加入」，不擋）
@@ -1080,8 +1088,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const id = randId('p');
     // 新增 AI 必須選專案（至少一個）；沒帶時，所屬人類只有一個專案才自動帶入
     const mineP = projectsOf(me);
-    const aiProjects = body.projects !== undefined ? readProjects(body.projects).join(',') : mineP.length === 1 ? mineP[0] : null;
-    if (aiProjects === null) throw invalid(`projects 為必填：這位 AI 屬於哪些專案（至少一個，專案編號：${PROJECTS.join('、')}）`);
+    const aiProjects = body.projects !== undefined ? readProjects(body.projects, me).join(',') : mineP.length === 1 ? mineP[0] : null;
+    if (aiProjects === null) throw invalid(`projects 為必填：這位 AI 屬於哪些專案（至少一個，專案編號：${visibleProjects(me).join('、')}）`);
     const s = readSettings(body, null, await projRoleKeys(aiProjects.split(',')));
     for (const pj of aiProjects.split(',')) await access.check(ctx, me, 'write', { project: pj }); // 主人在唯讀的專案不能放 AI
     const outside = aiProjects.split(',').filter(x => !mineP.includes(x));
@@ -1102,7 +1110,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     // 所屬人類可以改自己 AI 的專案（只能選自己在的專案）；移出專案時他負責的卡退回待處理，dryRun 先看影響
     let impact;
     if (body.projects !== undefined) {
-      const next = readProjects(body.projects), mineP = projectsOf(me);
+      const next = readProjects(body.projects, me), mineP = projectsOf(me);
       const outside = next.filter(x => !mineP.includes(x));
       if (outside.length) throw new ApiError(400, 'OWNER_NOT_IN_PROJECT', `你不在「${outside.map(nameOf).join('、')}」，AI 的專案不能超出所屬人類。`);
       impact = await applyMembership(ctx, me, [{ id: ai.id, projects: next }], { dryRun: body.dryRun === true });
@@ -1110,7 +1118,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     }
     const name = body.name !== undefined ? validateName(body.name) : ai.name;
     await assertNameFree(name, ai.id);
-    const s = readSettings(body, { role: ai.role, avatar: ai.avatar || '', ...settingsOf(ai) }, await projRoleKeys(body.projects !== undefined ? readProjects(body.projects) : projectsOf(ai)));
+    const s = readSettings(body, { role: ai.role, avatar: ai.avatar || '', ...settingsOf(ai) }, await projRoleKeys(body.projects !== undefined ? readProjects(body.projects, me) : projectsOf(ai)));
     invalidatePeople();
     await db.run(`UPDATE participants SET name = ?, role = ?, role_key = ?, duties = ?, style = ?, autonomy = ?, must_confirm = ?,
       handoff = ?, avatar = ?, version = version + 1, updated_at = ? WHERE id = ?`,
@@ -1562,7 +1570,7 @@ ${ending}`;
   const access = createAccess({
     loadWorkspace: force => workspace.load(force), membersCreateProjects: () => workspace.membersCreateProjects(),
     ApiError, requireHuman, nameOf: id => nameOf(id), people: ctx => peopleMap(ctx), projects: () => PROJECTS, projectsOf, isolatedFrom,
-    titles: () => projRoles, memberProjectsOf: p => membership.projectsOf(p),
+    titles: () => projRoles, memberProjectsOf: p => membership.projectsOf(p), visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
     loadLeaders: force => membership.loadLeaders(force), leadersOf: pj => membership.leadersOf(pj),
     loadReadOnly: force => membership.loadReadOnly(force), isReadOnly: (p, pj) => membership.isReadOnly(p, pj),
     isPlatformAdmin: p => membership.isPlatformAdmin(p),
@@ -1725,6 +1733,7 @@ ${ending}`;
     const v = access.view({ people });
     const inUse = (pj, d) => [...people.values()].filter(p => p.status === 'active' && listOf(p).includes(pj) && (p.kind === 'ai' ? p.role_key === d.key : projRoles[p.id]?.[pj] === d.role)).length;
     return projectRows.map(r => ({ id: r.id, name: r.name, slug: slugs[r.id], code: projCodes[r.id] || null, archived: !!r.archived, createdAt: r.created_at, repo: repos[r.id] || null, // ；C-xxx 網址英文名
+      visibility: access.visibilityOf(r.id), // 專案可見度：open｜review｜private
       roles: (rdefs[r.id] || []).map(d => ({ ...d, createdByName: people.get(d.createdBy)?.name || null, inUse: inUse(r.id, d) })), // 本專案角色
       dm: dms[r.id] ? { ...dms[r.id], byName: people.get(dms[r.id].by)?.name || null } : { on: false, by: null, at: null, byName: null },
       memberCount: [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && (listOf(p).includes(r.id) || projectsOf(p).includes(r.id)) && !v.implicitOnlyIn(p.id, r.id)).length, // 工作區管理員：加入或有職稱才算
@@ -1878,6 +1887,7 @@ ${ending}`;
   route('GET', '/api/projects/:id/members', async ({ ctx, me, params }) => {
     const row = await memberProject(params.id, { archivedOk: true });
     const v = await access.load(ctx);
+    if (!v.can(me, 'discover_project', { project: row.id })) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案'); // 私人專案對看不到的人＝沒有這個專案
     if (!listOf(me).includes(row.id) && !v.can(me, 'see_project', { project: row.id }) && !v.can(me, 'manage_project', { project: row.id })) throw new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
     return membersOf(ctx, row);
   });
@@ -2153,6 +2163,22 @@ ${ending}`;
       ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['repo:' + row.id, JSON.stringify({ ...repo, updatedAt: at, by: me.id })]],
       projEvent(row.id, me.id, repo.url ? `${me.name} 設定程式庫：${repo.url}${repo.branch ? `（分支 ${repo.branch}）` : ''}` : `${me.name} 清除程式庫連結`, at),
     ]);
+    return projectsResponse(ctx);
+  });
+  // 專案可見度（開放／審核／私人）；專案管理員（含工作區管理員的隱含權限）能改
+  const VISIBILITY_NAME = { open: '開放', review: '審核', private: '私人' };
+  route('PUT', '/api/projects/:id/visibility', async ({ ctx, me, req, params }) => {
+    requireHuman(me);
+    await loadProjects(true);
+    const row = projectRows.find(r => r.id === params.id);
+    if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    await access.check(ctx, me, 'set_visibility', { project: row.id }, { what: '改專案可見度' });
+    const visibility = (await readJson(req)).visibility;
+    if (!PROJECT_VISIBILITIES.includes(visibility)) throw invalid('visibility 需為 open（開放）、review（審核）或 private（私人）');
+    if (visibility !== access.visibilityOf(row.id)) {
+      await db.batch([['UPDATE projects SET visibility = ? WHERE id = ?', [visibility, row.id]], projEvent(row.id, me.id, `${me.name} 把專案可見度改成${VISIBILITY_NAME[visibility]}`, nowIso())]);
+      invalidateProjects();
+    }
     return projectsResponse(ctx);
   });
   // 私訊開關；管理員與該專案 leader 能改。關掉後舊私訊雙方仍看得到、不能再送
@@ -3101,9 +3127,9 @@ ${ending}`;
     let cardSeq = null, cardClosed = '', card = null, cardMismatch = '';
     if (body.cardId !== undefined && body.cardId !== null && body.cardId !== '') {
       const m = /^C-(\d+)$/i.exec(String(body.cardId));
-      cardSeq = m ? Number(m[1]) - 100 : ((await cardSeqByKey(body.cardId)) ?? NaN); // MAIN-12 也收
+      cardSeq = m ? Number(m[1]) - 100 : ((await cardSeqByKey(body.cardId, me)) ?? NaN); // MAIN-12 也收
       card = Number.isInteger(cardSeq) && cardSeq >= 1 ? await db.get('SELECT seq, status, status_id, owner_id, type, project FROM cards WHERE seq = ?', cardSeq) : null;
-      if (!card) throw new ApiError(404, 'NOT_FOUND', '找不到 cardId 這張卡片');
+      if (!card || !discovers(me, card.project)) throw new ApiError(404, 'NOT_FOUND', '找不到 cardId 這張卡片'); // 私人專案的卡對看不到的人＝沒有這張
       // （UX 退回）：發文帶 cardId 也要套專案隔離——看不到的卡不能掛；訊息專案要跟卡片一樣（平台訊息不能流進別專案的卡）
       if (isolatedFrom(me) && !projectsOf(me).includes(card.project)) throw new ApiError(403, 'CARD_FORBIDDEN', '這張卡屬於其他專案，你沒有權限查看。');
       if (card.project && (body.project === undefined || body.project === null || body.project === '')) body.project = card.project; // 沒寫專案就用卡片的
@@ -3322,6 +3348,8 @@ ${ending}`;
       await audit('reject', me, null, { name: name || null, size, declared: declared ? 1 : 0, detail: code });
       return new ApiError(status, code, message);
     };
+    // 沒有這個專案，或是看不到的私人專案：一樣回 404（先擋，不讀檔、不存檔）
+    { const qp = q.get('project'); if (qp && qp !== 'all' && (!PROJECTS.includes(qp) || !discovers(me, qp))) throw await reject(404, 'NOT_FOUND', '找不到這個專案', Number(req.headers.get('content-length')) || 0); }
     // ；唯讀擋下也記進稽核（查「AI 上傳 403」時才知道是不是平台擋的）
     try { const qp = q.get('project'); await assertWritable(me, PROJECTS.includes(qp) ? qp : qp === 'all' ? null : projectsOf(me).length === 1 ? projectsOf(me)[0] : null); }
     catch (e) { if (e instanceof ApiError && e.status === 403) throw await reject(403, e.code, e.message, Number(req.headers.get('content-length')) || 0); throw e; }
@@ -3710,7 +3738,7 @@ ${ending}`;
   // 卡片的寫入一律先擋唯讀（不用改 cards.js 每條路由）
   const cardRoute = (method, path, handler, opts) => route(method, path, async args => {
     if (args.params?.id && /^[A-Za-z]{2,5}-\d+$/.test(args.params.id) && !/^C-\d+$/i.test(args.params.id)) { // 專案代號號也收
-      const seq = await cardSeqByKey(args.params.id);
+      const seq = await cardSeqByKey(args.params.id, args.me);
       if (seq === null) throw new ApiError(404, 'NOT_FOUND', `找不到卡片 ${args.params.id}`);
       args.params.id = `C-${seq + 100}`;
     }
@@ -3736,7 +3764,7 @@ ${ending}`;
       if (p && access.readOnlyIn(p, pj)) throw new ApiError(400, 'READ_ONLY_MEMBER', `${p.name} 在「${nameOf(pj)}」是唯讀，不能當負責人、交接對象或決策者。`);
     }
   }
-  const joinApi = registerJoin({ liveTo: (ids, type, data) => live?.toPeople(ids, type, data), route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf, loadProjects, projectRows: () => projectRows, loadLeaders, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles: () => projRoles, readRole, addReadOnly: membership.addReadOnly, invalidatePeople, projEvent });
+  const joinApi = registerJoin({ liveTo: (ids, type, data) => live?.toPeople(ids, type, data), route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf, loadProjects, projectRows: () => projectRows, loadLeaders, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles: () => projRoles, readRole, addReadOnly: membership.addReadOnly, addMemberStmts: membership.addMemberStmts, loadMembers: force => membership.loadMembers(force), invalidatePeople, projEvent });
   // 知識庫管理（補建索引、整理 AI 設定）：群組管理員或這個專案的 leader（人類）
   const kbHooks = {}; // 文件區抽字、上傳、刪除時通知知識頁模組（卡片模組建好後才填）
   const kbManager = (ctx, me, pj) => access.can(ctx, me, 'manage_project', { project: pj });
@@ -3750,7 +3778,7 @@ ${ending}`;
   registerUpdateCheck({ route, db, access, requireHuman, config });
   registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership,
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });
-  const cardsApi = registerCards({ route: cardRoute, statuses, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, canSeeMessage,archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
+  const cardsApi = registerCards({ route: cardRoute, statuses, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, canSeeMessage, discovers, visibleProjects, archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
   registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, access, cardKey, projEvent, moveCardStmts: cardsApi.moveCardStmts, invalidatePeople,
     projectExists: async pj => !!(await db.get('SELECT id FROM projects WHERE id = ?', pj)) });
   Object.assign(kbHooks, registerKbPages({ route, db, ApiError, invalid, readJson, randId, nowIso, peopleMap, identity, projectsOf, PROJECTS, assertWritable, roIn: access.readOnlyIn, kbManager, findSecret, getJson, setJson, createMessage, cardKey, cardsApi, claimsOf, kbSkillState: (pj, ais) => skillsApi.templateState(pj, 'kb-curation', ais) })); // 知識頁、整理卡

@@ -1875,6 +1875,11 @@ span.pm-star.on-true { display: inline-flex; width: 32px; justify-content: cente
 .pm-repo-url { min-width: 0; overflow-wrap: anywhere; }
 .pm-repo .link { min-height: 36px; }
 .repo-hints { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+/* 專案可見度：開放／審核／私人（單選，說明換行） */
+.vis-list { display: grid; gap: 6px; }
+.vis-opt { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.vis-opt input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
+.vis-opt > span { display: grid; gap: 2px; min-width: 0; }
 .ai-grants { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; display: grid; gap: 6px; }
 .ai-grants p { margin: 0; }
 .ai-grants-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

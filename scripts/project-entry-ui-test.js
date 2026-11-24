@@ -35,10 +35,10 @@ try {
     return js("[...document.querySelectorAll('#av-menu [data-av]')].map(b => b.dataset.av + '=' + b.textContent.trim()).join('|')");
   };
 
-  // 1. 管理員：專案卡 ⚙ 四項
+  // 1. 管理員：專案卡 ⚙ 五項
   await login(liu.token, '/p/main/messages');
   await openGear();
-  assert.equal(await menuItems(), 'rename,repo,members,kbai', '管理員四項（封存只在專案管理頁；知識庫整理 AI）');
+  assert.equal(await menuItems(), 'rename,repo,visibility,members,kbai', '管理員五項（封存只在專案管理頁；專案可見度；知識庫整理 AI）');
   assert.match(await text('#pset-menu .pset-head'), /預設專案 · 專案設定/);
   // 成員與本專案角色 → 成員管理、選好預設專案
   await click('#pset-menu [data-pset-act="members"]');
@@ -114,7 +114,7 @@ try {
   // 7. leader：預設專案有 ⚙（只有成員與本專案角色）、第二專案沒有；清單沒有新增；頭像只有成員管理；管理頁沒有切換鈕
   await login(wang.token, '/p/main/messages');
   await openGear();
-  assert.equal(await menuItems(), 'rename,repo,members,kbai', 'leader 跟管理員一樣：改名、程式庫、成員與本專案角色（PLAT-381）');
+  assert.equal(await menuItems(), 'rename,repo,visibility,members,kbai', 'leader 跟管理員一樣：改名、程式庫、成員與本專案角色（PLAT-381）');
   await click('#pset-menu [data-pset-act="members"]');
   await until(() => js("!!document.querySelector('.pm-tabs')"), 8000, 'leader 成員管理');
   assert.ok(!(await js("!!document.querySelector('.work-title [data-adm]')")), 'leader 沒有管理員設定連結');

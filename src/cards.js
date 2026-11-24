@@ -73,7 +73,7 @@ export async function teamCards(db, keyOf = c => cardNo(c.seq)) {
   return { work, open, decisions: decisions.map(d => ({ cardId: keyOf(d), title: d.question || d.title, createdAt: d.created_at, proposerId: d.proposer_id, deciderId: d.decider_id, project: d.project })) };
 }
 
-export function registerCards({ route, statuses, searchQuota = () => {}, cardKey = () => null, cardSeqByKey = async () => null, createMessage, readCardReturn, storeCardReturnFile, checkFiles = async () => { throw new Error('checkFiles 未提供'); }, filesText = (note, files) => note, isolatedFrom, canSeeMessage = async () => true, projectName = id => id, archiveEveryMs = 10 * 60_000, PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople, cardStaleHours }) {
+export function registerCards({ route, statuses, searchQuota = () => {}, cardKey = () => null, cardSeqByKey = async () => null, createMessage, readCardReturn, storeCardReturnFile, checkFiles = async () => { throw new Error('checkFiles 未提供'); }, filesText = (note, files) => note, isolatedFrom, canSeeMessage = async () => true, projectName = id => id, discovers = () => true, visibleProjects = () => PROJECTS, archiveEveryMs = 10 * 60_000, PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople, cardStaleHours }) {
   const STALE_CARD_MS = (cardStaleHours !== undefined && cardStaleHours !== '' && Number.isFinite(Number(cardStaleHours)) ? Number(cardStaleHours) : 24) * 3600_000; // 卡片多久沒更新才可能過時
   const notFound = () => new ApiError(404, 'NOT_FOUND', '找不到這張卡片');
   // 要輸出卡片或換狀態的路由先讀好這次請求的專案狀態清單（book）
@@ -179,7 +179,7 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
   const assignProjNo = uid => db.run(ASSIGN_PROJ_NO_SQL, uid);
   async function load(no, me = null) {
     const c = await db.get('SELECT * FROM cards WHERE seq = ?', await seqOf(no));
-    if (!c) throw notFound();
+    if (!c || (me && !discovers(me, c.project))) throw notFound(); // 私人專案的卡對看不到的人＝沒有這張
     if (me && isolatedFrom(me) && !projectsOf(me).includes(c.project)) throw new ApiError(403, 'CARD_FORBIDDEN', '這張卡屬於其他專案，你沒有權限查看。'); // 不寫專案名
     return c;
   }
@@ -330,7 +330,7 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
       if (quota) await searchQuota(me);
     }
     // 打卡號（MAIN-12 或 C-xxx）也找得到那張
-    const kwSeq = !kw ? null : (await cardSeqByKey(kw)) ?? (/^C-\d+$/i.test(kw) ? Number(kw.slice(2)) - 100 : null);
+    const kwSeq = !kw ? null : (await cardSeqByKey(kw, me)) ?? (/^C-\d+$/i.test(kw) ? Number(kw.slice(2)) - 100 : null);
     if (kw) { where.push(`(title LIKE ? ESCAPE '\\' OR next LIKE ? ESCAPE '\\'${kwSeq !== null ? ' OR seq = ?' : ''})`); const like = `%${kw.replace(/[%_\\]/g, m => '\\' + m)}%`; args.push(like, like, ...(kwSeq !== null ? [kwSeq] : [])); }
     const rows = await db.all(`SELECT * FROM cards ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY updated_at DESC, seq DESC LIMIT ? OFFSET ?`, ...args, limit + 1, offset);
     const hasMore = rows.length > limit;
@@ -415,10 +415,10 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     const mine = projectsOf(me);
     let project = body.project;
     if (project === undefined || project === null || project === '') {
-      if (mine.length !== 1) throw invalid(`project 為必填：${PROJECTS.join('、')}`);
+      if (mine.length !== 1) throw invalid(`project 為必填：${visibleProjects(me).join('、')}`);
       project = mine[0];
     }
-    if (!PROJECTS.includes(project)) throw invalid(`project 需為：${PROJECTS.join('、')}`);
+    if (!visibleProjects(me).includes(project)) throw invalid(`project 需為：${visibleProjects(me).join('、')}`);
     if (!mine.includes(project)) throw new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案，不能在這個專案建卡。');
     typeAllowed(book, project, type);
     // 預設狀態看類型；專案沒有「待整理」類別時直接進第一個「待處理」
@@ -507,7 +507,7 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
       if (v !== undefined && v !== c[key]) { sets[key] = v; logs.push(`${FIELD_LABEL[key]}已修改`); }
     }
     if (body.project !== undefined && body.project !== c.project) {
-      if (!PROJECTS.includes(body.project)) throw invalid(`project 需為：${PROJECTS.join('、')}`);
+      if (!visibleProjects(me).includes(body.project)) throw invalid(`project 需為：${visibleProjects(me).join('、')}`);
       if (me.kind === 'ai' && !projectsOf(me).includes(body.project)) throw new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案，不能把卡片改到那個專案。');
       sets.project = body.project; logs.push(`專案改為 ${body.project}（原卡號 ${pub(c)}）`);
       sets.proj_no = null; // 在新專案拿新號；存檔後用同一條語句取號（先查再寫會在同時移卡時撞號）
@@ -909,7 +909,7 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
       if (!owner || owner === me.id) throw new ApiError(400, 'USE_POST', '替自己建卡或不指派負責人，請直接用 POST /api/cards；建議只用在「把工作指派給別人」。');
       const mineP = projectsOf(me);
       const sp = body.project ?? (mineP.length === 1 ? mineP[0] : undefined);
-      if (!PROJECTS.includes(sp)) throw invalid(`project 為必填：${PROJECTS.join('、')}`);
+      if (!visibleProjects(me).includes(sp)) throw invalid(`project 為必填：${visibleProjects(me).join('、')}`);
       payload = { type, project: sp, title, reason: text(body, 'reason') ?? '', ownerId: owner, next: text(body, 'next') ?? '', blocker: text(body, 'blocker') ?? '',
         waitForId: await validPerson(people, body.waitForId, '等誰'), criteria: text(body, 'criteria') ?? '' };
     } else if (kind === 'status') {
@@ -988,7 +988,7 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     const f = { ...p };
     for (const k of ['title', 'reason', 'next', 'blocker', 'criteria']) { const v = text(body, k, { required: k === 'title' }); if (v !== undefined) f[k] = v; }
     if (body.type !== undefined) { f.type = checkType(body.type); if (f.type === '決策') throw invalid('決策卡片請直接建立'); }
-    if (body.project !== undefined) { if (!PROJECTS.includes(body.project)) throw invalid(`project 需為：${PROJECTS.join('、')}`); f.project = body.project; }
+    if (body.project !== undefined) { if (!visibleProjects(me).includes(body.project)) throw invalid(`project 需為：${visibleProjects(me).join('、')}`); f.project = body.project; }
     if (body.ownerId !== undefined) f.ownerId = await validPerson(people, body.ownerId, '負責人');
     if (body.waitForId !== undefined) f.waitForId = await validPerson(people, body.waitForId, '等誰');
     const status = f.type === '阻塞' ? '受阻' : '待處理', fpj = f.project || PROJECTS[0]; // 不寫死「平台」
