@@ -13,7 +13,7 @@ export async function openTestDb(file, opts = {}) {
   // 伺服器用 DATA_DIR 決定 schema；測試直接開的 <DATA_DIR>/switch.db 也用同一個資料夾，兩邊才會看到同一份資料。
   // 其他檔名（同一個資料夾開好幾個庫）各用自己的路徑
   const key = path.basename(file) === 'switch.db' ? path.dirname(file) : file;
-  return openPgDb(assertTestPgUrl(TEST_PG_URL), { ...opts, schema: testSchemaFor(key), max: 4 });
+  return openPgDb(assertTestPgUrl(TEST_PG_URL), { ...opts, schema: testSchemaFor(key), max: 4, exitOnIdle: true }); // 測試沒關資料庫也能馬上結束
 }
 
 // 資料庫裡的資料表名稱（SQLite 查 sqlite_master、Postgres 查 information_schema）

@@ -3,7 +3,9 @@
 // 「已驗證」必須由完成者以外的人或 AI 標記。
 // AI 建議（第三階段）：AI 只能建議改別人的卡片／替別人建卡，由人類採用或略過。
 // 決策卡片（第二階段）：只有指定決策者（人類）能決定；要求補充會把球丟回提案人，補充後自動回到決策者。AI 建議在後續階段。
-export const CARD_STATUSES = ['待整理', '待處理', '進行中', '待確認', '受阻', '已完成', '已封存'];
+import { CATEGORIES, FIRST_STATUS_SQL, LOCK_STATUS } from './statuses.js';
+// 狀態類別（系統固定，流程規則只看它；cards.status 存的就是類別）。各專案看板上的狀態是自訂的，見 src/statuses.js
+export const CARD_STATUSES = CATEGORIES;
 export const CARD_TYPES = ['工作', '阻塞', '決策', '人類紀錄'];
 // 人類紀錄卡——人類記內容；AI 平常的列表、增量、計數、團隊狀態都不含，不發任何群組訊息；
 // AI 主動查（type=人類紀錄 或卡號）讀得到（含紀錄），只能讀；唯一能做的是整理完標已完成並註明「已整理到 PLAT-xxx」
@@ -41,7 +43,7 @@ export async function autoArchive(db, now = Date.now()) {
   if (!rows.length) return 0;
   const at = new Date(now).toISOString(), stmts = [];
   for (const r of rows) {
-    stmts.push(["UPDATE cards SET status = '已封存', updated_at = ?, version = version + 1 WHERE seq = ? AND status = '已完成'", [at, r.seq]]);
+    stmts.push(["UPDATE cards SET status = '已封存', status_id = NULL, updated_at = ?, version = version + 1 WHERE seq = ? AND status = '已完成'", [at, r.seq]]);
     stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [r.seq, at, 'system', '系統', `系統自動封存（完成滿 ${ARCHIVE_DAYS} 天）`]]);
   }
   await db.batch(stmts);
@@ -71,9 +73,11 @@ export async function teamCards(db, keyOf = c => cardNo(c.seq)) {
   return { work, open, decisions: decisions.map(d => ({ cardId: keyOf(d), title: d.question || d.title, createdAt: d.created_at, proposerId: d.proposer_id, deciderId: d.decider_id, project: d.project })) };
 }
 
-export function registerCards({ route, searchQuota = () => {}, cardKey = () => null, cardSeqByKey = async () => null, createMessage, readCardReturn, storeCardReturnFile, checkFiles = async () => { throw new Error('checkFiles 未提供'); }, filesText = (note, files) => note, isolatedFrom, canSeeMessage = async () => true, projectName = id => id, archiveEveryMs = 10 * 60_000, PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople, cardStaleHours }) {
+export function registerCards({ route, statuses, searchQuota = () => {}, cardKey = () => null, cardSeqByKey = async () => null, createMessage, readCardReturn, storeCardReturnFile, checkFiles = async () => { throw new Error('checkFiles 未提供'); }, filesText = (note, files) => note, isolatedFrom, canSeeMessage = async () => true, projectName = id => id, archiveEveryMs = 10 * 60_000, PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople, cardStaleHours }) {
   const STALE_CARD_MS = (cardStaleHours !== undefined && cardStaleHours !== '' && Number.isFinite(Number(cardStaleHours)) ? Number(cardStaleHours) : 24) * 3600_000; // 卡片多久沒更新才可能過時
   const notFound = () => new ApiError(404, 'NOT_FOUND', '找不到這張卡片');
+  // 要輸出卡片或換狀態的路由先讀好這次請求的專案狀態清單（book）
+  const bookRoute = (method, pattern, handler, opts) => route(method, pattern, async args => handler({ ...args, book: await statuses.load(args.ctx) }), opts);
   let archivedAt = 0;
   const maybeArchive = async () => { if (Date.now() - archivedAt < archiveEveryMs) return; archivedAt = Date.now(); await autoArchive(db).catch(e => console.error('autoArchive', e.message)); };
   // 卡片的專案看專案欄位；舊卡標題的「[專案]」前綴在通知裡去掉，改用【專案】標記
@@ -93,8 +97,8 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
   };
   const mark = (people, by, at) => (by ? { by: ref(people, by), at } : null);
 
-  const view = (c, people) => ({
-    cardId: pub(c), key: pub(c), legacyId: cardNo(c.seq), type: c.type, project: c.project, title: c.title, reason: c.reason, status: c.status, // key＝專案代號號；cardId 也是
+  const view = (c, people, book) => ({
+    cardId: pub(c), key: pub(c), legacyId: cardNo(c.seq), type: c.type, project: c.project, title: c.title, reason: c.reason, ...book.fields(c), // key＝專案代號號；cardId 也是；status＝狀態名稱、category＝狀態類別
     owner: ref(people, c.owner_id), next: c.next, blocker: c.blocker, waitFor: ref(people, c.wait_for_id), criteria: c.criteria,
     createdBy: ref(people, c.created_by), createdAt: c.created_at, updatedAt: c.updated_at, version: c.version,
     done: mark(people, c.done_by, c.done_at), verified: mark(people, c.verified_by, c.verified_at),
@@ -149,7 +153,6 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     if (v.length > CARD_LIMITS[key]) throw invalid(`${FIELD_LABEL[key]}上限 ${CARD_LIMITS[key]} 字`);
     return v;
   }
-  const checkStatus = s => { if (!CARD_STATUSES.includes(s)) throw invalid(`status 需為：${CARD_STATUSES.join('、')}`); return s; };
   const checkType = t => { if (!CARD_TYPES.includes(t)) throw invalid(`type 需為：${CARD_TYPES.join('、')}`); return t; };
 
   function readOptions(raw) {
@@ -204,12 +207,44 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     if (to === '已完成' && me.kind === 'human' && c.type !== '決策' && (leaving || !c.verified_by)) { Object.assign(sets, { verified_by: me.id, verified_at: at }); logs.push('人類完成即驗收'); }
     return { sets, logs };
   }
+  // 換了類別或專案、又沒指定狀態時，status_id 改成那個專案、那個類別排最前面的狀態（已封存沒有狀態 → NULL）
+  // 專案缺某個類別時，對應的卡片類型不能用：沒有受阻 → 不能有阻塞卡；沒有待確認 → 不能有決策卡
+  function typeAllowed(book, pj, type) {
+    if (type === '阻塞' && !book.has(pj, '受阻')) throw new ApiError(400, 'NO_BLOCKED_STATUS', '這個專案沒有「受阻」類別的狀態，不能有阻塞卡片。');
+    if (type === '決策' && !book.has(pj, '待確認')) throw new ApiError(400, 'NO_CONFIRM_STATUS', '這個專案沒有「待確認」類別的狀態，不能有決策卡片。');
+  }
+  // 換到指定狀態：跨類別照原本的規則（statusChange）；同類別只換欄，留一筆「移到 X」。紀錄寫當時的狀態名稱
+  function moveTo(c, target, me, at, book) {
+    if (target.category === c.status) return { sets: { status_id: target.id }, logs: [`移到 ${target.name}`] };
+    const ch = statusChange(c, target.category, me, at);
+    return { sets: { ...ch.sets, status_id: target.id }, logs: [`狀態 ${book.of(c)?.name ?? c.status} → ${target.name}`, ...ch.logs.slice(1)] };
+  }
+  // 卡片寫完會落在哪個狀態：指定了 status_id 就是它；換了類別或專案、沒指定就是那個類別排最前面的（auto；已封存沒有狀態）。
+  // check＝[那個狀態還在（而且還是這個類別）的 SQL 條件, 參數]：讀完狀態清單之後狀態剛被刪掉或改了類別，就不寫（不然卡片會留在已經沒有的欄）。
+  // 寫入時對狀態加列鎖（LOCK_STATUS），跟刪除狀態互相等：Postgres 兩個交易同時進行也不會錯過。
+  // auto 的檢查用跟 SET 一樣的「排最前面的狀態」子查詢，鎖的是同一列（不會跟重新排序各鎖一列、互等）
+  function landing(c, sets) {
+    const pj = sets.project ?? c.project, cat = sets.status ?? c.status;
+    if ('status_id' in sets) return { auto: false, check: sets.status_id == null ? null : [`EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.id = ? AND ps.project = ? AND ps.category = ?${LOCK_STATUS})`, [sets.status_id, pj, cat]] };
+    const auto = (sets.status !== undefined && sets.status !== c.status) || sets.project !== undefined; // 類別沒變就留在原本的欄
+    return { auto, pj, cat, check: auto && cat !== '已封存' ? [`${FIRST_STATUS_SQL} IS NOT NULL`, [pj, cat]] : null };
+  }
+  const STATUS_GONE = () => new ApiError(409, 'STATUS_DELETED', '要改到的狀態剛被刪除或改了類別，請重新讀取後再試。');
+  const statusExists = check => db.get(`SELECT 1 AS x WHERE ${check[0]}`, ...check[1]);
+  // 版本相符、要落腳的狀態還在才更新；D1／SQLite 都用同一條語句，0 筆代表同時有人改過（或狀態剛被刪）
+  function updateStmt(c, sets, at) {
+    const keys = Object.keys(sets), l = landing(c, sets);
+    const sql = `UPDATE cards SET ${keys.map(k => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}${l.auto ? `status_id = ${FIRST_STATUS_SQL}, ` : ''}updated_at = ?, version = version + 1 WHERE seq = ? AND version = ?${l.check ? ` AND ${l.check[0]}` : ''}`;
+    return [sql, [...keys.map(k => sets[k]), ...(l.auto ? [l.pj, l.cat] : []), at, c.seq, c.version, ...(l.check ? l.check[1] : [])]];
+  }
   async function save(c, sets, logs, me, at) {
-    const keys = Object.keys(sets);
-    const sql = `UPDATE cards SET ${keys.map(k => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}updated_at = ?, version = version + 1 WHERE seq = ? AND version = ?`;
-    // 版本相符才更新；D1／SQLite 都用同一條語句，失敗（0 筆）代表同時有人改過
-    const r = await db.run(sql, ...keys.map(k => sets[k]), at, c.seq, c.version);
-    if (!r.changes) throw new ApiError(409, 'CONFLICT', '這張卡片剛被別人修改過，請重新讀取後再試。');
+    const [sql, args] = updateStmt(c, sets, at);
+    const r = await db.run(sql, ...args);
+    if (!r.changes) {
+      const { check } = landing(c, sets);
+      if (check && !(await statusExists(check))) throw STATUS_GONE();
+      throw new ApiError(409, 'CONFLICT', '這張卡片剛被別人修改過，請重新讀取後再試。');
+    }
     if (logs.length) await db.batch(logStmt(c.seq, me, logs, at));
   }
 
@@ -255,14 +290,32 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
   const withStale = (v, c, stale) => (stale.get(c.seq)?.lastUpdatedAt === c.updated_at ? { ...v, staleHint: stale.get(c.seq) } : v);
 
   // 卡片列表（合併搜尋 /api/search 也用；quota: false 由呼叫端算次數）
-  async function listCards({ ctx, me, url }, { quota = true } = {}) {
+  async function listCards({ ctx, me, url, book: given }, { quota = true } = {}) {
     await maybeArchive();
+    const book = given || await statuses.load(ctx);
     const q = url.searchParams, limit = (q.get('q') || '').trim() ? Math.min(parseLimit(url, 100, 200), 20) : parseLimit(url, 100, 200); // 有關鍵字最多 20 筆
     const offset = Math.max(0, Math.min(Number.parseInt(q.get('offset') || '0', 10) || 0, 100_000)); // 已封存分頁
     const where = [], args = [];
-    const status = q.get('status');
+    const status = (q.get('status') || '').trim().replace(/^all$/, ''); // all＝不篩（跟沒帶一樣）
     if (status === 'open') where.push(`status IN ${UNFINISHED_SQL}`);
-    else if (status) { where.push('status = ?'); args.push(checkStatus(status)); }
+    else if (status) { // 跟 PATCH 同一個順序，各專案各自比對：狀態名稱 → 狀態 ID → 狀態類別名稱（整個類別）
+      const pjs = PROJECTS.includes(q.get('project')) ? [q.get('project')] : isolatedFrom(me) ? projectsOf(me) : PROJECTS;
+      const isCategory = CATEGORIES.includes(status);
+      const hits = pjs.flatMap(pj => {
+        const s = book.match(pj, status);
+        return s ? [{ ...s, pj, only: book.list(pj).filter(x => x.category === s.category).length === 1 }] : [];
+      }).filter(s => !(isCategory && s.only)); // 類別裡只有這一個狀態：等於依類別篩（沒自訂過的專案 SQL 跟以前一樣）
+      if (!hits.length && !isCategory) throw invalid(`找不到狀態「${status}」：status 可以是 open、狀態類別（${CATEGORIES.join('、')}），或專案的狀態名稱、狀態 ID`);
+      // status_id 空的或對不上（別的專案、別的類別、已刪除）的卡算在該類別第一個狀態（ADR 0001）；類別裡只有一個狀態就不看 status_id
+      const stray = ' OR status_id IS NULL OR status_id NOT IN (SELECT ps.id FROM project_statuses ps WHERE ps.project = cards.project AND ps.category = cards.status)';
+      const conds = hits.map(s => `(project = ? AND status = ?${s.only ? '' : ` AND (status_id = ?${book.first(s.pj, s.category)?.id === s.id ? stray : ''})`})`);
+      args.push(...hits.flatMap(s => (s.only ? [s.pj, s.category] : [s.pj, s.category, s.id])));
+      if (isCategory) { // 其他專案：依類別
+        conds.push(`(status = ?${hits.length ? ` AND project NOT IN (${hits.map(() => '?').join(',')})` : ''})`);
+        args.push(status, ...hits.map(s => s.pj));
+      }
+      where.push(conds.length === 1 ? conds[0] : `(${conds.join(' OR ')})`);
+    }
     else if (!q.get('since') && q.get('include') !== 'archived') where.push(`status IN ${NOT_ARCHIVED_SQL}`);
     if (q.get('owner')) { where.push('owner_id = ?'); args.push(q.get('owner')); }
     if (q.get('type')) { where.push('type = ?'); args.push(checkType(q.get('type'))); }
@@ -303,7 +356,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     if (noteMap) for (const l of await db.all('SELECT card_seq, at, by_id, text FROM card_log WHERE via = ? AND card_seq IN (SELECT value FROM json_each(?)) ORDER BY id', NOTE_LOG, JSON.stringify(out.map(c => c.seq)))) { if (!noteMap.has(l.card_seq)) noteMap.set(l.card_seq, []); noteMap.get(l.card_seq).push(noteView(people, l)); }
     const claims = await claimsOf(db, out.filter(c => !CLOSED_ST.includes(c.status) && c.type !== '決策' && c.type !== NOTE).map(c => c.seq)); // 誰正在做（只看未結案的）
     const reports = await reportsOf(out);
-    return { items: out.map(c => ({ ...withStale(view(c, people), c, stale), ...(claims.get(c.seq) ? { claim: mark(people, claims.get(c.seq).by, claims.get(c.seq).at) } : {}), ...(reports.has(c.seq) ? { report: reports.get(c.seq) } : {}), ...(noteMap ? { notes: noteMap.get(c.seq) || [] } : {}) })), hasMore, ...(counts ? { counts } : {}), nextSince: items.reduce((m, c) => (c.updated_at > m ? c.updated_at : m), q.get('since') || '') || null };
+    return { items: out.map(c => ({ ...withStale(view(c, people, book), c, stale), ...(claims.get(c.seq) ? { claim: mark(people, claims.get(c.seq).by, claims.get(c.seq).at) } : {}), ...(reports.has(c.seq) ? { report: reports.get(c.seq) } : {}), ...(noteMap ? { notes: noteMap.get(c.seq) || [] } : {}) })), hasMore, ...(counts ? { counts } : {}), ...(q.get('since') || !out.length ? {} : { statuses: Object.fromEntries([...new Set(out.map(c => c.project))].map(pj => [pj, book.list(pj)])) }), nextSince: items.reduce((m, c) => (c.updated_at > m ? c.updated_at : m), q.get('since') || '') || null };
   }
   route('GET', '/api/cards', args => listCards(args));
   // 等人驗收的卡（待確認、有等誰、不是決策），找負責人最後一則 [完成] 或 [交接]，網頁「看回報」直接跳過去
@@ -319,7 +372,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     return out;
   }
 
-  route('GET', '/api/cards/:id', async ({ ctx, me, params }) => {
+  bookRoute('GET', '/api/cards/:id', async ({ book, ctx, me, params }) => {
     await maybeArchive();
     const c = (await attachMerged([await load(params.id, me)]))[0];
     const people = await peopleMap(ctx);
@@ -332,7 +385,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     // 正在做的人與最近一次結構化交接放最前面，下一位讀卡最先看到
     const cl = CLOSED_ST.includes(c.status) || c.type === '決策' ? null : (await claimsOf(db, [c.seq])).get(c.seq);
     const ho = log.find(l => l.via === HANDOVER_LOG);
-    const v = withStale(view(c, people), c, await staleHints());
+    const v = withStale(view(c, people, book), c, await staleHints());
     return {
       cardId: v.cardId, title: v.title, status: v.status, owner: v.owner,
       ...(cl ? { claim: mark(people, cl.by, cl.at) } : {}), ...(ho ? { handover: handoverView(people, ho) } : {}),
@@ -343,13 +396,13 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     };
   });
 
-  route('POST', '/api/cards', async ({ ctx, me, req }) => {
+  bookRoute('POST', '/api/cards', async ({ book, ctx, me, req }) => {
     const body = await readJson(req);
     const requestId = typeof body.requestId === 'string' ? body.requestId.trim() : '';
     if (!requestId || requestId.length > 128) throw invalid('requestId 為必填，長度 1～128');
     const people = await peopleMap(ctx);
     const dup = await db.get('SELECT * FROM cards WHERE created_by = ? AND request_id = ?', me.id, requestId);
-    if (dup) return { __status: 200, ...view(dup, people), duplicate: true };
+    if (dup) return { __status: 200, ...view(dup, people, book), duplicate: true };
 
     const type = checkType(body.type ?? '工作');
     if (type === NOTE && me.kind !== 'human') throw new ApiError(403, 'HUMAN_ONLY', '人類紀錄只有人類能建立。');
@@ -359,8 +412,18 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     if (me.kind === 'ai' && owner && owner !== me.id) {
       throw new ApiError(403, 'ASSIGN_OTHERS', 'AI 不能直接把卡片指派給別人；負責人請留空或填自己，並在 next 寫清楚要誰接手。');
     }
+    const mine = projectsOf(me);
+    let project = body.project;
+    if (project === undefined || project === null || project === '') {
+      if (mine.length !== 1) throw invalid(`project 為必填：${PROJECTS.join('、')}`);
+      project = mine[0];
+    }
+    if (!PROJECTS.includes(project)) throw invalid(`project 需為：${PROJECTS.join('、')}`);
+    if (!mine.includes(project)) throw new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案，不能在這個專案建卡。');
+    typeAllowed(book, project, type);
+    // 預設狀態看類型；專案沒有「待整理」類別時直接進第一個「待處理」
     const defaultStatus = type === '阻塞' ? '受阻' : type === '決策' ? '待確認' : type === NOTE ? '進行中' : '待整理';
-    const status = checkStatus(body.status ?? defaultStatus);
+    const target = book.resolve(project, body.status ?? defaultStatus), status = target.category;
     if (status === '已完成' || status === '已封存') throw invalid('新卡片不能直接是已完成或已封存');
     let waitFor = await validPerson(people, body.waitForId, '等誰');
     // 決策卡片：指定決策者（人類）；預設是自己，AI 預設是所屬人類。建立後一定在等決策者
@@ -378,14 +441,6 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     } else if (body.deciderId !== undefined || body.question !== undefined || body.options !== undefined) {
       throw invalid('只有決策卡片可以填決策者、問題或選項');
     }
-    const mine = projectsOf(me);
-    let project = body.project;
-    if (project === undefined || project === null || project === '') {
-      if (mine.length !== 1) throw invalid(`project 為必填：${PROJECTS.join('、')}`);
-      project = mine[0];
-    }
-    if (!PROJECTS.includes(project)) throw invalid(`project 需為：${PROJECTS.join('、')}`);
-    if (!mine.includes(project)) throw new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案，不能在這個專案建卡。');
     sameProject(people, owner, project, '負責人');
     if (type !== '決策') sameProject(people, waitFor, project, '等誰');
     if (type === NOTE) humansOnly(people, [owner, waitFor]);
@@ -393,7 +448,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     if (me.kind === 'ai') {
       const since = new Date(Date.now() - 30 * 60_000).toISOString();
       const twin = await db.get("SELECT * FROM cards WHERE created_by = ? AND title = ? AND project = ? AND created_at > ? AND status NOT IN ('已完成', '已封存') ORDER BY created_at DESC LIMIT 1", me.id, title, project, since);
-      if (twin) return { __status: 200, ...view(twin, people), duplicate: true, warnings: [`30 分鐘內你已建過同標題的卡 ${pub(twin)}，回傳原卡、沒有重建；真的要另一張請改標題。`] };
+      if (twin) return { __status: 200, ...view(twin, people, book), duplicate: true, warnings: [`30 分鐘內你已建過同標題的卡 ${pub(twin)}，回傳原卡、沒有重建；真的要另一張請改標題。`] };
     }
     const messageIds = Array.isArray(body.messageIds) ? [...new Set(body.messageIds.map(String))].slice(0, 10) : [];
     if (messageIds.length) {
@@ -402,32 +457,34 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     }
     const at = nowIso(), uid = randId('card');
     // 建卡、專案內編號、紀錄、關聯訊息放同一個交易；中途失敗不會留下沒有編號的卡
+    // 狀態剛被刪掉（讀完狀態清單之後）就不插入卡片，下面紀錄的 card_seq 查不到＝NULL，整個交易失敗
     const seqOf = '(SELECT seq FROM cards WHERE uid = ?)';
     await db.batch([
-      [`INSERT INTO cards (uid, type, title, reason, owner_id, status, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at,
+      [`INSERT INTO cards (uid, type, title, reason, owner_id, status, status_id, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at,
       decider_id, proposer_id, question, recommendation, options, impact, after_next, project)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [uid, type, title, text(body, 'reason') ?? '', owner, status, text(body, 'next') ?? '', text(body, 'blocker') ?? '',
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.id = ? AND ps.project = ? AND ps.category = ?${LOCK_STATUS})`, [uid, type, title, text(body, 'reason') ?? '', owner, status, target.id, text(body, 'next') ?? '', text(body, 'blocker') ?? '',
         waitFor, text(body, 'criteria') ?? '', me.id, requestId, at, at,
-        dec.decider_id, dec.proposer_id, dec.question, dec.recommendation, dec.options, dec.impact, dec.after_next, project]],
+        dec.decider_id, dec.proposer_id, dec.question, dec.recommendation, dec.options, dec.impact, dec.after_next, project, target.id, project, target.category]],
       [ASSIGN_PROJ_NO_SQL, [uid]],
       ...[`建立卡片（類型：${type}）`, ...(type === '決策' ? [`等 ${people.get(dec.decider_id)?.name} 決定`] : [])]
         .map(t => [`INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (${seqOf},?,?,?,?)`, [uid, at, me.id, me.kind === 'human' ? '網頁' : 'API', t]]),
       ...messageIds.map(m => [`INSERT OR IGNORE INTO card_msgs (card_seq, message_id) VALUES (${seqOf},?)`, [uid, m]]),
-    ]);
+    ]).catch(async e => { throw (await statusExists(['EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.id = ? AND ps.category = ?)', [target.id, target.category]])) ? e : STATUS_GONE(); });
     const c = await db.get('SELECT * FROM cards WHERE uid = ?', uid);
     // 建卡時指定了別人（負責人、等誰、決策者）就通知對方，和交接一樣會叫醒 AI
     const who = [owner && `負責人 ${people.get(owner)?.name}`, waitFor && (type === '決策' ? `等 ${people.get(waitFor)?.name} 決定` : `等 ${people.get(waitFor)?.name}`)].filter(Boolean).join('；');
     if (type !== NOTE) await notifyCard(ctx, me, c, [owner, waitFor], `建立卡片${who ? '，' + who : ''}`, 'create'); // 人類紀錄不發群組訊息
-    return { __status: 201, ...view(await load(cardNo(c.seq)), people) };
+    return { __status: 201, ...view(await load(cardNo(c.seq)), people, book) };
   });
 
-  route('PATCH', '/api/cards/:id', async ({ ctx, me, req, params }) => {
+  bookRoute('PATCH', '/api/cards/:id', async ({ book, ctx, me, req, params }) => {
     const body = await readJson(req);
     const c = await load(params.id, me);
     // AI 對人類紀錄卡唯一能做的：整理完標「已完成」並註明 mergedInto（不能改其他欄位）
     if (c.type === NOTE && me.kind !== 'human') {
       const keys = Object.keys(body).filter(k => k !== 'version');
-      if (!(body.status === '已完成' && body.mergedInto && keys.every(k => ['status', 'mergedInto'].includes(k)))) throw aiNoteForbidden();
+      const toDone = (() => { try { return book.resolve(c.project, body.status).category === '已完成'; } catch { return false; } })();
+      if (!(toDone && body.mergedInto && keys.every(k => ['status', 'mergedInto'].includes(k)))) throw aiNoteForbidden();
       const into = await load(String(body.mergedInto), me).catch(() => { throw invalid('mergedInto 要是看得到的卡號，例如 MAIN-12'); });
       if (into.type === NOTE) throw invalid('mergedInto 要是整理後的一般卡片，不能是另一張人類紀錄');
       if (into.project !== c.project) throw invalid('mergedInto 的卡要在同一個專案');
@@ -435,7 +492,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
       const at = nowIso(), ch = statusChange(c, '已完成', me, at);
       invalidatePeople();
       await save(c, ch.sets, [...ch.logs, `已整理到 ${pub(into)}`], me, at);
-      return view((await attachMerged([await load(params.id)]))[0], await peopleMap(ctx));
+      return view((await attachMerged([await load(params.id)]))[0], await peopleMap(ctx), book);
     }
     // 認領：AI 可把「未指派、待整理或待處理、非決策」的卡片的負責人設為自己
     const claiming = me.kind === 'ai' && !c.owner_id && body.ownerId === me.id && c.type !== '決策' && c.type !== NOTE && ['待整理', '待處理'].includes(c.status);
@@ -499,9 +556,19 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
       const w = await validPerson(people, body.waitForId, '等誰');
       if (w !== c.wait_for_id) { sets.wait_for_id = w; logs.push(`等誰改為 ${people.get(w)?.name || '不用等人'}`); }
     }
-    if (body.status !== undefined && checkStatus(body.status) !== c.status) {
-      const ch = statusChange(c, body.status, me, nowIso());
-      Object.assign(sets, ch.sets); logs.push(...ch.logs);
+    const pj = sets.project ?? c.project;
+    if (sets.project !== undefined || sets.type !== undefined) typeAllowed(book, pj, sets.type ?? c.type);
+    if (body.status !== undefined) {
+      // 狀態可以寫這個專案的狀態名稱、狀態 ID 或狀態類別名稱；跨類別照規則、同類別只換欄
+      const target = book.resolve(pj, body.status), cur = book.of(c);
+      if (sets.project !== undefined || target.category !== c.status || target.id !== cur?.id) {
+        const mv = moveTo(c, target, me, nowIso(), book);
+        Object.assign(sets, mv.sets); logs.push(...mv.logs);
+      }
+    } else if (sets.project !== undefined && !book.has(pj, c.status)) {
+      // 搬到別的專案：落在同類別第一個狀態（save 會補 status_id）；沒有待整理就進待處理，沒有受阻、待確認就不能搬
+      if (c.status !== '待整理') throw new ApiError(400, 'NO_SUCH_CATEGORY', `目標專案沒有「${c.status}」類別的狀態：請先把卡片移出「${c.status}」再搬。`);
+      sets.status = '待處理'; logs.push('目標專案沒有「待整理」，狀態 待整理 → 待處理');
     }
     if (sets.owner_id !== undefined || sets.project !== undefined) sameProject(people, sets.owner_id !== undefined ? sets.owner_id : c.owner_id, sets.project || c.project, '負責人');
     // 人類紀錄的負責人、等誰只能是人類（AI 負責的卡要先換人類才能改成人類紀錄）
@@ -526,11 +593,11 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
       }
       if (parts.length && !claiming && (sets.type || c.type) !== NOTE) await notifyCard(ctx, me, c, to, parts.join('；'), 'edit'); // 人類紀錄不發群組訊息
     }
-    return view(await load(params.id), people);
+    return view(await load(params.id), people, book);
   });
 
   // 決定：只有指定決策者（人類）能做。result 可以是某個選項、「不同意」（需寫原因）或「要求補充」（需寫要補什麼）
-  route('POST', '/api/cards/:id/decide', async ({ ctx, me, req, params }) => {
+  bookRoute('POST', '/api/cards/:id/decide', async ({ book, ctx, me, req, params }) => {
     const body = await readJson(req);
     const c = await load(params.id);
     if (c.type !== '決策') throw invalid('這不是決策卡片');
@@ -561,7 +628,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
       ? (c.proposer_id && people.get(c.proposer_id)?.status === 'active' ? c.proposer_id : c.created_by)
       : (c.proposer_id || c.created_by);
     await notifyCard(ctx, me, c, [back2], result === '要求補充' ? `要求補充：${note}` : `決定「${result}」${note ? '：' + note : ''}`, 'decide', files);
-    return view(await load(params.id), people);
+    return view(await load(params.id), people, book);
   });
 
   // 暫緩／恢復：不新增狀態，沿用「受阻」＋阻塞原因以「暫緩（」開頭。暫緩的決策卡離開待處理清單，恢復後回到「待確認」
@@ -571,12 +638,13 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     if (c.type !== '決策') throw invalid('只有決策卡片能暫緩或恢復');
     if (me.id !== c.decider_id && me.id !== c.proposer_id && me.id !== c.created_by) throw new ApiError(403, 'NOT_PARTY', '只有這張決策卡的決策者或提案人能暫緩或恢復。');
   }
-  route('POST', '/api/cards/:id/defer', async ({ ctx, me, req, params }) => {
+  bookRoute('POST', '/api/cards/:id/defer', async ({ book, ctx, me, req, params }) => {
     const body = await readJson(req);
     const c = await load(params.id);
     requireDeferParty(me, c);
     if (c.decision_result) throw new ApiError(409, 'DECIDED', '這張決策卡片已經決定了，不能暫緩。');
     if (c.status !== '待確認') throw new ApiError(409, 'NOT_PENDING', '決策卡片要在「待確認」才能暫緩。');
+    if (!book.has(c.project, '受阻')) throw new ApiError(400, 'NO_BLOCKED_STATUS', '這個專案沒有「受阻」類別的狀態，決策卡不能暫緩。');
     if (body.version !== undefined && Number(body.version) !== c.version) throw new ApiError(409, 'CONFLICT', '這張卡片剛被別人修改過，請重新讀取後再試。');
     const people = await peopleMap(ctx), at = nowIso();
     const reason = String(body.reason ?? '').trim();
@@ -586,9 +654,9 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     await save(c, { status: '受阻', blocker, wait_for_id: c.decider_id }, ['狀態 待確認 → 受阻', blocker], me, at);
     invalidatePeople();
     await notifyCard(ctx, me, c, [c.proposer_id || c.created_by, c.decider_id], blocker, 'defer', files);
-    return view(await load(params.id), people);
+    return view(await load(params.id), people, book);
   });
-  route('POST', '/api/cards/:id/resume', async ({ ctx, me, params }) => {
+  bookRoute('POST', '/api/cards/:id/resume', async ({ book, ctx, me, params }) => {
     const c = await load(params.id);
     requireDeferParty(me, c);
     if (!isDeferred(c)) throw new ApiError(409, 'NOT_DEFERRED', '這張決策卡片目前不是暫緩狀態。');
@@ -596,11 +664,11 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     await save(c, { status: '待確認', blocker: '', wait_for_id: c.decider_id }, ['狀態 受阻 → 待確認', '恢復（結束暫緩）'], me, at);
     invalidatePeople();
     await notifyCard(ctx, me, c, [c.proposer_id || c.created_by, c.decider_id], '已恢復，回到待確認', 'resume');
-    return view(await load(params.id), people);
+    return view(await load(params.id), people, book);
   });
 
   // 人類驗收不通過 →「退回」：卡回到交過來的那個 AI、狀態回進行中；原因發一則回覆到交接訊息
-  route('POST', '/api/cards/:id/reject', async ({ ctx, me, req, params }) => {
+  bookRoute('POST', '/api/cards/:id/reject', async ({ book, ctx, me, req, params }) => {
     if (me.kind !== 'human') throw new ApiError(403, 'FORBIDDEN', '只有人類能退回驗收。');
     const body = await readCardReturn(req);
     const c = await load(params.id, me);
@@ -629,9 +697,9 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
       messageId = r.message.messageId;
       await db.run('INSERT OR IGNORE INTO card_msgs (card_seq, message_id) VALUES (?,?)', c.seq, messageId);
     } catch (err) { notifyError = err.message; }
-    return { ...view(await load(params.id), people), rejectMessageId: messageId, ...(notifyError ? { notifyError } : {}) };
+    return { ...view(await load(params.id), people, book), rejectMessageId: messageId, ...(notifyError ? { notifyError } : {}) };
   });
-  route('POST', '/api/cards/:id/verify', async ({ ctx, me, params }) => {
+  bookRoute('POST', '/api/cards/:id/verify', async ({ book, ctx, me, params }) => {
     const c = await load(params.id, me); // 驗證者必須看得到這張卡（屬於卡片專案）
     if (c.type === NOTE && me.kind !== 'human') throw aiNoteForbidden();
     if (c.status !== '已完成') throw new ApiError(409, 'NOT_DONE', '卡片要先是「已完成」才能標為已驗證。');
@@ -639,7 +707,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     if (c.done_by === me.id) throw new ApiError(403, 'SELF_VERIFY', '完成者不能自己標為已驗證，請由其他人或其他 AI 驗證。');
     const at = nowIso();
     await save(c, { verified_by: me.id, verified_at: at }, ['標為已驗證'], me, at);
-    return view(await load(params.id), await peopleMap(ctx));
+    return view(await load(params.id), await peopleMap(ctx), book);
   });
 
   // 卡片動作通知：以動作者身分在群組發一則 [通知] 並 @ 相關成員（走既有 @ 通知與門鈴）。
@@ -661,7 +729,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
   const cardFiles = (me, body) => (body.fileIds === undefined || body.fileIds === null ? null : checkFiles(me, body.fileIds));
 
   // 交接：負責人把自己的卡交給指定成員。接手者回到「待處理」；伺服器代交接者在群組發一則 [交接] 並 @ 對方（既有 @ 通知）
-  route('POST', '/api/cards/:id/handover', async ({ ctx, me, req, params }) => {
+  bookRoute('POST', '/api/cards/:id/handover', async ({ book, ctx, me, req, params }) => {
     const body = await readJson(req);
     const c = await load(params.id, me);
     if (c.type === NOTE && me.kind !== 'human') throw aiNoteForbidden();
@@ -687,17 +755,21 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     // 交接只換負責人、留紀錄，狀態維持（進行中還是進行中）；接手者接單時自己改
     // 唯一例外——AI 交給人類＝請人類驗收：狀態改「待確認」、等誰＝那位人類（人類紀錄、決策卡不套用）
     const fromP = people.get(c.owner_id || me.id), toP = people.get(to);
-    const verify = c.type !== NOTE && c.type !== '決策' && fromP?.kind === 'ai' && toP?.kind === 'human';
+    // 專案沒有「待確認」類別：不進入請驗收，改到「進行中」、負責人換成那位人類
+    const aiToHuman = c.type !== NOTE && c.type !== '決策' && fromP?.kind === 'ai' && toP?.kind === 'human';
+    const verify = aiToHuman && book.has(c.project, '待確認');
+    const toHuman = aiToHuman && !verify && c.status !== '進行中';
     const sets = { owner_id: to };
     if (c.wait_for_id === to) sets.wait_for_id = null;
     if (verify) Object.assign(sets, { status: '待確認', wait_for_id: to });
+    if (toHuman) sets.status = '進行中';
     // 顧問回饋：原本「待確認」的卡交出去（不是請人類驗收）→ 改進行中、清掉等誰，免得接手的人掛著上一棒的等待對象；「受阻」照舊維持
     const reopen = !verify && c.status === '待確認';
     if (reopen) Object.assign(sets, { status: '進行中', wait_for_id: null });
     // 還在「待整理」的卡交出去 → 「待處理」（等接手的人 [接單] 後自動變進行中）
-    const queued = !verify && !reopen && c.status === '待整理' && c.type !== NOTE;
+    const queued = !verify && !toHuman && !reopen && c.status === '待整理' && c.type !== NOTE;
     if (queued) sets.status = '待處理';
-    const stateNote = verify ? `狀態 ${c.status} → 待確認，等 ${toName} 驗收` : reopen ? '狀態 待確認 → 進行中' : queued ? `狀態 待整理 → 待處理，等 ${toName} 接手` : `狀態維持：${c.status}`;
+    const stateNote = verify ? `狀態 ${c.status} → 待確認，等 ${toName} 驗收` : toHuman ? `狀態 ${c.status} → 進行中，交給 ${toName}` : reopen ? '狀態 待確認 → 進行中' : queued ? `狀態 待整理 → 待處理，等 ${toName} 接手` : `狀態維持：${c.status}`;
     const logs = [`交接 ${fromName} → ${toName}：${note}（${stateNote}）`];
     await save(c, sets, logs, me, at);
     await db.run('INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', c.seq, at, me.id, HANDOVER_LOG, JSON.stringify({ to, ...four, ...(structured && !body.note ? {} : { note }) })); // 交接後認領清空，等接手的人 [接單]
@@ -706,18 +778,18 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     const fourText = structured ? '\n' + HANDOVER_FIELDS.filter(k => four[k] && !(k === 'progress' && !body.note)).map(k => `• ${FIELD_LABEL[k]}：${four[k]}`).join('\n') : '';
     const msgText = `[交接] ${c.project ? `【${projectName(c.project)}】` : ''}${pub(c)} ${plainTitle(c.title)} → @${toName}：${structured && !body.note ? four.progress : note}（${verify ? '等你驗收' : stateNote}）${fourText}`;
     let messageId = null, notifyError = null;
-    if (c.type === NOTE) return { ...view(await load(params.id), people), handoverMessageId: null }; // 人類紀錄交接不發群組訊息
+    if (c.type === NOTE) return { ...view(await load(params.id), people, book), handoverMessageId: null }; // 人類紀錄交接不發群組訊息
     try {
       const r = await createMessage(ctx, me, { text: files ? filesText(msgText, files) : msgText, requestId: `handover_${c.uid}_${c.version}`, recipientIds: [to], project: c.project }, { fileIds: files ? files.map(f => f.id) : null });
       messageId = r.message.messageId;
       await db.run('INSERT OR IGNORE INTO card_msgs (card_seq, message_id) VALUES (?,?)', c.seq, messageId);
     } catch (err) { notifyError = err.message; }
-    return { ...view(await load(params.id), people), handoverMessageId: messageId, ...(notifyError ? { notifyError } : {}) };
+    return { ...view(await load(params.id), people, book), handoverMessageId: messageId, ...(notifyError ? { notifyError } : {}) };
   });
 
   // 接手：別人正在做（認領中）的卡，要改程式或狀態前先接手。不是鎖定：留紀錄、通知原本在做的人，認領改成自己。
   // 沒人認領時就是單純認領（reason 選填）；別人認領中 reason 必填。不改負責人、不改狀態（那些照原本的規則）
-  route('POST', '/api/cards/:id/takeover', async ({ ctx, me, req, params }) => {
+  bookRoute('POST', '/api/cards/:id/takeover', async ({ book, ctx, me, req, params }) => {
     const body = await readJson(req);
     const c = await load(params.id, me);
     if (c.type === NOTE && me.kind !== 'human') throw aiNoteForbidden();
@@ -725,7 +797,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     if (CLOSED_ST.includes(c.status)) throw new ApiError(400, 'CARD_CLOSED', '已完成或已封存的卡片不能接手；新工作請開新卡。');
     const people = await peopleMap(ctx);
     const cl = (await claimsOf(db, [c.seq])).get(c.seq);
-    if (cl?.by === me.id) return { ...view(c, people), claim: mark(people, cl.by, cl.at), alreadyClaimed: true };
+    if (cl?.by === me.id) return { ...view(c, people, book), claim: mark(people, cl.by, cl.at), alreadyClaimed: true };
     const reason = text({ takeover: body.reason }, 'takeover', { required: !!cl });
     if (cl && !reason) throw invalid(`這張卡 ${people.get(cl.by)?.name || cl.by} 正在做，接手要寫 reason（為什麼由你接手）`);
     const at = nowIso(), prev = cl ? people.get(cl.by) : null;
@@ -742,7 +814,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
         await db.run('INSERT OR IGNORE INTO card_msgs (card_seq, message_id) VALUES (?,?)', c.seq, messageId);
       } catch (err) { notifyError = err.message; }
     }
-    return { ...view({ ...c, updated_at: at }, people), claim: mark(people, me.id, at), ...(prev ? { previousClaim: mark(people, cl.by, cl.at), takeoverMessageId: messageId } : {}), ...(notifyError ? { notifyError } : {}) };
+    return { ...view({ ...c, updated_at: at }, people, book), claim: mark(people, me.id, at), ...(prev ? { previousClaim: mark(people, cl.by, cl.at), takeoverMessageId: messageId } : {}), ...(notifyError ? { notifyError } : {}) };
   });
 
   function humansOnly(people, ids, changingType = false) {
@@ -804,13 +876,13 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
       project: card?.project ?? p.project ?? null,
       suggestionId: sugNo(r.id), kind: r.kind, state: r.state, expired: isExpired(r, card), from: ref(people, r.from_id), why: r.why, basisMessageId: r.basis_message_id, createdAt: r.created_at,
       card: card ? { cardId: pub(card), title: card.title, status: card.status } : null,
-      to: p.to ?? null, waitFor: ref(people, p.waitForId),
+      to: p.toName ?? p.to ?? null, waitFor: ref(people, p.waitForId), // to＝建議的狀態名稱（建議當時）
       create: r.kind === 'create' ? { type: p.type, title: p.title, reason: p.reason, owner: ref(people, p.ownerId), next: p.next, blocker: p.blocker, waitFor: ref(people, p.waitForId), criteria: p.criteria } : null,
       resolvedBy: ref(people, r.resolved_by), resolvedAt: r.resolved_at, resultCardId: result ? pub(result) : r.result_card_seq ? cardNo(r.result_card_seq) : null,
     };
   }
 
-  route('POST', '/api/suggestions', async ({ ctx, me, req }) => {
+  bookRoute('POST', '/api/suggestions', async ({ book, ctx, me, req }) => {
     if (me.kind !== 'ai') throw invalid('建議是給 AI 用的：人類請直接建立或修改卡片。');
     const body = await readJson(req);
     const requestId = typeof body.requestId === 'string' ? body.requestId.trim() : '';
@@ -843,12 +915,12 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     } else if (kind === 'status') {
       const c = await load(String(body.cardId ?? ''), me); // 看不到的卡不能提建議
       if (c.type === NOTE) throw aiNoteForbidden();
-      const to = checkStatus(body.status);
+      const target = book.resolve(c.project, body.status), to = target.category;
       if (canEdit(me, c)) throw new ApiError(400, 'USE_PATCH', '這張是你負責的卡片，請直接用 PATCH /api/cards/:id 修改。');
-      if (c.status === to) throw new ApiError(400, 'NO_CHANGE', `這張卡片已經是「${to}」了。`);
+      if (c.status === to && book.of(c)?.id === target.id) throw new ApiError(400, 'NO_CHANGE', `這張卡片已經是「${target.name}」了。`);
       if (c.type === '決策' && to === '已完成') throw new ApiError(400, 'USE_DECIDE', '決策卡片要由決策者決定，不能建議直接完成。');
       cardSeq = c.seq;
-      payload = { to, waitForId: await validPerson(people, body.waitForId, '等誰') };
+      payload = { to, ...(target.id ? { statusId: target.id, toName: target.name } : {}), waitForId: await validPerson(people, body.waitForId, '等誰') }; // 建議記狀態 ID；採用前狀態被刪就不能採用
       const same = await db.get("SELECT * FROM suggestions WHERE from_id = ? AND state = 'pending' AND kind = 'status' AND card_seq = ? AND payload = ?", me.id, cardSeq, JSON.stringify(payload));
       if (same) return { __status: 200, ...(await sugView(same, people)), duplicate: true };
     } else throw invalid("kind 需為 'create' 或 'status'");
@@ -893,21 +965,24 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
   async function applySuggestion(ctx, me, r, body, collect) {
     if (r.state !== 'pending') throw new ApiError(409, 'NOT_PENDING', '這則建議已經被處理過了。');
     const people = await peopleMap(ctx), p = JSON.parse(r.payload || '{}'), at = nowIso();
+    const book = await statuses.load(ctx);
     const aiName = people.get(r.from_id)?.name || 'AI';
     const note = (c, ids, summary, key) => (collect ? collect.push({ c, ids, summary }) : notifyCard(ctx, me, c, ids, summary, key));
     if (r.kind === 'status') {
       const c = await db.get('SELECT * FROM cards WHERE seq = ?', r.card_seq);
       if (!c) throw notFound();
       if (c.updated_at > r.created_at) throw new ApiError(409, 'EXPIRED', '這張卡在建議之後已有變動，建議已過期，只能略過。');
-      if (c.status === p.to) { await claim(r, me, at, c.seq); return view(c, people); }
-      const ch = statusChange(c, p.to, me, at);
-      const sets = { ...ch.sets }, logs = ch.logs.map((t, i) => (i === 0 ? `採用 ${aiName} 的建議：${t}` : t));
+      const target = p.statusId ? book.byId(p.statusId) : book.resolve(c.project, p.to); // 舊建議只記類別
+      if (!target || (p.statusId && target.project !== c.project)) throw new ApiError(409, 'STATUS_DELETED', '這則建議要改到的狀態已刪除，只能略過。');
+      if (c.status === target.category && book.of(c)?.id === target.id) { await claim(r, me, at, c.seq); return view(c, people, book); }
+      const mv = moveTo(c, target, me, at, book);
+      const sets = { ...mv.sets }, logs = mv.logs.map((t, i) => (i === 0 ? `採用 ${aiName} 的建議：${t}` : t));
       if (p.waitForId && p.waitForId !== c.wait_for_id) { sets.wait_for_id = p.waitForId; logs.push(`等誰改為 ${people.get(p.waitForId)?.name}`); }
       await save(c, sets, logs, me, at);
       await claim(r, me, at, c.seq);
       invalidatePeople();
-      await note(c, [r.from_id, p.waitForId], `採用了 ${aiName} 的建議：狀態改為 ${p.to}`, `sug${r.id}`);
-      return view(await db.get('SELECT * FROM cards WHERE seq = ?', c.seq), people);
+      await note(c, [r.from_id, p.waitForId], `採用了 ${aiName} 的建議：狀態改為 ${target.name}`, `sug${r.id}`);
+      return view(await db.get('SELECT * FROM cards WHERE seq = ?', c.seq), people, book);
     }
     // create：採用時可以先改欄位
     const f = { ...p };
@@ -916,11 +991,14 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     if (body.project !== undefined) { if (!PROJECTS.includes(body.project)) throw invalid(`project 需為：${PROJECTS.join('、')}`); f.project = body.project; }
     if (body.ownerId !== undefined) f.ownerId = await validPerson(people, body.ownerId, '負責人');
     if (body.waitForId !== undefined) f.waitForId = await validPerson(people, body.waitForId, '等誰');
-    const status = f.type === '阻塞' ? '受阻' : '待處理';
+    const status = f.type === '阻塞' ? '受阻' : '待處理', fpj = f.project || PROJECTS[0]; // 不寫死「平台」
+    typeAllowed(book, fpj, f.type);
     const uid = randId('card');
-    await db.run(`INSERT INTO cards (uid, type, title, reason, owner_id, status, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at, project)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, uid, f.type, f.title, f.reason ?? '', f.ownerId ?? null, status, f.next ?? '', f.blocker ?? '', f.waitForId ?? null,
-      f.criteria ?? '', r.from_id, `sug_${r.id}`, at, at, f.project || PROJECTS[0]); // 不寫死「平台」
+    // 狀態剛被刪掉（讀完狀態清單之後）就不插入
+    const made = await db.run(`INSERT INTO cards (uid, type, title, reason, owner_id, status, status_id, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at, project)
+      SELECT ?,?,?,?,?,?,${FIRST_STATUS_SQL},?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.project = ? AND ps.category = ?${LOCK_STATUS})`, uid, f.type, f.title, f.reason ?? '', f.ownerId ?? null, status, fpj, status, f.next ?? '', f.blocker ?? '', f.waitForId ?? null,
+      f.criteria ?? '', r.from_id, `sug_${r.id}`, at, at, fpj, fpj, status);
+    if (!made.changes) throw STATUS_GONE();
     await assignProjNo(uid);
     const c = await db.get('SELECT * FROM cards WHERE uid = ?', uid);
     await db.batch([
@@ -930,7 +1008,7 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     await claim(r, me, at, c.seq);
     invalidatePeople();
     await note(c, [r.from_id, f.ownerId, f.waitForId], `採用了 ${aiName} 的建議建立這張卡${f.ownerId ? '，負責人 ' + people.get(f.ownerId)?.name : ''}`, `sug${r.id}`);
-    return { __status: 201, ...view(c, people) };
+    return { __status: 201, ...view(c, people, book) };
   }
 
   // 批次採用／略過：只接受明確列出的建議（上限 50），不做「全部採用」；僅人類；逐筆沿用單筆邏輯，部分失敗不中斷
@@ -972,8 +1050,8 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
   // 伺服器代開工作卡（知識庫整理卡）：負責人直接是指定的 AI、狀態待處理；建立者記 me（按的人或上傳的人）
   async function createCardBy(me, { project, title, reason = '', next = '', criteria = '', ownerId, requestId }) {
     const at = nowIso(), uid = randId('card');
-    await db.run(`INSERT INTO cards (uid, type, title, reason, owner_id, status, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at, project)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, uid, '工作', title.slice(0, CARD_LIMITS.title), reason.slice(0, CARD_LIMITS.reason), ownerId, '待處理', next.slice(0, CARD_LIMITS.next), '', null,
+    await db.run(`INSERT INTO cards (uid, type, title, reason, owner_id, status, status_id, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at, project)
+      VALUES (?,?,?,?,?,?,${FIRST_STATUS_SQL},?,?,?,?,?,?,?,?,?)`, uid, '工作', title.slice(0, CARD_LIMITS.title), reason.slice(0, CARD_LIMITS.reason), ownerId, '待處理', project, '待處理', next.slice(0, CARD_LIMITS.next), '', null,
       criteria.slice(0, CARD_LIMITS.criteria), me.id, requestId || null, at, at, project);
     await assignProjNo(uid);
     const c = await db.get('SELECT * FROM cards WHERE uid = ?', uid);
@@ -981,5 +1059,16 @@ export function registerCards({ route, searchQuota = () => {}, cardKey = () => n
     return { ...c, key: pub(c) };
   }
   const cardLog = (seq, me, text) => db.batch(logStmt(seq, me, [text], nowIso()));
-  return { listCards, createCardBy, cardLog };
+  // 刪除狀態時把卡搬到目標狀態（src/statuses.js 用）：跟 PATCH 改狀態同一套規則。
+  // 只回傳語句，由呼叫端跟刪除放進同一個交易（中途失敗就一張都不搬）；寫完要呼叫 invalidatePeople()。
+  // 交易裡版本對不上的 UPDATE 不會報錯、只是 0 筆：所以第一筆紀錄的 card_seq 只在這次 UPDATE 真的寫進去時才查得到，
+  // 查不到就是 NULL、違反 NOT NULL，整個交易回復（剛好同時被改的卡不會被留在已刪的狀態裡）
+  async function moveCardStmts(ctx, me, c, target, at) {
+    const mv = moveTo(c, target, me, at, await statuses.load(ctx));
+    const [first, ...rest] = logStmt(c.seq, me, mv.logs, at);
+    const guard = ['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES ((SELECT seq FROM cards WHERE seq = ? AND version = ? AND status_id = ? AND updated_at = ?),?,?,?,?)',
+      [c.seq, c.version + 1, target.id, at, ...first[1].slice(1)]];
+    return [updateStmt(c, mv.sets, at), guard, ...rest];
+  }
+  return { listCards, createCardBy, cardLog, moveCardStmts };
 }

@@ -810,6 +810,24 @@ hr { border: 0; border-top: 1px solid var(--border); width: 100%; margin: 4px 0;
 .bcol-head { display: flex; gap: 8px; align-items: center; }
 .bcol-head .wdot[data-st="待處理"] { background: #6366f1; } .bcol-head .wdot[data-st="進行中"] { background: #f59e0b; }
 .bcol-head .wdot[data-st="待確認"] { background: #ea580c; } .bcol-head .wdot[data-st="受阻"] { background: #dc2626; } .bcol-head .wdot[data-st="已完成"] { background: #16a34a; }
+/* 看板狀態的顏色（每個專案自訂，固定調色盤）：看板欄頭的點、狀態編輯器的色塊 */
+[data-color="gray"] { --st-color: #9ca3af; } [data-color="indigo"] { --st-color: #6366f1; } [data-color="blue"] { --st-color: #2563eb; } [data-color="green"] { --st-color: #16a34a; }
+[data-color="amber"] { --st-color: #f59e0b; } [data-color="orange"] { --st-color: #ea580c; } [data-color="red"] { --st-color: #dc2626; } [data-color="violet"] { --st-color: #8b5cf6; }
+.bcol-head .wdot[data-color] { background: var(--st-color); }
+.st-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
+.st-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.st-row .st-name { flex: 1 1 140px; min-width: 0; }
+.st-row select { flex: 0 1 auto; }
+.st-acts { display: inline-flex; gap: 4px; }
+/* 拖曳排序：把手只在有滑鼠時出現（手機用 ←／→）；放下的位置畫一條線 */
+.st-grip { cursor: grab; color: var(--muted, #6b7280); user-select: none; letter-spacing: -2px; padding: 0 4px 0 0; flex: none; }
+@media (pointer: coarse) { .st-grip { display: none; } }
+.st-row.dragging { opacity: .45; }
+.st-row.over-before { box-shadow: 0 -2px 0 #93b4f5; } .st-row.over-after { box-shadow: 0 2px 0 #93b4f5; }
+.st-swatch { width: 12px; height: 12px; border-radius: 50%; background: var(--st-color, #9ca3af); flex: none; }
+.st-moveto { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 8px; background: var(--surface-2, rgba(0,0,0,.04)); }
+.st-add { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.st-add input { flex: 1 1 160px; min-width: 0; }
 .bcol-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .bempty { text-align: center; padding: 12px 0; margin: 0; }
 .ctile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; cursor: pointer; }

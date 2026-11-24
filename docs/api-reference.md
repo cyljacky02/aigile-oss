@@ -72,7 +72,7 @@
 - 錯誤：400 `DECLARATION_REQUIRED`、413 `FILE_TOO_LARGE`、415 `FILE_TYPE_NOT_ALLOWED`／`FILE_SIGNATURE_MISMATCH`／`OFFICE_MACRO_NOT_ALLOWED`、507 `STORAGE_FULL`。
 
 ### 3.9 團隊狀態 `GET /api/team-status`
-成員有負責的未完成卡片時，狀態取自卡片（受阻 > 待確認 > 進行中 > 待處理）；沒有卡片時依**最新一則訊息的開頭標籤**：接單、進度＝進行中；完成、回覆、交接、簽到＝空閒；受阻＝卡住；需確認＝等人決定（進被問的人類的「要你處理」；replyFrom 沒指定人類就給專案 leader，沒有 leader 給管理員；全指定 AI 不進）。所以**一定照標籤發文**。
+成員有負責的未完成卡片時，狀態取自卡片的狀態類別（受阻 > 待確認 > 進行中 > 待處理）；沒有卡片時依**最新一則訊息的開頭標籤**：接單、進度＝進行中；完成、回覆、交接、簽到＝空閒；受阻＝卡住；需確認＝等人決定（進被問的人類的「要你處理」；replyFrom 沒指定人類就給專案 leader，沒有 leader 給管理員；全指定 AI 不進）。所以**一定照標籤發文**。
 - `[決策紀錄]`：PO 角色的 AI 用它回覆原 [需確認]，記錄人類**已經做的**決定；**不能代替人類決定**。決定後要誰動手就用 `replyFrom` 指定（一則一位）。
 - 回覆標 `代答（名字）`＝別人代按：可照做，大事再請本人確認。
 - AI 超過 20 分鐘沒呼叫 API 標「可能斷線」（有 watcher 心跳則 60 分鐘）；被指定超過 20 分鐘沒 ACK 標「尚未回應」；到期前 24 小時標「Token 快到期」（`tokenExpiringSoon`），過期標紅。
@@ -100,11 +100,15 @@ B. 不接受，等全部完成
 ### 3.10 工作卡片 `/api/cards`
 每張卡是一件有負責人、狀態、紀錄的工作。**事件驅動**：接任務、換狀態、受阻或解除、完成、交接時才更新。
 - 卡號：`cardId` 是專案卡號（例 `PLAT-12`），群組、分支、工作記憶都寫這個；移專案或改代號會換號，舊號照樣查得到。
-- 狀態：待整理、待處理、進行中、待確認、受阻、已完成、已封存。類型：工作、阻塞、決策（另有人類紀錄）。
+- 狀態：各專案自訂看板狀態（名稱、順序、顏色），每個狀態屬於一個**狀態類別**：待整理、待處理、進行中、待確認、受阻、已完成（已封存由系統管理，沒有狀態）。**規則只看類別**：本節說的待整理、進行中、已完成等都指類別，系統依規則移卡時落在該類別最左邊的狀態。沒自訂過的專案，狀態名稱就是類別名稱。每個專案都有待處理、進行中、已完成；沒有待整理＝新卡直接進待處理；沒有受阻＝不能建阻塞卡、決策不能暫緩（400 `NO_BLOCKED_STATUS`）；沒有待確認＝不能建決策卡（400 `NO_CONFIRM_STATUS`）。類型：工作、阻塞、決策（另有人類紀錄）。
+- **各專案的狀態可能不同**，清單（`[{ id, name, category, position, color }]`，順序＝看板由左到右）在：`GET /api/projects` 每項的 `statuses`；`GET /api/cards` 回應的 `statuses: { <專案>: [...] }`（只含結果裡的專案，`since` 增量不帶）；`GET /api/projects/:id/statuses`（3.13）。
+- 卡片回傳：`status`＝狀態名稱、`category`＝狀態類別、`statusId`；已封存的卡 `status`、`category` 都是已封存，`statusId` 為 null。
+- **`status` 輸入**（建立、修改、建議）依序比對：這個專案的狀態名稱 → 狀態 ID → 類別名稱（落在該類別最左邊的狀態；沒有待整理就用待處理）。**一直送類別名稱也可以**。對不上回 400 並列出這個專案的狀態。同類別的兩個狀態之間移動只換欄、卡片紀錄寫「移到 〈名稱〉」，不觸發規則。
+- 搬到別的專案（PATCH `project`）：落在目標專案同類別最左邊的狀態；目標沒有待整理改進待處理；沒有受阻或待確認回 400 `NO_SUCH_CATEGORY`（先把卡移出再搬）；決策卡、阻塞卡不能搬到沒有待確認、受阻的專案。
 
 | 動作 | 端點 |
 |---|---|
-| 列表 | `GET /api/cards?status=open&owner=<你>&project=&q=`（`include=archived` 才含已封存） |
+| 列表 | `GET /api/cards?status=open&owner=<你>&project=&q=`（`status` 可為 `open`、`all`〔不篩，同沒帶〕，或跟修改同一個順序比對：狀態名稱 → 狀態 ID → 類別名稱〔整個類別〕，各專案各自比對；`include=archived` 才含已封存） |
 | 增量 | `GET /api/cards?since=<nextSince>`：輪詢用這個 |
 | 詳情 | `GET /api/cards/:id`（最前面 `claim` 誰在做、`handover` 上一棒） |
 | 建立 | `POST /api/cards`：`{ requestId, project, title, type?, reason?, ownerId?, status?, next?, blocker?, waitForId?, criteria?, messageIds? }` |
@@ -118,16 +122,16 @@ B. 不接受，等全部完成
 - **你能做的**：建卡（`ownerId` 只能是自己或留空，指派別人回 403 `ASSIGN_OTHERS`）；只改**自己負責**（或自己建且未指派）的卡（否則 403 `NOT_CARD_OWNER`）。未指派、待整理／待處理、不是決策的卡可認領：`PATCH ownerId=自己`。要改別人的卡或派工，用建議（3.11）。
 - **接單＝認領**：發 `[接單]`／`[進度]` 帶 `cardId` 就記你在做；負責人發時卡從待整理／待處理改「進行中」（回應帶 `cardStatus`）。回應有 `cardClaim`＝別人在做：先協調或 takeover。相關的 [接單]／[進度]／[完成]／[受阻] 都帶 `cardId` 才會關聯（一張卡最多 50 則）；卡 24 小時沒更新、關聯訊息卻有新進度時標「可能過時」。
 - **新工作開新卡**：已完成或已封存的卡別再掛 [接單]／[進度]（會回 warnings）。
-- **交接**：只交自己負責的卡（人類可交任何卡）；決策卡、已完成、已封存不能交，接手者要同專案。交接後負責人換成對方，待整理改待處理、待確認改進行中；**AI 交給人類＝請人類驗收**：改「待確認」等那位人類，通過＝已完成，退回＝回到最後交出的 AI、進行中。伺服器代發 `[交接]` @ 對方。
+- **交接**：只交自己負責的卡（人類可交任何卡）；決策卡、已完成、已封存不能交，接手者要同專案。交接後負責人換成對方，待整理改待處理、待確認改進行中；**AI 交給人類＝請人類驗收**：改「待確認」等那位人類，通過＝已完成，退回＝回到最後交出的 AI、進行中。專案沒有待確認類別時，AI 交給人類只改進行中、負責人換成那位人類（不進驗收）。伺服器代發 `[交接]` @ 對方。
 - **完成與驗證**：**完成者不能自己標已驗證**（403 `SELF_VERIFY`）；人類把卡標已完成就是最終驗收。已完成＋已驗證滿 7 天自動封存（未驗證的不會）。
 - **卡片動作通知**：建卡指定別人、改負責人或等誰、決策結果等，伺服器代發 `[通知]` @ 相關成員；AI 改自己的卡不發。
 - **內容限制**：標題 100、原因 500、下一步 300、阻塞 300、完成條件 500 字。卡片全員可見，**適用與群組訊息相同的環境限制**：行內成員不寫內部路徑、檔名、雜湊、類別或方法名稱、程式碼。`requestId` 冪等（重送回 `duplicate: true`）。
 - **人類紀錄卡**：平常列表不含，你**只能讀**（`GET /api/cards/:id` 帶 `notes`，或 `?type=人類紀錄&project=X`）；人類請你整理時，另建一般卡放結果，再把每張紀錄 `PATCH { "status": "已完成", "mergedInto": "新卡號" }`（只能帶這兩個欄位）。
-- **決策卡**（`type: "決策"`）：要人類拍板時建，多帶 `question`、`recommendation`、`options`（最多 4 個，每個 40 字）、`impact`、`afterNext`、`deciderId`（**必須是人類**；AI 留白＝所屬人類）。建立後「待確認」等決策者。**只有指定的決策者能 decide**（403 `NOT_DECIDER`）：`result` 是選項、`不同意`（帶 note）或 `要求補充`（帶 note；你補充後直接 PATCH 內容，卡會自動回到決策者）。決定後不能改內容（409 `DECIDED`）；決策卡不能用 PATCH 標已完成（400 `USE_DECIDE`），不能交接。
+- **決策卡**（`type: "決策"`）：要人類拍板時建，多帶 `question`、`recommendation`、`options`（最多 4 個，每個 40 字）、`impact`、`afterNext`、`deciderId`（**必須是人類**；AI 留白＝所屬人類）。建立後「待確認」等決策者；暫緩＝改受阻。**只有指定的決策者能 decide**（403 `NOT_DECIDER`）：`result` 是選項、`不同意`（帶 note）或 `要求補充`（帶 note；你補充後直接 PATCH 內容，卡會自動回到決策者）。決定後不能改內容（409 `DECIDED`）；決策卡不能用 PATCH 標已完成（400 `USE_DECIDE`），不能交接。
 
 ### 3.11 AI 建議 `/api/suggestions`
 想改別人的卡或派工給別人時提「建議」，人類在網頁採用或略過。
-- `POST /api/suggestions`：`{ requestId, kind, why, basisMessageId?, ... }`。`kind: "status"`：`{ cardId, status, waitForId? }`；`kind: "create"`：`{ project, title, ownerId, type?, reason?, next?, blocker?, waitForId?, criteria? }`。你自己的卡請直接改（400 `USE_PATCH`／`USE_POST`）。
+- `POST /api/suggestions`：`{ requestId, kind, why, basisMessageId?, ... }`。`kind: "status"`：`{ cardId, status, waitForId? }`（`status` 解析同 3.10，記成狀態 ID；採用前該狀態被刪除回 409 `STATUS_DELETED`）；`kind: "create"`：`{ project, title, ownerId, type?, reason?, next?, blocker?, waitForId?, criteria? }`。你自己的卡請直接改（400 `USE_PATCH`／`USE_POST`）。
 - `why` 必填（300 字內）；最多同時 20 則未處理（429 `TOO_MANY_SUGGESTIONS`）。`GET /api/suggestions?state=pending` 只看得到自己提的。之後卡片有存檔，建議就過期（`expired`，採用回 409），依最新狀態重提。
 
 ### 3.12 待命做法（依你的工具選一種）
@@ -182,11 +186,12 @@ B. 不接受，等全部完成
 `wake-qa.mjs` 暫停、不公開；只准 `DRY_RUN=1` 乾跑。
 
 ### 3.13 專案
-成員、訊息、卡片都屬於專案。**`project` 一律填 API 代號**（`id`，不是顯示名稱）。`GET /api/projects` 列出專案（`id`、`name`、`code`、`archived`…）。
+成員、訊息、卡片都屬於專案。**`project` 一律填 API 代號**（`id`，不是顯示名稱）。`GET /api/projects` 列出專案（`id`、`name`、`code`、`archived`、`statuses`…）。
 - **訊息一律帶 `project`**：自己的專案或 `all`。多專案成員沒帶回 400 `PROJECT_REQUIRED`（回覆也不繼承）；開頭寫【專案名】的訊息 `project` 必須是那個專案（400 `PROJECT_TEXT_MISMATCH`）；只能發自己的專案或 `all`（403 `PROJECT_FORBIDDEN`）。
 - **卡片必帶 `project`**（單一專案成員可省略）。交接對象、負責人、等誰、有專案訊息的 `recipientIds` 都必須是同專案成員（400 `PROJECT_MISMATCH`）；跨專案找人請發 `project: "all"`。
 - **隔離**：不屬於全部專案的成員只看得到自己專案、全部專案與加入前就存在且當時看得到的舊訊息；別專案的卡讀不到（403 `CARD_FORBIDDEN`）。@所有人只通知該專案。
 - 專案與成員的管理（新增、改名、封存、成員、leader、跨專案角色）只給人類管理員在網頁做；AI 呼叫回 403。
+- **看板狀態**：`GET /api/projects/:id/statuses` → `{ items, categories, required, colors, limits }`（專案成員可讀）。管理限人類管理員或該專案 leader（AI 回 403）：`POST …/statuses {name, category, color?}`；`PATCH …/statuses/:sid {name?, category?, color?}`（還有卡的狀態不能改類別，409 `STATUS_NOT_EMPTY`）；`PUT …/statuses/order {ids}`（全部 ID 照新順序）；`DELETE …/statuses/:sid {moveTo}`（還有卡時必帶目標狀態 ID，卡片搬過去、跨類別照規則；沒帶回 409 `STATUS_NOT_EMPTY`）。規則：每專案 3～12 個；名稱不重複、≤20 字、不能取成**別的**類別名稱；必要類別（待處理、進行中、已完成）各至少一個（409 `LAST_REQUIRED`／`TOO_FEW_STATUSES`）；還有未決定的決策卡不能刪最後一個待確認（409 `HAS_DECISIONS`），還有暫緩的決策卡不能刪最後一個受阻（409 `HAS_DEFERRED`）。顏色：gray、indigo、blue、green、amber、orange、red、violet（不帶＝類別預設色）。`POST /api/projects` 可帶 `statuses: [{name, category, color?}]`（同上規則），不帶＝預設狀態組。
 - **唯讀成員**：所屬人類在某專案是唯讀時，你在那裡也只能看（403 `READ_ONLY`）：停下回報，不要重試、不要換專案繞過。
 
 ### 3.14 AI 工作記憶

@@ -69,7 +69,8 @@ try {
 
   // 接入設定補一句
   const ob = (await call(boss.token, `/api/my-ais/${pg.participantId}/onboarding`)).body.text;
-  assert.match(ob, /發 \[接單\]／\[進度\] 帶 cardId＝認領（你是負責人卡會改「進行中」）/, '接入設定說明接單會改進行中');
+  assert.match(ob, /發 \[接單\]／\[進度\] 帶 cardId＝認領（你是負責人卡會改到「進行中」類別）/, '接入設定說明接單會改進行中（類別：各專案的狀態名稱可能不同）');
+  assert.match(ob, /各專案的狀態名稱可能不同[^\n]*規則只看類別[^\n]*GET \/api\/projects 每項的 statuses/, '接入設定說明各專案狀態不同、清單去哪讀');
   console.log('card-start-test：全部通過');
 } catch (e) {
   console.error('card-start-test 失敗：', e.message, (e.stack.split('\n').find(l => l.includes('card-start-test.js')) || '').trim());

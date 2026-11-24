@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS cards (
   decision_result TEXT, decision_by TEXT, decision_at TEXT, decision_note TEXT NOT NULL DEFAULT '',
   project TEXT NOT NULL DEFAULT '',    -- 所屬專案（寫入時一定帶）
   proj_no INTEGER,                         -- 專案內連號（顯示 MAIN-12）
+  status_id INTEGER,                       -- 自訂狀態（project_statuses.id）；status 存的是狀態類別，見 docs/adr/0001
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -180,6 +181,16 @@ CREATE INDEX IF NOT EXISTS idx_cards_updated ON cards (updated_at);
 CREATE INDEX IF NOT EXISTS idx_cards_status ON cards (status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_proj_no ON cards (project, proj_no);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_request ON cards (created_by, request_id);
+-- 專案看板狀態：各專案自訂的看板欄；category 是系統固定的狀態類別（流程規則只看類別）
+CREATE TABLE IF NOT EXISTS project_statuses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project TEXT NOT NULL,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  color TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_statuses_name ON project_statuses (project, name);
 CREATE TABLE IF NOT EXISTS card_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   card_seq INTEGER NOT NULL,

@@ -45,6 +45,19 @@
     if (x.auto === true && typeof x.text === 'string') x.text = window.aigileI18n.autoMsg(x.text);
     for (const k in x) if (x[k] && typeof x[k] === 'object') autoEn(x[k], depth + 1);
   }
+  // 卡片的狀態：伺服器回 status＝專案自訂的狀態名稱、category＝狀態類別、statusId。
+  // 網頁裡的流程判斷（已完成、受阻、待確認…）一律看類別，所以收到時把 status 換成類別、名稱放 statusName（顯示用 stName(c)）
+  function cardSt(x, depth = 0) {
+    if (!x || typeof x !== 'object' || depth > 6) return;
+    if (Array.isArray(x)) { for (const v of x) cardSt(v, depth + 1); return; }
+    if (x.cardId && typeof x.category === 'string' && 'statusId' in x && !('statusName' in x)) { x.statusName = x.status; x.status = x.category; }
+    for (const k in x) if (x[k] && typeof x[k] === 'object') cardSt(x[k], depth + 1);
+  }
+  // 專案的看板狀態（順序＝看板欄順序，來自 /api/projects）；顯示卡片狀態用 stName（c.status 已換成狀態類別，見 cardSt）
+  const projStatuses = pj => state.projectList?.find(p => p.id === pj)?.statuses || [];
+  const stName = c => c.statusName ?? c.status;
+  // 專案看板的欄／篩選鍵：每個類別第一個狀態用類別名稱（沒自訂過的專案跟以前一樣），其他用 s:狀態 ID
+  const stKeys = sts => sts.map((s, i) => ({ ...s, key: sts.findIndex(x => x.category === s.category) === i ? s.category : 's:' + s.id }));
   async function api(path, { method = 'GET', body, timeoutMs = 0 } = {}) {
     // 輪詢要設逾時，否則網路卡住時 fetch 可能永遠不回來，整個輪詢跟著停
     const ctl = timeoutMs ? new AbortController() : null;
@@ -64,6 +77,7 @@
     } finally { clearTimeout(timer); }
     const data = await r.json().catch(() => ({}));
     if (r.ok && window.aigileI18n?.lang === 'en') autoEn(data);
+    if (r.ok) cardSt(data);
     if (!r.ok) {
       const msg = data?.error?.message || `HTTP ${r.status}`;
       const err = new Error(window.aigileI18n ? window.aigileI18n.err(data?.error?.code, msg) : msg); // 英文介面：依錯誤代碼顯示英文
@@ -1127,7 +1141,7 @@
   function capsuleHtml(raw) {
     const id = cardIdNorm(raw), c = work.cards.get(id);
     if (!c) return work.loaded ? `<button type="button" class="cap cap-miss" data-cap="${esc(id)}" title="點一下查看">${esc(id)}</button>` : esc(id); // 點了再問伺服器（別專案／已封存／不存在）
-    return `<button type="button" class="cap" data-cap="${esc(id)}" data-st="${esc(c.status)}" title="${esc(id)}">${esc(id)}<i class="cdot" aria-hidden="true"></i>${esc(shownName(c.status))}</button>`; // 膠囊在訊息內文裡（畫面翻譯不碰），狀態自己換成英文
+    return `<button type="button" class="cap" data-cap="${esc(id)}" data-st="${esc(c.status)}" title="${esc(id)}">${esc(id)}<i class="cdot" aria-hidden="true"></i>${esc(shownName(stName(c)))}</button>`; // 膠囊在訊息內文裡（畫面翻譯不碰），狀態自己換成英文
   }
 
   function subLine(a, pj) {
@@ -1400,7 +1414,7 @@
     const who = msgs.slice(0, -1).map(m => `${m.author.name} ${shownName(tagOf(m.text) || '留言')}`); // 標籤照畫面語言（英文介面顯示英文），名字照原文
     const earlier = [...new Set(who)].slice(0, 4).join(L('、', ', ')) + (new Set(who).size > 4 ? '…' : '');
     return `<section class="cgrp" data-grp="${esc(key)}" aria-label="${esc(`卡片 ${cid}${title ? ' ' + title : ''}，${msgs.length} 則訊息`)}">
-      <button type="button" class="cg-head" data-cap="${cid}"><span class="cg-dot ${c ? ST_DOT[c.status] || 'todo' : 'todo'}" aria-hidden="true"></span><b>${esc(ckey(cid))}</b><span class="cg-title">${esc(title)}</span>${c ? `<span class="cg-st">${esc(shownName(c.status))}</span>` : ''}<span class="cg-meta">${msgs.length} 則 · ${tOnly(last.createdAt)} ›</span></button>
+      <button type="button" class="cg-head" data-cap="${cid}"><span class="cg-dot ${c ? ST_DOT[c.status] || 'todo' : 'todo'}" aria-hidden="true"></span><b>${esc(ckey(cid))}</b><span class="cg-title">${esc(title)}</span>${c ? `<span class="cg-st">${esc(shownName(stName(c)))}</span>` : ''}<span class="cg-meta">${msgs.length} 則 · ${tOnly(last.createdAt)} ›</span></button>
       ${many ? `<button type="button" class="cg-more" data-grp-open="${esc(key)}" aria-expanded="false">▸ 前面 ${n} 則：<span class="cg-who" data-nt>${esc(earlier)}</span></button>` : slimMode() && n > 0 ? `<button type="button" class="cg-more" data-grp-close="${esc(key)}" aria-expanded="true">▾ 收起前面 ${n} 則</button>` : ''}
       ${shown.map(m => groupMsgHtml(m, ids, cid)).join('')}
       <button type="button" class="cg-reply" data-grp-reply="${esc(msgs[msgs.length - 1].messageId)}">回覆這張卡…</button>
@@ -1443,7 +1457,7 @@
     const title = c ? `<span class="cr-title">${esc(c.title)}</span>` : '';
     if (!own) return `<button type="button" class="cardref cr-reply" data-cap="${id}" aria-label="${esc(`回覆 ${id} ${c?.title || ''}，打開卡片`)}"><span aria-hidden="true">↳</span> 回覆 <b>${esc(ckey(id))}</b>${title}</button>`;
     if (own === prevCard) return `<button type="button" class="cardref cr-same" data-cap="${id}" aria-label="${esc(`同一張卡 ${ckey(id)}，打開卡片`)}">${esc(ckey(id))}</button>`; // 連續同一張卡只第一則完整
-    return `<button type="button" class="cardref" data-cap="${id}" aria-label="${esc(`${id} ${c?.title || ''} ${c?.status || ''}，打開卡片`)}"><span aria-hidden="true">🗂</span><b>${esc(ckey(id))}</b>${title}${c ? `<span class="cr-st">${esc(c.status)} ›</span>` : ''}</button>`;
+    return `<button type="button" class="cardref" data-cap="${id}" aria-label="${esc(`${id} ${c?.title || ''} ${c ? stName(c) : ''}，打開卡片`)}"><span aria-hidden="true">🗂</span><b>${esc(ckey(id))}</b>${title}${c ? `<span class="cr-st">${esc(stName(c))} ›</span>` : ''}</button>`;
   }
   // ---------- AI 訊息：白話結論在前、細節收合 ----------
   // 去掉開頭的 [標籤]、【專案名】、交接的「卡號 卡名 → @誰：」；第一段（第一個空行前）當結論，沒有空行就前兩行
@@ -2862,6 +2876,7 @@
   const isMeRef = r => r && r.participantId === meId();
   const closedSt = s => s === '已完成' || s === '已封存';
   const stPill = s => `<span class="cst" data-st="${esc(s)}">${esc(s)}</span>`;
+  const stPillOf = c => `<span class="cst" data-st="${esc(c.status)}">${esc(stName(c))}</span>`;
   const NOTE = '人類紀錄'; // 人類記內容，AI 不主動看到（給卡號才讀）
   const typeTag = c => (c.type !== '工作' && c.type !== NOTE ? `<span class="ctype" data-ty="${esc(c.type)}">${esc(c.type)}</span>` : '');
   const cidHtml = c => `<span class="cid">${c.type === NOTE ? '<span aria-label="人類紀錄">🔒</span> ' : ''}${esc(c.cardId)}</span>`; // ；只顯示專案卡號
@@ -3536,8 +3551,15 @@
         ${list.length > 3 ? `<button type="button" class="link small" data-filter="${cls === 'done' ? '已完成' : cls === 'blocked' ? '受阻' : 'open'}">查看全部 ${list.length} 張</button>` : ''}
         ${extra}
       </section>`;
-    const chips = [['open', '未完成', all.filter(c => !closedSt(c.status)).length], ...CARD_ST.map(s => [s, s === '已完成' ? '已完成（7 天）' : s, s === '已封存' ? work.archived.count : all.filter(c => c.status === s).length])];
-    const listed = all.filter(c => (work.filter === 'open' ? !closedSt(c.status) : c.status === work.filter));
+    // 在某個專案裡：依這個專案的狀態篩選（s:狀態 ID）；第一層、跨專案頻道：依狀態類別
+    const pv = projectView(), sts = pv !== 'hub' && pv !== 'cross' ? projStatuses(pv) : [];
+    const inSt = s => c => c.status === s.category && c.statusId === s.id;
+    const stChips = stKeys(sts);
+    const chips = [['open', '未完成', all.filter(c => !closedSt(c.status)).length], ...(sts.length
+      ? [...stChips.map(s => [s.key, s.category === '已完成' && s.name === '已完成' ? '已完成（7 天）' : s.name, all.filter(inSt(s)).length]), ['已封存', '已封存', work.archived.count]]
+      : CARD_ST.map(s => [s, s === '已完成' ? '已完成（7 天）' : s, s === '已封存' ? work.archived.count : all.filter(c => c.status === s).length]))];
+    const chipSt = stChips.find(s => s.key === work.filter);
+    const listed = all.filter(c => (work.filter === 'open' ? !closedSt(c.status) : chipSt ? inSt(chipSt)(c) : c.status === work.filter));
     const archMore = work.filter === '已封存' && work.archived.hasMore ? `<button type="button" class="btn small" data-arch-more ${work.archived.loading ? 'disabled' : ''}>再載入 50 張</button>` : '';
     const sa = work.archSearch, archHits = work.q.trim() && sa.q === work.q.trim() && work.filter !== '已封存' ? sa.items.filter(c => !listed.some(x => x.cardId === c.cardId)) : [];
     const archGroup = archHits.length ? `<div class="arch-group"><button type="button" class="arch-group-head" data-arch-toggle aria-expanded="${sa.open}">已封存 ${archHits.length}（${sa.open ? '點一下收合' : '收合中，點開'}）${sa.open ? '▴' : '▾'}</button>
@@ -3547,14 +3569,14 @@
       ${decSection}
       ${suggHtml()}
       <div class="wpanels">
-        ${panel('要你處理', 'mine', waitMe, myTodo.length ? `有 ${myTodo.length} 張你負責的卡還在待整理，還不用動手。` : '目前沒有要你處理的卡片。', c => `${c.status} · ${c.owner?.name || '未指派'}`,
+        ${panel('要你處理', 'mine', waitMe, myTodo.length ? `有 ${myTodo.length} 張你負責的卡還在待整理，還不用動手。` : '目前沒有要你處理的卡片。', c => `${stName(c)} · ${c.owner?.name || '未指派'}`,
           !waitMe.length && myTodo.length ? '<button type="button" class="link small" data-filter="待整理">看待整理的卡</button>' : '', !waitMe.length && myTodo.length > 0)}
         ${panel('受阻', 'blocked', blocked, '沒有受阻的卡片。', c => waitText(c) || '未填寫阻塞原因')}
         ${panel('最近完成（7 天）', 'done', done, '最近 7 天沒有完成的卡片。', c => `${c.verified ? (archiveLeftMs(c) < DAY_MS ? '已驗證 · 明天收起' : '已驗證') : pendingDays(c) > ARCHIVE_DAYS ? `待驗證 ${pendingDays(c)} 天` : '待驗證'} · ${c.done?.by?.name || ''} · ${shortTime(c.done?.at || c.updatedAt)}`,
           work.archived.count ? `<button type="button" class="link small" data-filter="已封存">更早的 ${work.archived.count} 張已封存</button>` : '')}
       </div>
       <div class="wchips" role="group" aria-label="依狀態篩選">
-        ${chips.map(([v, label, n]) => `<button type="button" data-filter="${esc(v)}" aria-pressed="${work.filter === v}"${v === '已封存' ? ' class="dashed"' : ''}>${label}<span>${n}</span></button>`).join('')}
+        ${chips.map(([v, label, n]) => `<button type="button" data-filter="${esc(v)}" aria-pressed="${work.filter === v}"${v === '已封存' ? ' class="dashed"' : ''}>${esc(label)}<span>${n}</span></button>`).join('')}
       </div>
       ${work.q.trim() ? '<p class="muted small">搜尋時一併找已封存</p>' : ''}
       <div class="crows">
@@ -3562,7 +3584,7 @@
           <button type="button" class="crow${isMeRef(c.waitFor) ? ' me' : ''}${c.type === NOTE ? ' note' : ''}" data-card="${esc(c.cardId)}">
             ${cidHtml(c)}
             <span class="crow-main"><span class="crow-title">${typeTag(c)}${cardPTag(c)} ${esc(cardTitle(c))}</span><span class="muted small">${c.next ? '下一步：' + esc(c.next) : c.status === '待整理' ? '尚未整理下一步' : '—'}${c.claim ? ' · 正在做：' + esc(c.claim.by?.name || '') : ''}</span></span>
-            <span class="crow-st">${c.type === NOTE ? noteStPill(c) : c.status === '待確認' ? confirmPill(c) : stPill(c.status)}${ownerHtml(c)}</span>
+            <span class="crow-st">${c.type === NOTE ? noteStPill(c) : c.status === '待確認' ? confirmPill(c) : stPillOf(c)}${ownerHtml(c)}</span>
             <span class="crow-wait small ${isMeRef(c.waitFor) ? 'me' : c.status === '受阻' ? 'bad' : ''}">${esc(waitText(c) || '—')}</span>
             <span class="crow-time muted small">${shortTime(c.updatedAt)}${c.status === '已封存' ? archTag(c) : doneTag(c) || markHtml(c)}</span>
           </button>`).join('') : `<p class="muted">${work.filter === '已封存' && work.archived.loading ? '載入中…' : '沒有符合條件的卡片。'}</p>`}
@@ -3939,7 +3961,14 @@
   function boardHtml(all) {
     const BOARD_ORDER = ['待整理', '待處理', '進行中', '受阻', '待確認', '已完成', '已封存']; // 受阻提前到第三欄（待整理有卡才顯示）
     const colName = st => (st === '待確認' ? '待驗收／決定' : st); // 欄裡混著驗收與決定；只改欄名，狀態值不變
-    const cols = wide() ? BOARD_ORDER.filter(s => (s !== '已封存' || work.showArchived) && (s !== '待整理' || all.some(c => c.status === '待整理'))) : [work.mCol];
+    // 在某個專案裡：一欄＝這個專案自訂的一個狀態（data-sid）；第一層、跨專案頻道：一欄＝一個狀態類別。data-col 一律是狀態類別
+    const pv = projectView(), sts = pv !== 'hub' && pv !== 'cross' ? projStatuses(pv) : [];
+    const ARCH = { key: '已封存', cat: '已封存', name: '已封存', has: c => c.status === '已封存' };
+    const allCols = sts.length
+      ? [...stKeys(sts).map(s => ({ key: s.key, sid: s.id, cat: s.category, color: s.color, name: s.name === s.category ? colName(s.category) : s.name, has: c => c.status === s.category && c.statusId === s.id })), ARCH]
+      : BOARD_ORDER.map(st => (st === '已封存' ? ARCH : { key: st, cat: st, name: colName(st), has: c => c.status === st }));
+    const mCol = allCols.find(x => x.key === work.mCol) || allCols.find(x => x.cat === '進行中') || allCols[0]; // 手機：預設第一個「進行中」類別的欄
+    const cols = wide() ? allCols.filter(x => (x.cat !== '已封存' || work.showArchived) && (x.cat !== '待整理' || all.some(x.has))) : [mCol];
     const tile = c => `
       <div class="ctile${isMeRef(c.waitFor) ? ' me' : ''}${c.type === NOTE ? ' note' : ''}" role="button" tabindex="0" data-card="${esc(c.cardId)}" draggable="${wide()}">
         <div class="ctile-top">${cidHtml(c)}${typeTag(c)}${confirmPill(c)}${c.type === NOTE ? (c.mergedInto ? '' : noteStPill(c)) : c.status === '已完成' ? doneTag(c) : c.status === '已封存' ? archTag(c) : markHtml(c)}</div>
@@ -3962,16 +3991,16 @@
         + (work.archived.hasMore ? `<button type="button" class="bfoot" data-arch-more>再載入 50 張</button>` : '');
       return list.length ? list.map(tile).join('') : `<p class="muted small bempty">${wide() ? '拖曳卡片到這裡' : '這個狀態沒有卡片'}</p>`;
     };
-    const mLabel = st => (st === '已完成' ? '已完成（7 天）' : colName(st));
+    const mLabel = x => (x.cat === '已完成' && x.name === '已完成' ? '已完成（7 天）' : x.name);
     return `
       ${wide() ? `<div class="board-tools"><span class="muted small">拖曳卡片到其他欄可以改狀態</span><span class="grow"></span><span class="muted small">已封存 ${work.archived.count} 張（完成滿 7 天自動收起）</span><button type="button" class="link small" id="toggle-archived">${work.showArchived ? '隱藏已封存' : '顯示已封存'}</button></div>`
-        : `<div class="wchips" role="group" aria-label="狀態">${BOARD_ORDER.map(st => `<button type="button" data-mcol="${esc(st)}" aria-pressed="${work.mCol === st}"${st === '已封存' ? ' class="dashed"' : ''}>${mLabel(st)}<span>${st === '已封存' ? work.archived.count : all.filter(c => c.status === st).length}</span></button>`).join('')}</div>`}
+        : `<div class="wchips" role="group" aria-label="狀態">${allCols.map(x => `<button type="button" data-mcol="${esc(x.key)}" aria-pressed="${mCol === x}"${x.cat === '已封存' ? ' class="dashed"' : ''}>${esc(mLabel(x))}<span>${x.cat === '已封存' ? work.archived.count : all.filter(x.has).length}</span></button>`).join('')}</div>`}
       <div class="board">
-        ${cols.map(s => {
-          const list = all.filter(c => c.status === s);
-          return `<section class="bcol" data-col="${esc(s)}" aria-label="${esc(colName(s))}">
-            <div class="bcol-head"><span class="wdot" data-st="${esc(s)}"></span><b>${esc(colName(s))}</b>${s === '已完成' ? '<span class="small ok-text">最近 7 天</span>' : ''}<span class="wcount${s === '受阻' && list.length ? ' bad' : ''}">${s === '已封存' ? work.archived.count : list.length}</span></div>
-            <div class="bcol-list">${colBody(s, list)}</div>
+        ${cols.map(x => {
+          const list = all.filter(x.has);
+          return `<section class="bcol" data-col="${esc(x.cat)}"${x.sid ? ` data-sid="${x.sid}"` : ''} aria-label="${esc(x.name)}">
+            <div class="bcol-head"><span class="wdot" data-st="${esc(x.cat)}"${x.color ? ` data-color="${esc(x.color)}"` : ''}></span><b>${esc(x.name)}</b>${x.cat === '已完成' ? '<span class="small ok-text">最近 7 天</span>' : ''}<span class="wcount${x.cat === '受阻' && list.length ? ' bad' : ''}">${x.cat === '已封存' ? work.archived.count : list.length}</span></div>
+            <div class="bcol-list">${colBody(x.cat, list)}</div>
           </section>`;
         }).join('')}
       </div>`;
@@ -4160,7 +4189,9 @@
     const id = e.dataTransfer.getData('text/plain');
     col.classList.remove('over');
     const c = work.cards.get(id);
-    if (c && c.status !== col.dataset.col) patchCard(id, { status: col.dataset.col });
+    // 專案看板的欄是自訂狀態（送狀態 ID）；跨專案看板的欄是狀態類別
+    if (col.dataset.sid) { if (c && String(c.statusId) !== col.dataset.sid) patchCard(id, { status: col.dataset.sid }); }
+    else if (c && c.status !== col.dataset.col) patchCard(id, { status: col.dataset.col });
   });
 
   async function decideCard(id, result, note) {
@@ -4214,7 +4245,7 @@
       const r = await api(`/api/cards/${encodeURIComponent(id)}`, { method: 'PATCH', body: { ...body, version: c?.version } });
       putCard(r);
       if (render) renderWork(); // 收件匣驗收時由呼叫端先淡出再重畫
-      const focusBlocker = body.status === '受阻' && r.status === '受阻';
+      const focusBlocker = r.status === '受阻' && c?.status !== '受阻'; // 剛改成受阻（狀態可能是名稱或 ID）
       if (work.openId === id || focusBlocker) {
         if (focusBlocker) work.editing = true;
         work.openId = r.cardId;
@@ -4282,7 +4313,9 @@
     if (d.status === '已完成' && !d.verified && !mine && state.me?.memberType === 'human') items.push(actBtn('verify', '驗收通過', '確認做好了，這張卡結案'));
     if (d.status === '已完成') items.push(actBtn('reopen', '重新打開', '還沒好，改回待處理再做'));
     if (!work.editing) items.push(actBtn('edit', '編輯', '改標題、原因、完成條件'));
-    items.push(`<label class="act-btn act-sel"><b>改狀態</b><span>直接改成其他狀態</span><select id="d-status">${CARD_ST.map(s => `<option ${s === d.status ? 'selected' : ''}>${s}</option>`).join('')}</select></label>`);
+    // 選項＝這張卡所在專案的狀態（值是狀態名稱，同專案不重複）＋已封存；沒載入到專案狀態時退回狀態類別
+    const sts = projStatuses(d.project), opts = sts.length ? [...sts.map(s => [s.name, s.name, d.status === s.category && d.statusId === s.id]), ['已封存', '已封存', d.status === '已封存']] : CARD_ST.map(s => [s, s, s === d.status]);
+    items.push(`<label class="act-btn act-sel"><b>改狀態</b><span>直接改成其他狀態</span><select id="d-status">${opts.map(([v, label, on]) => `<option value="${esc(v)}" ${on ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>`);
     items.push(actBtn('copy-id', '複製卡號', '貼到訊息裡'));
     if (state.page === 'messages') items.push(actBtn('open-work', '在工作頁開啟', '在看板上看這張卡'));
     return `<details class="more-acts"><summary>⋯ 其他動作</summary><div class="more-list">${items.join('')}</div></details>`;
@@ -4628,6 +4661,21 @@
       form.waitForId.closest('label').hidden = t === '決策'; // 決策卡固定等決策者
       for (const k of ['next', 'criteria']) form[k].closest('label').hidden = t === '決策';
     }));
+    // 依選的專案：狀態選項＝這個專案「待整理／待處理／進行中」類別的狀態；沒有受阻、待確認類別就不能選阻塞、決策
+    const syncProjectTypes = () => {
+      const sts = projStatuses(form.project.value);
+      if (!sts.length) return;
+      const keep = form.status.value, list = sts.filter(s => ['待整理', '待處理', '進行中'].includes(s.category));
+      form.status.innerHTML = list.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+      if (list.some(s => s.name === keep)) form.status.value = keep;
+      for (const [t, cat] of [['阻塞', '受阻'], ['決策', '待確認']]) {
+        const b = body.querySelector(`[data-nt="${t}"]`), off = !sts.some(s => s.category === cat);
+        b.disabled = off; b.title = off ? `這個專案沒有「${cat}」類別的狀態` : '';
+        if (off && form.type.value === t) body.querySelector('[data-nt="工作"]').click();
+      }
+    };
+    form.project.addEventListener('change', syncProjectTypes);
+    syncProjectTypes();
     if (sg) { // 預填建議內容；決策類型與狀態不適用
       const c = sg.create;
       body.querySelector('[data-nt="決策"]').hidden = true;
@@ -4648,7 +4696,7 @@
       const data = Object.fromEntries(new FormData(form));
       for (const k of Object.keys(data)) data[k] = data[k].trim();
       data.project = form.project.value; // 單一專案成員的欄位是 disabled，FormData 不會帶
-      if (form.status.disabled) delete data.status;
+      if (form.status.disabled || data.type === NOTE) delete data.status; // 人類紀錄一律進行中（伺服器預設）
       if (data.type !== '決策') for (const k of ['question', 'recommendation', 'options', 'impact', 'deciderId', 'afterNext']) delete data[k];
       else { delete data.waitForId; if (!data.options) data.options = []; else data.options = data.options.split('\n'); }
       if (!data.ownerId) delete data.ownerId;
@@ -9376,6 +9424,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="slug">網址英文名…<span class="pm-sub">/p/${esc(p.slug || p.id)}</span></button>
           <button type="button" role="menuitem" data-pp="code">專案代號…<span class="pm-sub">${esc(p.code || '')}-1、${esc(p.code || '')}-2…</span></button>
           <button type="button" role="menuitem" data-pm-repo="${esc(p.id)}">程式庫設定</button>
+          <button type="button" role="menuitem" data-pp="statuses">看板狀態…<span class="pm-sub">${(p.statuses || []).length} 個</span></button>
           <button type="button" role="menuitem" data-pp="dm">${p.dm?.on ? '關閉私訊…' : '開放成員私訊自己的 AI…'}<span class="pm-sub">${p.dm?.on ? `已開放${p.dm.at ? ' · ' + esc(mmdd(p.dm.at)) : ''}${p.dm.byName ? ' ' + esc(p.dm.byName) + ' 打開' : ''}` : '預設關'}</span></button>
           <button type="button" role="menuitem" data-pp="log">異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>封存…${blocked ? `<span class="pm-sub">${esc(why)}</span>` : ''}</button></div>` : '';
@@ -9400,6 +9449,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="rename">✏️ 改名</button>
           <button type="button" role="menuitem" data-pm-repo="${esc(p.id)}">🔗 程式庫與分支</button>
           <button type="button" role="menuitem" data-pp="members">👥 成員與本專案角色</button>
+          <button type="button" role="menuitem" data-pp="statuses">🗂 看板狀態<span class="pm-sub">${(p.statuses || []).length} 個</span></button>
           <button type="button" role="menuitem" data-pp="log">🕘 異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>🗄 封存專案<span class="pm-sub">${blocked ? esc(why) : '可還原'}</span></button>
           <button type="button" role="menuitem" aria-disabled="true" class="pm-off" data-pp="noop" title="只有管理員能永久刪除">🗑 永久刪除<span class="pm-sub">只有管理員</span></button></div>` : '';
@@ -9412,7 +9462,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <div class="pm-card"><div class="pm-card-head"><strong>你負責的專案 · ${list.filter(p => !p.archived).length}</strong></div>
         ${list.length ? `<table class="pm-table pm-ptable"><thead><tr><th scope="col">專案</th><th scope="col" class="c-code">API 代號</th><th scope="col" class="c-num">成員</th><th scope="col" class="c-num2">未結案卡</th><th scope="col" class="c-repo">程式庫</th><th scope="col" class="c-more"><span class="sr-only">動作</span></th></tr></thead>
         <tbody>${rows}</tbody></table>` : '<p class="muted small pm-pad">你目前不是任何專案的 leader。</p>'}</div>
-      <div class="pm-card pm-lead-note"><p class="muted small">leader 能做：改名、程式庫與分支、成員與本專案角色、封存（可還原）。新增專案、永久刪除、跨專案角色、邀請、帳號只有管理員能做。</p></div></div>`;
+      <div class="pm-card pm-lead-note"><p class="muted small">leader 能做：改名、程式庫與分支、成員與本專案角色、看板狀態、封存（可還原）。新增專案、永久刪除、跨專案角色、邀請、帳號只有管理員能做。</p></div></div>`;
   }
   // 已永久刪除的專案（全站紀錄，只有管理員）；第一次畫才去讀
   function permDelsHtml() {
@@ -9426,18 +9476,139 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     return `<details class="pm-card pm-dels"><summary>已永久刪除的專案 · ${list.length}</summary><ul class="pm-dels-list">${list.map(d => `<li><b>${esc(d.name)}</b>${d.code ? ` <span class="muted small">${esc(d.code)}</span>` : ''}
       <span class="muted small">${esc(d.byName || '')} · ${esc(shortTime(d.at))}</span><span class="muted small">訊息 ${d.counts?.messages ?? 0} 則、卡片 ${d.counts?.cards ?? 0} 張、文件 ${d.counts?.docs ?? 0} 份</span></li>`).join('')}</ul></details>`;
   }
-  // 新增專案彈窗：名稱＋程式庫＋分支（選填）一次填完
+  // ---------- 看板狀態（每個專案自訂；GLOSSARY：狀態、狀態類別、必要類別） ----------
+  const ST_CATS = ['待整理', '待處理', '進行中', '受阻', '待確認', '已完成']; // 已封存由系統管理，不能選
+  const ST_REQ = ['待處理', '進行中', '已完成'];
+  const ST_COLORS = ['gray', 'indigo', 'blue', 'green', 'amber', 'orange', 'red', 'violet'];
+  const ST_COLOR_NAME = { gray: '灰', indigo: '靛', blue: '藍', green: '綠', amber: '黃', orange: '橘', red: '紅', violet: '紫' };
+  const ST_CAT_COLOR = { 待整理: 'gray', 待處理: 'indigo', 進行中: 'amber', 受阻: 'red', 待確認: 'orange', 已完成: 'green' };
+  const ST_DEFAULT = ['待整理', '待處理', '進行中', '受阻', '待確認', '已完成'].map(c => ({ name: c, category: c, color: ST_CAT_COLOR[c] }));
+  const catLabel = c => (c === '待確認' ? '待確認（驗收／決定）' : c);
+  const catOpts = cur => ST_CATS.map(c => `<option value="${esc(c)}" ${c === cur ? 'selected' : ''}>${esc(catLabel(c))}</option>`).join('');
+  const colorOpts = cur => ST_COLORS.map(c => `<option value="${c}" ${c === cur ? 'selected' : ''}>${ST_COLOR_NAME[c]}</option>`).join('');
+  const ST_HELP = `<p class="muted small">每個狀態是看板上的一欄，名稱、順序、顏色都可以改；「類別」決定系統怎麼對待它（接單、驗收、決策、封存都看類別）。每個專案至少要有一個待處理、進行中、已完成類別的狀態，最多 12 個。拿掉「受阻」就不能建阻塞卡、決策不能暫緩；拿掉「待確認」就不能建決策卡，AI 交給人類時改到進行中。</p>`;
+  function openStatusEditor(pj) {
+    const p = state.projectList.find(x => x.id === pj);
+    if (!p) return;
+    let pending = null; // 要刪的狀態還有卡：{ id, message }，問要搬到哪
+    const base = `/api/projects/${encodeURIComponent(pj)}/statuses`;
+    const body = openModal(`看板狀態 · ${p.name}`, '<div id="st-ed"></div>', { size: 'form', foot: '<button class="btn primary" type="button" data-close>完成</button>' });
+    const host = body.querySelector('#st-ed');
+    const sts = () => p.statuses || [];
+    const draw = (err = '') => {
+      const list = sts();
+      host.innerHTML = `${ST_HELP}
+        <ol class="st-list">${list.map((s, i) => `<li class="st-row" data-sid="${s.id}">
+          <span class="st-grip" draggable="true" data-st-grip title="拖曳排序" aria-hidden="true">⋮⋮</span>
+          <span class="st-swatch" data-color="${esc(s.color)}" aria-hidden="true"></span>
+          <input class="st-name" value="${esc(s.name)}" maxlength="20" aria-label="狀態名稱">
+          <select class="st-cat" aria-label="狀態類別">${catOpts(s.category)}</select>
+          <select class="st-color" aria-label="顏色">${colorOpts(s.color)}</select>
+          <span class="st-acts"><button type="button" class="btn small" data-st-move="-1" ${i === 0 ? 'disabled' : ''} aria-label="往左移">←</button><button type="button" class="btn small" data-st-move="1" ${i === list.length - 1 ? 'disabled' : ''} aria-label="往右移">→</button><button type="button" class="btn small danger-outline" data-st-del>刪除</button></span>
+          ${pending?.id === s.id ? `<div class="st-moveto"><span class="small">${esc(pending.message)}</span><label class="small">搬到<select class="st-target">${list.filter(x => x.id !== s.id).map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></label><button type="button" class="btn small danger" data-st-del-go>搬過去並刪除</button><button type="button" class="link small" data-st-del-cancel>取消</button></div>` : ''}
+        </li>`).join('')}</ol>
+        <form class="st-add" id="st-add"><input name="name" maxlength="20" placeholder="新狀態名稱，例如：測試中" aria-label="新狀態名稱" autocomplete="off"><select name="category" aria-label="狀態類別">${catOpts('進行中')}</select><button class="btn small" type="submit" ${list.length >= 12 ? 'disabled' : ''}>＋ 新增狀態</button></form>
+        <p class="error" role="alert">${esc(err)}</p>`;
+    };
+    // 每次改完：更新專案的狀態清單；改名、改類別、刪除會動到卡片顯示，重讀卡片
+    const done = async (items, reloadCards = false) => {
+      p.statuses = items; pending = null; draw();
+      if (reloadCards && work.loaded) await loadCards().catch(() => {});
+      renderWork();
+    };
+    const run = async (fn, reloadCards) => { try { await done((await fn()).items, reloadCards); } catch (err) { draw(err.message); } };
+    host.addEventListener('change', e => {
+      const row = e.target.closest('.st-row'), id = row?.dataset.sid;
+      if (!id || e.target.classList.contains('st-target')) return;
+      const field = e.target.classList.contains('st-name') ? 'name' : e.target.classList.contains('st-cat') ? 'category' : e.target.classList.contains('st-color') ? 'color' : null;
+      if (!field) return;
+      run(() => api(`${base}/${id}`, { method: 'PATCH', body: { [field]: e.target.value.trim() } }), field !== 'color');
+    });
+    host.addEventListener('click', e => {
+      const row = e.target.closest('.st-row'), id = Number(row?.dataset.sid);
+      const mv = e.target.closest('[data-st-move]');
+      if (mv) {
+        const ids = sts().map(s => s.id), i = ids.indexOf(id), j = i + Number(mv.dataset.stMove);
+        if (j < 0 || j >= ids.length) return;
+        [ids[i], ids[j]] = [ids[j], ids[i]];
+        return run(() => api(`${base}/order`, { method: 'PUT', body: { ids } }), false);
+      }
+      if (e.target.closest('[data-st-del-cancel]')) { pending = null; return draw(); }
+      if (e.target.closest('[data-st-del-go]')) return run(() => api(`${base}/${id}`, { method: 'DELETE', body: { moveTo: Number(row.querySelector('.st-target').value) } }), true);
+      if (e.target.closest('[data-st-del]')) {
+        // 空的直接刪；還有卡的話伺服器回 STATUS_NOT_EMPTY，改成問要搬到哪
+        api(`${base}/${id}`, { method: 'DELETE', body: {} }).then(r => done(r.items, true))
+          .catch(err => { if (err.code === 'STATUS_NOT_EMPTY') { pending = { id, message: err.message }; draw(); } else draw(err.message); });
+      }
+    });
+    // 拖曳排序（桌面）：拖左邊的把手到另一列的上半／下半＝排在它前面／後面；←／→ 按鈕留給鍵盤與手機
+    let dragSid = null;
+    const below = (row, e) => { const r = row.getBoundingClientRect(); return e.clientY > r.top + r.height / 2; };
+    const clearDrag = () => host.querySelectorAll('.st-row.dragging, .st-row.over-before, .st-row.over-after').forEach(r => r.classList.remove('dragging', 'over-before', 'over-after'));
+    host.addEventListener('dragstart', e => {
+      const row = e.target.closest?.('[data-st-grip]')?.closest('.st-row');
+      if (!row) return;
+      dragSid = Number(row.dataset.sid);
+      e.dataTransfer.setData('text/plain', String(dragSid));
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setDragImage?.(row, 12, 12);
+      row.classList.add('dragging');
+    });
+    host.addEventListener('dragover', e => {
+      const row = e.target.closest?.('.st-row');
+      if (!row || dragSid === null) return;
+      e.preventDefault();
+      const after = below(row, e);
+      host.querySelectorAll('.st-row.over-before, .st-row.over-after').forEach(r => r !== row && r.classList.remove('over-before', 'over-after'));
+      row.classList.toggle('over-before', !after); row.classList.toggle('over-after', after);
+    });
+    host.addEventListener('dragend', () => { dragSid = null; clearDrag(); });
+    host.addEventListener('drop', e => {
+      const row = e.target.closest?.('.st-row');
+      if (!row || dragSid === null) return;
+      e.preventDefault();
+      const from = dragSid, to = Number(row.dataset.sid), now = sts().map(s => s.id);
+      dragSid = null; clearDrag();
+      if (from === to) return;
+      const ids = now.filter(id => id !== from);
+      ids.splice(ids.indexOf(to) + (below(row, e) ? 1 : 0), 0, from);
+      if (ids.join() !== now.join()) run(() => api(`${base}/order`, { method: 'PUT', body: { ids } }), false);
+    });
+    host.addEventListener('submit', e => {
+      e.preventDefault();
+      const f = e.target, name = f.name.value.trim();
+      if (!name) return draw('請輸入狀態名稱');
+      run(() => api(base, { method: 'POST', body: { name, category: f.category.value } }), false);
+    });
+    draw();
+  }
+  // 新增專案時的狀態清單（預設＝六欄，可直接增刪改；沒動就不送，伺服器用預設狀態組）
+  function npStatusesHtml(list) {
+    return `<ol class="st-list np-st-list">${list.map((s, i) => `<li class="st-row" data-i="${i}"><span class="st-swatch" data-color="${esc(s.color)}" aria-hidden="true"></span><input class="st-name" value="${esc(s.name)}" maxlength="20" aria-label="狀態名稱"><select class="st-cat" aria-label="狀態類別">${catOpts(s.category)}</select><span class="st-acts"><button type="button" class="btn small" data-np-st-del ${list.length <= 3 ? 'disabled' : ''}>拿掉</button></span></li>`).join('')}</ol>
+      <button type="button" class="link small" data-np-st-add ${list.length >= 12 ? 'disabled' : ''}>＋ 新增一個狀態</button>`;
+  }
+  // 新增專案彈窗：名稱＋程式庫＋分支（選填）一次填完；看板狀態（選填）
   function openNewProject() {
     const body = openModal('新增專案', `<form id="np-form" class="stack">
         <label class="field">專案名稱<input name="name" required maxlength="20" autocomplete="off"></label>
         ${slugFieldHtml('np-slug', '')}
         <label class="field">程式庫連結（選填）<input name="url" maxlength="300" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://github.com/帳號/專案"></label>
         <label class="field">分支（選填）<input name="branch" maxlength="100" autocomplete="off" spellcheck="false" placeholder="main"></label>
+        <details class="np-st"><summary>看板狀態（選填，預設六欄）</summary>${ST_HELP}<div id="np-st"></div></details>
         <p class="muted small" id="pm-new-hint">${esc(newProjText())}，其他成員請到「成員」分頁加入。</p>
         <p class="error" id="np-err" role="alert"></p>
       </form>`, { size: 'narrow', foot: '<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="np-form">新增專案</button>' });
     const f = body.querySelector('#np-form');
     const slugF = bindSlugField(body, 'np-slug', f.name, null);
+    const npSts = ST_DEFAULT.map(s => ({ ...s })), npBox = body.querySelector('#np-st');
+    const npDraw = () => { npBox.innerHTML = npStatusesHtml(npSts); };
+    npDraw();
+    npBox.addEventListener('input', e => { const i = Number(e.target.closest('.st-row')?.dataset.i); if (e.target.classList.contains('st-name')) npSts[i].name = e.target.value; });
+    npBox.addEventListener('change', e => { const i = Number(e.target.closest('.st-row')?.dataset.i); if (e.target.classList.contains('st-cat')) { npSts[i].category = e.target.value; npSts[i].color = ST_CAT_COLOR[e.target.value]; npDraw(); } });
+    npBox.addEventListener('click', e => {
+      if (e.target.closest('[data-np-st-del]')) { npSts.splice(Number(e.target.closest('.st-row').dataset.i), 1); npDraw(); }
+      if (e.target.closest('[data-np-st-add]')) { npSts.push({ name: '', category: '進行中', color: ST_CAT_COLOR['進行中'] }); npDraw(); npBox.querySelector('.st-row:last-child .st-name')?.focus(); }
+    });
     setTimeout(() => f.name.focus(), 30);
     f.addEventListener('submit', async e => {
       e.preventDefault();
@@ -9450,7 +9621,8 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (!sf) return;
       try {
         let r;
-        try { r = await api('/api/projects', { method: 'POST', body: { name, slug: sf.auto ? '' : sf.slug } }); }
+        const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
+        try { r = await api('/api/projects', { method: 'POST', body: { name, slug: sf.auto ? '' : sf.slug, ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
         catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
         let repoErr = '';
         if (url) { try { await api(`/api/projects/${encodeURIComponent(r.id)}/repo`, { method: 'PUT', body: { url, branch } }); } catch (e2) { repoErr = e2.message; } }
@@ -9933,6 +10105,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     }
     if (a === 'noop') { drawPerm(); return toast('只有管理員能永久刪除專案'); } // PLAT-381
     if (a === 'members') return psetAct('members', id);
+    if (a === 'statuses') { drawPerm(); return openStatusEditor(id); }
     if (a === 'groupname') {
       const name = $('#pm-group-name').value.trim();
       if (!name) return toast('請輸入群組名稱');

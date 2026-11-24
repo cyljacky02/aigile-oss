@@ -34,6 +34,7 @@ const schema = fs.readFileSync(path.join(root, 'src', 'schema.sql'), 'utf8');
   assert.equal(queryToPg('SELECT id FROM m WHERE id = ? AND +author_id = ?').text, 'SELECT id FROM m WHERE id = $1 AND author_id = $2', '索引提示 + 拿掉');
   assert.equal(queryToPg('SELECT a + b FROM t').text, 'SELECT a + b FROM t', '一般的加號不動');
   assert.equal(queryToPg("SELECT CAST(value AS INTEGER) FROM s").text, 'SELECT CAST(value AS BIGINT) FROM s');
+  assert.equal(queryToPg('UPDATE c SET x = 1 WHERE EXISTS (SELECT 1 FROM s WHERE s.id = ? /* FOR SHARE */)').text, 'UPDATE c SET x = 1 WHERE EXISTS (SELECT 1 FROM s WHERE s.id = $1 FOR SHARE)', '列鎖記號 → FOR SHARE');
   assert.match(queryToPg('PRAGMA table_info(cards)').text, /information_schema\.columns[\s\S]*table_name = 'cards'[\s\S]*column_name <> 'rowid'/);
   assert.equal(queryToPg("SELECT json_extract(s.payload, '$.project') FROM s").text, "SELECT (s.payload::json ->> 'project') FROM s");
   assert.equal(queryToPg("SELECT instr(files, 'x') FROM s WHERE json_valid(payload)").text, "SELECT strpos(files, 'x') FROM s WHERE pg_input_is_valid(payload, 'json')", 'instr、json_valid');

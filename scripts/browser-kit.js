@@ -50,8 +50,10 @@ export async function untilStarted(p, fn, label) {
   }
 }
 // 無頭 Chrome（CI 的 Ubuntu、容器不給開沙盒，要關掉）：偵錯埠由 Chrome 自己挑、寫在設定資料夾的 DevToolsActivePort，不會跟別的程式撞埠；回傳第一個分頁
+// Windows 用系統管理員權限跑測試時，Chrome／Edge 會自己用一般權限重開一份、原本的立刻結束（exit 0），
+// 測試就看到「瀏覽器提早結束（0）」、重開的那份變成沒人管的孤兒；--do-not-de-elevate 叫它不要重開（非管理員跑時沒有影響）
 export function openChrome(kids, profile, width, height) {
-  const p = spawnLogged(kids, findBrowser(), [...(process.env.CI ? ['--no-sandbox'] : []), '--headless=new', '--lang=zh-TW', '--accept-lang=zh-TW', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', `--window-size=${width},${height}`, 'about:blank']);
+  const p = spawnLogged(kids, findBrowser(), [...(process.env.CI ? ['--no-sandbox'] : []), ...(process.platform === 'win32' ? ['--do-not-de-elevate'] : []), '--headless=new', '--lang=zh-TW', '--accept-lang=zh-TW', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', `--window-size=${width},${height}`, 'about:blank']);
   return untilStarted(p, async () => {
     const port = fs.readFileSync(path.join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0].trim();
     return (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(t => t.type === 'page');
