@@ -13,6 +13,11 @@
 export const DEFAULT_WORKSPACE = 'default';
 export const PROJECT_ROLE = Object.freeze({ ADMIN: 'admin', MEMBER: 'member', VIEWER: 'viewer' });
 const PR = PROJECT_ROLE;
+// 收到的專案角色要是 admin／member／viewer 其中之一；不是就丟 invalid(訊息)（專案成員端點、邀請共用）
+export function readProjectRole(v, invalid) {
+  if (!Object.values(PR).includes(v)) throw invalid('role 需為 admin（專案管理員）、member（專案成員）或 viewer（唯讀成員）');
+  return v;
+}
 // 工作區角色（participants.workspace_role）：admin＝工作區管理員、member＝成員
 export const WORKSPACE_ROLE = Object.freeze({ ADMIN: 'admin', MEMBER: 'member' });
 const WR = WORKSPACE_ROLE;

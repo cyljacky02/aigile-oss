@@ -6,7 +6,7 @@
 // 再加帳號密碼（人類自己設）與主機救援連結（只救平台管理員，只能在主機用 npm run admin-rescue 產生）。
 import { hashPassword, verifyPassword, normUsername, validUsername, USERNAME_RULE, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
 import { ACCESS_ROLE } from './access.js';
-import { PROJECT_ROLE } from './membership.js';
+import { PROJECT_ROLE, readProjectRole as readRoleOf } from './membership.js';
 
 // 邀請連結有效時間可選（預設 24 小時）；照舊只能用一次
 export const INVITE_TTLS = { '15m': 15 * 60_000, '1h': 3_600_000, '24h': 86_400_000, '7d': 7 * 86_400_000 };
@@ -252,7 +252,7 @@ export function registerLogin(d) {
 
   // ---------- 邀請 ----------
   const listOf = s => String(s || '').split(',').map(x => x.trim()).filter(x => PROJECTS.includes(x));
-  const readProjectRole = v => { if (!Object.values(PROJECT_ROLE).includes(v)) throw invalid('role 需為 admin（專案管理員）、member（專案成員）或 viewer（唯讀成員）'); return v; };
+  const readProjectRole = v => readRoleOf(v, invalid);
   const inviteStatus = (iv, now = Date.now()) => (iv.used_at ? '已使用' : iv.revoked_at ? '已取消' : iv.expires_at <= now ? '已過期' : '有效');
   // 邀請種類：new＝新的人（接受時建帳號）、rejoin＝已移出工作區的人用原本的帳號回來、reset＝管理員「重設登入」給的新連結
   const inviteKind = iv => (!iv.participant_id ? 'new' : roleJson(iv.role)?.__rejoin ? 'rejoin' : 'reset');

@@ -7,7 +7,7 @@
 import { ROLES, SETTING_FIELDS } from './roles.js';
 import { registerCards, teamCards, workFrom, autoArchive, claimsOf, CLAIM_LOG } from './cards.js';
 import { createStatuses, registerStatusRoutes, firstStatusSql, readStatusList } from './statuses.js'; // 專案看板狀態
-import { createMembership, DEFAULT_WORKSPACE, PROJECT_ROLE, WORKSPACE_ROLE } from './membership.js'; // 成員資格：誰在哪些專案、專案角色
+import { createMembership, DEFAULT_WORKSPACE, PROJECT_ROLE, WORKSPACE_ROLE, readProjectRole as readRoleOf } from './membership.js'; // 成員資格：誰在哪些專案、專案角色
 import { registerLogin } from './login.js';
 import { registerSkills, KEYISH } from './skills.js'; // 角色技能庫
 import { registerJoin, joinOpen } from './join.js'; // 申請加入專案
@@ -1891,9 +1891,8 @@ ${ending}`;
   // 專案管理員（含工作區管理員的隱含權限）從工作區成員挑人加入、移出、設定專案角色、任免其他專案管理員；
   // 不能把工作區以外的人加進來（邀請進工作區是工作區管理員的事），也不能動工作區管理員（對方的上層管理權）。
   // 舊的成員矩陣（PUT /api/members/matrix）、整批名單（PUT /api/projects/:id/members）已移除，回 410（成員一律逐個專案加入）。
-  const PROJECT_ROLES = Object.values(PROJECT_ROLE);
   const PROJECT_ROLE_NAME = { [PROJECT_ROLE.ADMIN]: '專案管理員', [PROJECT_ROLE.MEMBER]: '專案成員', [PROJECT_ROLE.VIEWER]: '唯讀成員' };
-  const readProjectRole = v => { if (!PROJECT_ROLES.includes(v)) throw invalid('role 需為 admin（專案管理員）、member（專案成員）或 viewer（唯讀成員）'); return v; };
+  const readProjectRole = v => readRoleOf(v, invalid);
   // 私人專案對看不到的人＝沒有這個專案：先判斷看不看得到（含封存的），才說「已封存」
   async function memberProject(id, me, { archivedOk = false } = {}) {
     await loadProjects(true);
