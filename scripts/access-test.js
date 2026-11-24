@@ -141,13 +141,17 @@ try {
   assert.equal(await code(access.check(ctx, bot, 'manage_workspace', 'workspace')), 'NOT_ADMIN');
   console.log('✓ AI 不能做管理動作');
 
-  // 名冊可見範圍（誰看得到誰）
+  // 名冊可見範圍（誰看得到誰）：成員名冊（#13）所有工作區成員都看得到所有人
   assert.ok(v.can(admin, 'see_member', { target: sider }), '在所有專案的人看得到所有人');
   assert.ok(v.can(member, 'see_member', { target: lead }), '同專案看得到');
-  assert.ok(!v.can(member, 'see_member', { target: sider }), '不同專案看不到');
-  assert.ok(!v.can(member, 'see_member', { target: loner }));
-  assert.ok(v.can(lead, 'see_member', { target: loner }), 'leader 看得到還沒有專案的人類（才能加進來）');
+  assert.ok(v.can(member, 'see_member', { target: sider }), '不同專案也看得到');
+  assert.ok(v.can(member, 'see_member', { target: loner }), '還沒有專案的人也看得到');
+  assert.ok(v.can(bot, 'see_member', { target: loner }), 'AI 也是工作區成員');
+  assert.ok(v.can(plat, 'see_member', { target: loner }), '平台管理員（隱含權限）');
+  assert.ok(!v.can(gone, 'see_member', { target: loner }), '已移出工作區的人看不到');
   assert.ok(v.can(loner, 'see_member', { target: loner }), '看得到自己');
+  assert.ok(v.can(admin, 'see_removed_members', 'workspace') && v.can(plat, 'see_removed_members', 'workspace'), '工作區管理員看得到已移出的人');
+  assert.ok(!v.can(member, 'see_removed_members', 'workspace') && !v.can(bot, 'see_removed_members', 'workspace'));
   assert.ok(v.can(member, 'see_ai_state', { target: bot }));
   assert.ok(!v.can(sider, 'see_ai_state', { target: bot }));
   console.log('✓ 名冊可見範圍');

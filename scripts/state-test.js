@@ -98,7 +98,7 @@ const call = async (token, p, method = 'GET', body, raw) => {
     assert.equal((await call(bank.token, `/api/participants/${plat.participantId}/state`)).status, 403, '第二專案 AI 看不到預設專案 AI');
     const tsLiu = (await call(boss.token, '/api/team-status')).body.members;
     assert.ok(tsLiu.find(m => m.participantId === plat.participantId).aiState, 'team-status 帶同專案 AI 的工作記憶');
-    assert.ok(!tsLiu.some(m => m.participantId === bank.participantId), 'team-status 不列別專案的成員');
+    assert.equal(tsLiu.find(m => m.participantId === bank.participantId)?.aiState, null, 'team-status 列所有工作區成員（#13），但別專案 AI 的工作記憶看不到');
     const tsPercy = (await call(amy.token, '/api/team-status')).body.members;
     assert.ok(tsPercy.find(m => m.participantId === bank.participantId).aiState?.currentTask, '兩邊成員看得到全部');
     assert.equal(percyId.length > 0, true);

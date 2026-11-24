@@ -1,6 +1,6 @@
 // 畫面測試：平台設定頁（#9）只有平台管理員看得到且可操作
 // A. 平台管理員：管理員設定左側有「平台設定」；頁面有版本、附件保存時間預設、示範資料、備份；改附件保存預設會存進平台設定
-// B. 工作區管理員（不是平台管理員）：左側沒有「平台設定」，打 /admin/system 只看到待處理；帳號頁有「移出工作區…」、沒有「停用…」
+// B. 工作區管理員（不是平台管理員）：左側沒有「平台設定」，打 /admin/system 只看到待處理；成員名冊有「移出工作區…」、沒有「停用…」
 // C. 工作區設定：附件保存時間可以「跟平台預設」或覆寫
 // D. 375 不橫向捲動
 // 本機暫存資料庫＋無頭 Chrome／Edge。用法：node scripts/platform-settings-ui-test.js
@@ -27,8 +27,8 @@ try {
   assert.ok(!(await nav()).includes('system'), '工作區管理員左側沒有平台設定');
   assert.ok(!(await js("!!document.querySelector('#adm-ttl')")), '打平台設定的網址也看不到平台設定');
   assert.match(await js("document.querySelector('.adm-main h3').innerText"), /待處理/, '退回待處理');
-  await click('[data-adm="accounts"]');
-  await until(() => js("!!document.querySelector('.adm-acc')"), 8000, '帳號與救援');
+  await login(chen.token, '/roster'); // 移出、停用的入口在成員名冊（#13）
+  await until(() => js(`!!document.querySelector('.rs-table [data-pm-remove="${wang.participant.participantId}"]')`), 10000, '成員名冊');
   assert.ok(await js(`!!document.querySelector('[data-pm-remove="${wang.participant.participantId}"]')`), '有「移出工作區…」');
   assert.equal(await js("document.querySelectorAll('[data-pm-disable]').length"), 0, '沒有「停用…」（停用帳號是平台管理員的事）');
   console.log('✓ 工作區管理員看不到平台設定、不能停用帳號');
@@ -44,9 +44,8 @@ try {
   await js("(() => { const s = document.querySelector('#adm-ttl'); s.value = '6'; s.dispatchEvent(new Event('change', { bubbles: true })); document.querySelector('[data-pp=\"filettl\"]').click(); return true; })()");
   await until(async () => (await call(boss.token, '/api/platform/settings')).body.fileTtl?.hours === 6, 8000, '平台預設存成 6 小時');
   assert.equal((await call(wang.token, '/api/file-ttl')).body.hours, 6, '沒覆寫的工作區跟著平台預設');
-  await click('[data-adm="accounts"]');
-  await until(() => js("!!document.querySelector('.adm-acc')"), 8000, '帳號與救援');
-  assert.ok(await js(`!!document.querySelector('[data-pm-disable="${wang.participant.participantId}"]')`), '平台管理員有「停用…」');
+  await login(boss.token, '/roster');
+  await until(() => js(`!!document.querySelector('.rs-table [data-pm-disable="${wang.participant.participantId}"]')`), 10000, '平台管理員在成員名冊有「停用…」');
   console.log('✓ 平台管理員看得到、能改平台設定');
 
   // ---- C 工作區設定：覆寫附件保存時間 ----

@@ -349,14 +349,16 @@ const msg = (tok, text, extra = {}) => call(tok, '/api/messages', 'POST', { requ
     await put(boss.token, percyId, ['第二專案']);
     assert.deepEqual((await call(boss.token, '/api/projects')).body.projectAdmins['預設專案'], [], '移出專案時專案管理員身分一起拿掉');
     assert.equal((await addToProject(call, amy.token, '預設專案', [bank.participantId])).status, 403, '不再是專案管理員就不能改');
-    // ===== ：成員名單、團隊狀態依專案 =====
+    // ===== ：成員名單、團隊狀態（#13 起列所有工作區成員；專案與工作內容依專案）=====
     await put(boss.token, plat.participantId, ['預設專案']); await put(boss.token, bank.participantId, ['第二專案']);
     const pp = (await call(plat.token, '/api/participants')).body.items.map(p => p.participantId);
-    assert.ok(pp.includes(plat.participantId) && !pp.includes(bank.participantId), '只屬平台的成員拿不到只屬第二專案的人');
+    assert.ok(pp.includes(plat.participantId) && pp.includes(bank.participantId), '成員名冊（#13）：只屬平台的成員也看得到只屬第二專案的人');
+    assert.deepEqual((await call(plat.token, '/api/participants')).body.items.find(p => p.participantId === bank.participantId).projects, [], '但看不到他在別專案（不露出別專案名稱）');
     assert.ok(pp.includes(bossId), '在所有專案的管理員看得到');
     assert.deepEqual((await call(plat.token, '/api/participants')).body.items.find(p => p.participantId === bossId).projects, ['預設專案'], '別人的專案只列自己也在的（不露出別專案名稱）');
     const ts = (await call(plat.token, '/api/team-status')).body.members.map(m => m.participantId);
-    assert.ok(!ts.includes(bank.participantId), '團隊狀態也依專案');
+    assert.ok(ts.includes(bank.participantId), '團隊狀態也列所有工作區成員（#13）');
+    assert.equal((await call(plat.token, '/api/team-status')).body.members.find(m => m.participantId === bank.participantId).status, null, '別專案的人的工作內容照舊看不到');
     assert.ok((await call(boss.token, '/api/participants')).body.items.some(p => p.participantId === bank.participantId), '兩邊都屬的人看得到全部');
     assert.deepEqual((await call(plat.token, '/api/projects')).body.items.map(p => p.id), ['預設專案'], '專案清單只回自己所屬的專案');
     assert.ok((await call(boss.token, '/api/projects')).body.items.length >= 2, '兩邊都屬的人看得到全部專案');

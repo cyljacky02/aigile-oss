@@ -44,7 +44,7 @@ try {
   await click('#pset-menu [data-pset-act="members"]');
   await until(() => js("!!document.querySelector('.pm-tabs')"), 8000, '成員管理頁');
   assert.match(await crumbs(), /成員管理/, '麵包屑寫成員管理：' + await crumbs());
-  assert.equal(await js("[...document.querySelectorAll('.pm-tabs [data-pm-tab]')].map(b => b.dataset.pmTab).join(',')"), 'members,roles,skills', '成員管理只留成員、角色、技能');
+  assert.equal(await js("[...document.querySelectorAll('.pm-tabs [data-pm-tab]')].map(b => b.dataset.pmTab).join(',')"), 'roster,members,roles,skills', '成員管理：名冊、專案成員、AI 職務、技能');
   assert.equal(await js("document.querySelector('[data-pm-proj][aria-current=\"true\"], .pm-plist [data-pm-proj].sel, [data-pm-proj].on')?.dataset.pmProj || document.querySelector('.pm-detail h3, .pm-dhead b')?.textContent || ''").then(v => /預設專案/.test(v)), true, '選好預設專案');
   // 頂端連到管理員設定：沒有分頁、有左側目錄
   await click('.work-title [data-adm=""]');

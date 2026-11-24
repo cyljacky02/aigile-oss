@@ -16,6 +16,7 @@ import { registerKbPages } from './kb-pages.js'; // 知識頁、整理卡
 import { registerBackup } from './backup.js'; // 備份匯出與匯入
 import { registerUpdateCheck } from './update.js'; // 管理頁「有新版本」
 import { registerDemo } from './demo.js'; // 示範資料
+import { registerRoster } from './roster.js'; // 成員名冊
 import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
 import { createWorkspaceSettings, CREATE_PROJECTS } from './workspace-settings.js'; // 工作區設定（誰可以建立專案）
 import { optionWarnings } from './questions.js';
@@ -2906,8 +2907,7 @@ ${ending}`;
     await access.check(ctx, me, 'see_ai_state', { target });
     return (await readState(target.id)) || { state: null, updatedAt: null };
   });
-  // 名冊可見範圍（誰看得到誰）：權限模組的 see_member
-  // 不屬於全部專案的成員，只看得到同專案的人；專案管理員另外看得到「還沒有任何專案」的人類
+  // 名冊可見範圍（誰看得到誰）：權限模組的 see_member（工作區成員看得到工作區裡所有人；成員名冊 GET /api/roster 見 src/roster.js）
   // ---------- 停用／恢復成員、交出管理員（只有管理員） ----------
   // 停用：所有裝置登出、登入碼與配對碼作廢、他的 AI 的 Token 全部換掉（恢復後要主人重發）；名單標「已停用」。資料、卡片、訊息都留著
   async function humanTarget(ctx, me, id) {
@@ -3756,6 +3756,7 @@ ${ending}`;
       if (p && access.readOnlyIn(p, pj)) throw new ApiError(400, 'READ_ONLY_MEMBER', `${p.name} 在「${nameOf(pj)}」是唯讀，不能當負責人、交接對象或決策者。`);
     }
   }
+  registerRoster({ route, db, access, peopleMap, membership, PROJECTS, nameOf, loadTitles: () => loadProjectRoles(), isWorkspaceAdmin, isOnline, iso });
   const joinApi = registerJoin({ liveTo: (ids, type, data) => live?.toPeople(ids, type, data), route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf, loadProjects, projectRows: () => projectRows, loadLeaders, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles: () => projRoles, readRole, addReadOnly: membership.addReadOnly, addMemberStmts: membership.addMemberStmts, loadMembers: force => membership.loadMembers(force), invalidatePeople, projEvent });
   // 知識庫管理（補建索引、整理 AI 設定）：群組管理員或這個專案的 leader（人類）
   const kbHooks = {}; // 文件區抽字、上傳、刪除時通知知識頁模組（卡片模組建好後才填）
