@@ -2,7 +2,7 @@
 // A. 頭像選單「管理」：⚙️ 管理員設定（只有管理員、帶待處理數）、📁 專案管理（開管理員設定 › 專案）、👥 成員管理
 // B. 電腦左側小目錄 7 區（待處理、工作區設定、專案、邀請、帳號與救援、稽核與儲存、平台設定）；手機一頁清單點進去
 //    「待處理」件數只在大標題寫一次，卡片不再重複
-// C. 原處改連結：成員管理只留成員、角色、技能；「邀請新的人」開管理員設定 › 邀請；成員詳細的帳號區變一行連結；
+// C. 原處改連結：成員管理有名冊、專案成員、AI 職務、技能；「邀請新的人」開管理員設定 › 邀請；成員詳細的帳號區變一行連結（到成員名冊）；
 //    文件頁稽核只看自己的；舊網址 /members?tab=projects、invites、group、system 自動轉
 // D. 待處理數：加入申請跟左側「要你處理」同一份；後端權限不變（非管理員打 API 照樣擋）
 // E. 1280、375、非管理員看不到；英文介面
@@ -94,7 +94,8 @@ try {
   await shot('4-電腦-專案');
   await sec('accounts', '.adm-acc [data-pm-reset]');
   const acc = await J("({ reset: document.querySelectorAll('.adm-acc [data-pm-reset]').length, dis: document.querySelectorAll('.adm-acc [data-pm-disable]').length, rm: document.querySelectorAll('.adm-acc [data-pm-remove]').length, adm: document.querySelectorAll('.adm-acc [data-pm-wsrole]').length, admOff: document.querySelectorAll('.adm-acc [data-pm-wsrole][disabled]').length, transfer: document.querySelectorAll('.adm-acc [data-pm-admin]').length, rescue: document.querySelector('#adm-rescue')?.innerText || '' })");
-  assert.deepEqual([acc.reset, acc.dis, acc.rm, acc.adm, acc.admOff, acc.transfer], [2, 2, 2, 3, 1, 0], '帳號與救援：自己以外的人類有重設登入、移出工作區、停用（平台管理員）；每位人類（含自己）有升降工作區管理員，自己是最後一位所以停用；沒有交接管理員');
+  assert.deepEqual([acc.reset, acc.dis, acc.rm, acc.adm, acc.admOff, acc.transfer], [2, 0, 0, 0, 0, 0], '帳號與救援：自己以外的人類有重設登入；升降、移出、停用搬到成員名冊（#13）；沒有交接管理員');
+  assert.ok(await js("!!document.querySelector('.adm-main [data-rs-open]')"), '帳號與救援連到成員名冊');
   assert.match(acc.rescue, /APP_URL=https:\/\/你的網址 npm run admin-rescue[\s\S]*npm run admin-rescue -- --local[\s\S]*DATABASE_URL/, '救援指令：Cloudflare、本機／Docker、Postgres');
   assert.ok(await js("document.querySelector('.adm-acc').getBoundingClientRect().right <= document.querySelector('.adm-main').getBoundingClientRect().right + 1"), '1280 帳號表格沒有超出');
   await shot('5-電腦-帳號與救援');
@@ -111,15 +112,18 @@ try {
   await login(liu.token, '/admin/accounts');
   await until(() => js("!!document.querySelector('.adm-nav [data-adm=\"accounts\"].sel')"), 8000, '重新整理停在帳號與救援');
   assert.ok(await js("!document.querySelector('.adm-acc [data-pm-cross]') && !/跨專案角色/.test(document.querySelector('.adm-main').innerText)"), '帳號與救援沒有跨專案角色（#11 已取消）');
-  // 停用 → 已停用的成員出現在帳號與救援
+  // 停用 → 已停用的帳號在成員名冊「所有帳號」（#13；帳號與救援不再列）
   assert.equal((await call(liu.token, `/api/participants/${id(chen)}/disable`, 'POST', {})).status < 300, true, '停用陳大文');
   await login(liu.token, '/admin/accounts');
-  await until(() => js("/陳大文/.test(document.querySelector('.adm-main .pm-disabled')?.textContent || '')"), 8000, '已停用的成員在帳號與救援');
+  await until(() => js("!!document.querySelector('.adm-acc')"), 8000, '帳號與救援');
+  assert.ok(await js("!document.querySelector('.pm-disabled')"), '已停用的帳號不在帳號與救援');
+  await click('.adm-main [data-rs-open]');
+  await until(async () => (await js("location.pathname === '/roster' && !!document.querySelector('.rs-table')")) && (await click('[data-rs-filter="accounts"]')) && /陳大文/.test(await js("document.querySelector('.rs-table')?.innerText || ''")) && await js(`!!document.querySelector('[data-pm-enable="${id(chen)}"]')`), 10000, '已停用的帳號在成員名冊的所有帳號，可以恢復');
 
   // ---------- C 原處改連結 ----------
   await login(liu.token, '/members');
   await until(() => js("!!document.querySelector('.pm-tabs')"), 10000, '成員管理');
-  assert.equal(await js("[...document.querySelectorAll('.pm-tabs [data-pm-tab]')].map(b => b.dataset.pmTab).join(',')"), 'members,roles,skills', 'C 成員管理只留成員、AI 職務、技能');
+  assert.equal(await js("[...document.querySelectorAll('.pm-tabs [data-pm-tab]')].map(b => b.dataset.pmTab).join(',')"), 'roster,members,roles,skills', 'C 成員管理：名冊、專案成員、AI 職務、技能');
   assert.ok(await js("!document.querySelector('[data-pm-invite]')"), 'C 成員管理裡沒有直接邀請');
   assert.ok(await js("!document.querySelector('.pm-disabled')"), 'C 已停用的成員不再放成員管理');
   await click('.pm-detail [data-adm="invites"]');
@@ -129,10 +133,10 @@ try {
   await click('[data-pm-view="byMember"]');
   await until(() => js(`!!document.querySelector('[data-pm-mem="${id(wang)}"]')`), 5000, '依成員');
   await click(`[data-pm-mem="${id(wang)}"]`);
-  await until(() => js("!!document.querySelector('.pm-acc-line [data-adm=\"accounts\"]')"), 5000, '帳號區一行');
+  await until(() => js("!!document.querySelector('.pm-acc-line [data-rs-open]')"), 5000, '帳號區一行');
   assert.ok(await js("!document.querySelector('.pm-detail [data-pm-reset], .pm-detail [data-pm-cross], .pm-detail [data-pm-disable], .pm-detail [data-pm-wsrole]')"), 'C 成員詳細沒有帳號動作');
-  await click('.pm-acc-line [data-adm="accounts"]');
-  await until(() => js("location.pathname === '/admin/accounts'"), 8000, 'C 帳號區連到帳號與救援');
+  await click('.pm-acc-line [data-rs-open]');
+  await until(() => js("location.pathname === '/roster'"), 8000, 'C 帳號區連到成員名冊');
   // 舊網址
   for (const t of ['invites', 'projects', 'group', 'system']) {
     await login(liu.token, `/members?tab=${t}`);
@@ -188,11 +192,14 @@ try {
   assert.match(en, /Admin settings[\s\S]*To do[\s\S]*Workspace settings[\s\S]*Accounts & recovery[\s\S]*Audit & storage[\s\S]*Platform settings/, '英文目錄');
   assert.match(en, /Everyone's account[\s\S]*Account actions[\s\S]*Rescue command/, '英文帳號與救援');
   assert.match(await js("document.querySelector('.adm-nav [data-adm=\"projects\"] .adm-t b').textContent"), /^Projects$/, '英文目錄寫複數 Projects');
-  const restoreBtn = "document.querySelector('.adm-main .pm-disabled [data-pm-enable]')?.textContent";
-  await until(async () => (await js(restoreBtn)) === 'Restore', 5000, '已停用成員清單畫好').catch(() => {});
-  assert.equal(await js(restoreBtn), 'Restore','已停用成員的按鈕是 Restore（跟說明 After restoring 一致）');
   assert.ok(!/[㐀-鿿]/.test((await js("document.querySelector('.adm-nav').innerText")).replace(/林志明|王小明|陳大文/g, '')), '英文目錄沒有中文：' + await js("document.querySelector('.adm-nav').innerText"));
   await shot('12-電腦-英文-帳號與救援');
+  // 已停用的帳號在成員名冊「所有帳號」（#13）
+  await click('.adm-main [data-rs-open]');
+  const restoreBtn = `document.querySelector('.rs-table [data-pm-enable="${id(chen)}"]')?.textContent`;
+  await until(async () => { if ((await js(restoreBtn)) === 'Restore') return true; await click('[data-rs-filter="accounts"]'); return false; }, 8000, '英文的所有帳號').catch(() => {});
+  assert.equal(await js(restoreBtn), 'Restore', '已停用帳號的按鈕是 Restore（跟說明 after restoring 一致）');
+  assert.match(await js("document.querySelector('.rs-card').innerText"), /after restoring/, '英文說明');
   await js("localStorage.removeItem('aigile-lang'); true");
   console.log('admin-settings-ui-test：全部通過');
 } catch (e) {
