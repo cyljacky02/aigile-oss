@@ -2858,7 +2858,7 @@ window.AIGILE_EN = {
     "👁 唯讀（只能看）": "👁 Read-only (view only)",
     "），你現在的密碼與這台裝置照舊。其他人的登入與 AI 的 Token 都不在備份裡：請在「成員」按「重設登入」、請主人重發 Token。": "). Your current password and this device stay the same. Other people's sign-ins and AI tokens are not in the backup: use \"Reset sign-in\" under Members, and ask owners to reissue tokens.",
     "可以建專案、邀請成員，或從舊站匯入備份。": "You can create projects, invite members, or import a backup from an old site.",
-    "不能停用自己；要離開請先把管理員交給別人。": "You can't disable yourself. To leave, hand the admin role to someone else first.",
+    "不能停用自己；要離開工作區，請先把另一位成員升為工作區管理員。": "You can't disable yourself. To leave the workspace, make another member a workspace admin first.",
     "已經有人叫「{0}」，先請對方改名再恢復。": "Someone else is already named \"{0}\". Ask them to rename before restoring.",
     "找不到這位人類成員（只能交給還在群組的人類）": "Member not found (you can only hand over to a human still in the group)",
     "你已經是管理員了。": "You're already the admin.",

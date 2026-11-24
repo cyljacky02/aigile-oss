@@ -2944,7 +2944,7 @@ ${ending}`;
     await access.check(ctx, me, 'manage_accounts', 'platform', { what: '停用或恢復成員' });
     const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human'", id);
     if (!t || t.status === 'deleted') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員');
-    if (t.id === me.id) throw new ApiError(400, 'SELF', '不能停用自己；要離開請先把管理員交給別人。');
+    if (t.id === me.id) throw new ApiError(400, 'SELF', '不能停用自己；要離開工作區，請先把另一位成員升為工作區管理員。');
     return t;
   }
   const lastAdminError = () => new ApiError(409, 'LAST_WORKSPACE_ADMIN', '這是最後一位工作區管理員：請先把另一位成員升為工作區管理員。');

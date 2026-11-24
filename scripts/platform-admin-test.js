@@ -160,6 +160,9 @@ try {
   const login = () => call(null, '/api/auth/password', 'POST', { username: 'zhao.xa', password: 'pass-word-2' });
   assert.equal((await login()).status, 200, '停用前可以登入');
   assert.equal(code(await call(chen.token, `/api/participants/${Zh}/disable`, 'POST')), 'NOT_ADMIN', '工作區管理員不能停用帳號');
+  const self = await call(boss.token, `/api/participants/${Bo}/disable`, 'POST');
+  assert.equal(code(self), 'SELF', '不能停用自己');
+  assert.ok(!/交給|管理員交/.test(self.body.error.message) && /工作區管理員/.test(self.body.error.message), '說法照詞彙表（升別人為工作區管理員，不是「把管理員交給別人」）：' + self.body.error.message);
   const dis = await call(boss.token, `/api/participants/${Zh}/disable`, 'POST');
   assert.equal(dis.status, 200, JSON.stringify(dis.body));
   assert.equal(dis.body.revokedAiTokens, 1);
