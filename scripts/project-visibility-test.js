@@ -183,6 +183,39 @@ try {
   assert.equal((await call(chen.token, `/api/cards/${key}`)).status, 200, '加入後看得到');
   console.log('✓ 私人專案對非成員不存在；成員與工作區管理員看得到');
 
+  // 4b) 管理專案的路由回傳的專案清單、錯誤訊息也不提到看不到的私人專案（林美玲不在機密專案）
+  {
+    const leaks = body => JSON.stringify(body).includes(P) || JSON.stringify(body).includes('機密');
+    const noLeak = (label, x, status = 200) => { assert.equal(x.status, status, `${label}：${JSON.stringify(x.body)}`); assert.ok(!leaks(x.body), `${label}：回傳不提到私人專案`); };
+    r = await call(lin.token, '/api/projects', 'POST', { name: '林的專案' });
+    noLeak('建立專案', r, 201);
+    const L = r.body.id;
+    noLeak('改名', await call(lin.token, `/api/projects/${L}`, 'PATCH', { name: '林的專案二' }));
+    noLeak('程式庫', await call(lin.token, `/api/projects/${L}/repo`, 'PUT', { url: 'https://example.com/repo' }));
+    noLeak('可見度', await setVisibility(lin.token, L, 'open'));
+    noLeak('私訊開關', await call(lin.token, `/api/projects/${L}/dm`, 'PUT', { on: true }));
+    noLeak('封存', await call(lin.token, `/api/projects/${L}/archive`, 'POST'));
+    noLeak('還原', await call(lin.token, `/api/projects/${L}/unarchive`, 'POST'));
+    noLeak('代號撞到私人專案', await call(lin.token, '/api/projects', 'POST', { name: '撞代號', code: 'SECR' }), 409);
+    await same('設職稱', pj => call(lin.token, `/api/participants/${lin.id}/project-roles`, 'PUT', { roles: { [pj]: 'PG' } }));
+    assert.equal((await same('AI 職務', pj => call(lin.token, `/api/projects/${pj}/roles/PG`, 'PUT', { role: '開發' }))).status, 404);
+    // 在所有未封存專案的人：封存的私人專案照樣看不到（不因為「不受隔離」就全看得到）
+    r = await call(wang.token, '/api/projects', 'POST', { name: '封存密案' });
+    const Q = r.body.id;
+    assert.equal((await setVisibility(wang.token, Q, 'private')).status, 200);
+    assert.equal((await call(wang.token, '/api/messages', 'POST', { requestId: 'pq1', project: Q, text: '封存密案的訊息QQQ' })).status, 201);
+    assert.equal((await call(wang.token, `/api/projects/${Q}/archive`, 'POST')).status, 200);
+    const all = await join('全員');
+    const active = (await call(boss.token, '/api/projects')).body.items.filter(p => !p.archived).map(p => p.id);
+    assert.equal((await call(boss.token, `/api/participants/${all.id}/projects`, 'PUT', { projects: active })).status, 200);
+    assert.deepEqual((await call(all.token, '/api/me')).body.projects.sort(), [...active].sort(), '全員在每個未封存專案');
+    const seen = (await call(all.token, '/api/projects')).body;
+    assert.ok(!JSON.stringify(seen).includes(Q), '封存的私人專案不在專案清單：' + JSON.stringify(seen.items.map(p => p.id)));
+    assert.ok(!JSON.stringify((await call(all.token, '/api/messages?limit=200')).body).includes('QQQ'), '封存的私人專案的訊息看不到');
+    assert.ok((await call(wang.token, '/api/projects')).body.items.some(p => p.id === Q), '專案管理員看得到自己封存的私人專案');
+    console.log('✓ 管理專案的路由、錯誤訊息不提到私人專案；封存的私人專案對在所有專案的人也看不到');
+  }
+
   // 5) 升級：舊站（008 之前，專案沒有可見度）打開後所有專案都是「審核」，加入申請流程照常
   {
     const file = path.join(dataDir, 'old', 'switch.db');

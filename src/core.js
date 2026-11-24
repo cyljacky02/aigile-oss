@@ -388,7 +388,9 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     isoSince = r?.value || ''; isoAt = Date.now();
     return isoSince;
   }
-  const isolatedFrom = me => !!me && me.kind !== 'system' && PROJECTS.some(x => !projectsOf(me).includes(x));
+  // 在所有未封存專案、但有看不到的封存私人專案的人也算受隔離：私人專案的可見度一律照算，不因「在所有專案」就全部看得到
+  const isolatedFrom = me => !!me && me.kind !== 'system' && (PROJECTS.some(x => !projectsOf(me).includes(x))
+    || projectRows.some(r => r.archived && r.visibility === 'private' && !listOf(me).includes(r.id) && !discovers(me, r.id)));
   // 訊息可見範圍的 SQL 片段（col：資料表別名）；不受限回 null
   // 隔離前的舊訊息，只有當時就在群組的人看得到（訊息時間 ≥ 加入時間）；之後才加入的人看不到
   async function messageScope(me, col = '') {
@@ -1749,6 +1751,20 @@ ${ending}`;
     return { items, adminId: admin?.id || null, adminName: admin?.name || null, projectAdmins: leaders, archivedProjectAdmins: archivedLeaders, viewers: readOnly, leaders, archivedLeaders, readOnly, join, ...extra };
   }
 
+  // 呼叫者看得到的專案清單：每個回傳專案清單的路由都用這個（私人專案、別人的專案不外洩）。
+  // UX ：不屬於全部專案的人，專案清單只回自己所屬的專案（不露出別專案名稱）
+  // PLAT-381：被隔離的成員也列出自己所屬、已封存的專案（專案管理員才能還原）
+  // 以專案為鍵的清單都只留自己的專案（新名 projectAdmins／archivedProjectAdmins／viewers 與保留一版的舊名 leaders／archivedLeaders／readOnly）
+  const PROJECT_MAPS = ['projectAdmins', 'archivedProjectAdmins', 'viewers', 'leaders', 'archivedLeaders', 'readOnly', 'join'];
+  function scopeProjects(r, me) {
+    if (!isolatedFrom(me)) return r; // 不受隔離＝看得到所有專案（含封存的私人專案，見 isolatedFrom）
+    const mine = [...new Set([...projectsOf(me), ...listOf(me)])];
+    const out = { ...r, items: r.items.filter(p => mine.includes(p.id)) };
+    for (const k of PROJECT_MAPS) out[k] = Object.fromEntries(Object.entries(r[k] || {}).filter(([pj]) => mine.includes(pj)));
+    return out;
+  }
+  const projectsSeenBy = async (ctx, me, extra = {}) => scopeProjects(await projectsResponse(ctx, extra), me);
+
   // 改成員所屬專案（單人或批次）。移出某專案時，他在該專案負責的未結案卡片退回「待處理」、改為未指派。
   // changes: [{ id, projects: [...] }]；dryRun 只回影響，不寫入
   async function applyMembership(ctx, me, changes, { dryRun = false, byLeader = false } = {}) {
@@ -1825,6 +1841,7 @@ ${ending}`;
     if (!body.roles || typeof body.roles !== 'object' || Array.isArray(body.roles)) throw invalid('roles 需為物件，例如 {"預設專案":"PO"}');
     const inP = projectsOf(target), next = { ...projRoles, [target.id]: { ...(projRoles[target.id] || {}) } }, at = nowIso(), events = [];
     for (const [pj, v] of Object.entries(body.roles)) {
+      if (!PROJECTS.includes(pj) || !discovers(me, pj)) throw invalid('roles 裡有找不到的專案（只能設未封存的專案）'); // 看不到的私人專案跟沒有這個專案一樣，不回專案代號
       if (!inP.includes(pj)) throw invalid(`${target.name} 不在「${nameOf(pj)}」，不能設那個專案的角色`);
       await access.check(ctx, me, 'set_title', { project: pj, target }); // 管理員、該專案 leader、本人
       const role = readRole(v);
@@ -1957,18 +1974,7 @@ ${ending}`;
   const goneMembers = () => { throw new ApiError(410, 'GONE', '這個端點已移除：專案成員請改用 GET／POST /api/projects/:id/members（列出、加入）與 PUT／DELETE /api/projects/:id/members/:participantId（設定專案角色、移出）；要讓人在每個專案，請把他加進各專案。'); };
   route('PUT', '/api/members/matrix', goneMembers);
   route('PUT', '/api/projects/:id/members', goneMembers);
-  // UX ：不屬於全部專案的人，專案清單只回自己所屬的專案（不露出別專案名稱）
-  // PLAT-381：被隔離的成員也列出自己所屬、已封存的專案（leader 才能還原）
-  // 以專案為鍵的清單都只留自己的專案（新名 projectAdmins／archivedProjectAdmins／viewers 與保留一版的舊名 leaders／archivedLeaders／readOnly）
-  const PROJECT_MAPS = ['projectAdmins', 'archivedProjectAdmins', 'viewers', 'leaders', 'archivedLeaders', 'readOnly', 'join'];
-  const scopeProjects = (r, me) => {
-    if (!isolatedFrom(me)) return r;
-    const mine = [...new Set([...projectsOf(me), ...listOf(me)])];
-    const out = { ...r, items: r.items.filter(p => mine.includes(p.id)) };
-    for (const k of PROJECT_MAPS) out[k] = Object.fromEntries(Object.entries(r[k] || {}).filter(([pj]) => mine.includes(pj)));
-    return out;
-  };
-  route('GET', '/api/projects', async ({ ctx, me }) => ({ ...scopeProjects(await projectsResponse(ctx), me), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace') })); // canCreateProject：網頁要不要顯示「新增專案」
+  route('GET', '/api/projects', async ({ ctx, me }) => ({ ...(await projectsSeenBy(ctx, me)), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace') })); // canCreateProject：網頁要不要顯示「新增專案」
   // 群組名稱（登入頁也要顯示，所以讀取不用登入）；只有管理員能改
   route('GET', '/api/group', async () => ({ name: await groupName() }), { open: true });
   // 第一次設定引導做完或全部略過：之後不再出現（群組名稱、專案、邀請、AI 都在管理頁改得到）
@@ -2120,7 +2126,7 @@ ${ending}`;
     const name = readProjectName(body.name);
     await loadProjects(true);
     if (projectRows.some(r => !r.archived && r.name === name)) throw new ApiError(409, 'NAME_TAKEN', '已有同名的專案');
-    const code = body.code ? readCode(body.code, null) : null;
+    const code = body.code ? readCode(body.code, null, me) : null;
     const used = await usedSlugs(null), rawSlug = String(body.slug ?? '').trim();
     const slug = rawSlug ? checkSlug(rawSlug, name, used) : autoSlug(name, used); // 網址英文名選填，跟引導同一套規則
     if (used.has(slug)) throw new ApiError(409, 'SLUG_TAKEN', `「${slug}」已經有專案在用`, { suggestion: slugFree(slug, used) });
@@ -2137,7 +2143,7 @@ ${ending}`;
     await db.batch(stmts);
     invalidatePeople(); invalidateProjects();
     await membership.loadMembers(true);
-    return { __status: 201, ...(await projectsResponse(ctx)), id };
+    return { __status: 201, ...(await projectsSeenBy(ctx, me)), id };
   });
   route('PATCH', '/api/projects/:id', async ({ ctx, me, req, params }) => {
     await access.check(ctx, me, 'manage_project', { project: params.id }, { what: '改專案名稱' });
@@ -2150,7 +2156,7 @@ ${ending}`;
       await db.batch([['UPDATE projects SET name = ? WHERE id = ?', [name, row.id]], projEvent(row.id, me.id, `${me.name} 改名：${row.name} → ${name}`, nowIso())]);
       invalidateProjects();
     }
-    return projectsResponse(ctx);
+    return projectsSeenBy(ctx, me);
   });
   // 程式庫連結與分支（選填）；管理員與該專案 leader 能改
   route('PUT', '/api/projects/:id/repo', async ({ ctx, me, req, params }) => {
@@ -2165,7 +2171,7 @@ ${ending}`;
       ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['repo:' + row.id, JSON.stringify({ ...repo, updatedAt: at, by: me.id })]],
       projEvent(row.id, me.id, repo.url ? `${me.name} 設定程式庫：${repo.url}${repo.branch ? `（分支 ${repo.branch}）` : ''}` : `${me.name} 清除程式庫連結`, at),
     ]);
-    return projectsResponse(ctx);
+    return projectsSeenBy(ctx, me);
   });
   // 專案可見度（開放／審核／私人）；專案管理員（含工作區管理員的隱含權限）能改
   const VISIBILITY_NAME = { open: '開放', review: '審核', private: '私人' };
@@ -2181,7 +2187,7 @@ ${ending}`;
       await db.batch([['UPDATE projects SET visibility = ? WHERE id = ?', [visibility, row.id]], projEvent(row.id, me.id, `${me.name} 把專案可見度改成${VISIBILITY_NAME[visibility]}`, nowIso())]);
       invalidateProjects();
     }
-    return projectsResponse(ctx);
+    return projectsSeenBy(ctx, me);
   });
   // 私訊開關；管理員與該專案 leader 能改。關掉後舊私訊雙方仍看得到、不能再送
   // 網址用的英文名（/p/main/messages）；只改網址，API 的 project 代號照舊。預設專案→main，其他預設用代號
@@ -2222,11 +2228,12 @@ ${ending}`;
     return Object.fromEntries(projectRows.map(r => [r.id, set[r.id] || SLUG_DEFAULT[r.id] || r.id]));
   }
   // 專案代號（卡片顯示 MAIN-12）；管理員可改；舊代號留作別名，舊的卡號照樣查得到
-  function readCode(raw, selfId) {
+  // me：撞到呼叫者看不到的私人專案時不說是哪個專案
+  function readCode(raw, selfId, me = null) {
     const code = String(raw ?? '').trim().toUpperCase();
     if (!CODE_RE.test(code)) throw invalid('專案代號需為 2～5 個英文字母');
     const clash = projectRows.find(r => r.id !== selfId && (projCodes[r.id] === code || oldCodes[code] === r.id));
-    if (clash) throw new ApiError(409, 'CODE_TAKEN', `「${code}」已經是「${clash.name}」的代號（或舊代號）`);
+    if (clash) throw new ApiError(409, 'CODE_TAKEN', discovers(me, clash.id) ? `「${code}」已經是「${clash.name}」的代號（或舊代號）` : `「${code}」已經有專案在用（或是舊代號）`);
     return code;
   }
   route('PUT', '/api/projects/:id/code', async ({ ctx, me, req, params }) => {
@@ -2234,13 +2241,13 @@ ${ending}`;
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    const code = readCode((await readJson(req)).code, row.id);
-    if (code === projCodes[row.id]) return projectsResponse(ctx);
+    const code = readCode((await readJson(req)).code, row.id, me);
+    if (code === projCodes[row.id]) return projectsSeenBy(ctx, me);
     const at = nowIso();
     const upsert = "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
     await db.batch([[upsert, ['pcode:' + row.id, code]], ...(projCodes[row.id] ? [[upsert, ['pcodeold:' + projCodes[row.id], row.id]]] : []), projEvent(row.id, me.id, `${me.name} 把專案代號改成 ${code}`, at)]); // 舊代號留作別名
     invalidateProjects();
-    return projectsResponse(ctx);
+    return projectsSeenBy(ctx, me);
   });
   route('PUT', '/api/projects/:id/slug', async ({ ctx, me, req, params }) => {
     await access.check(ctx, me, 'set_project_slug', { project: params.id }, { what: '改專案的網址英文名' });
@@ -2250,13 +2257,13 @@ ${ending}`;
     const raw = String((await readJson(req)).slug ?? '').trim();
     const all = await slugMap(), used = await usedSlugs(row.id);
     const slug = raw ? checkSlug(raw, row.name, used) : autoSlug(row.name, used); // 留空＝依專案名稱自動產生
-    if (slug === all[row.id]) return projectsResponse(ctx);
+    if (slug === all[row.id]) return projectsSeenBy(ctx, me);
     const clash = projectRows.find(r => r.id !== row.id && (all[r.id] === slug || r.id.toLowerCase() === slug));
     if (clash) throw new ApiError(409, 'SLUG_TAKEN', `「${slug}」已經是「${clash.name}」在用的網址名`, { suggestion: slugFree(slug, used) });
     const at = nowIso();
     const pinCode = (await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', 'pcode:' + row.id)) || !projCodes[row.id] ? [] : [["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", ['pcode:' + row.id, projCodes[row.id]]]];
     await db.batch([...pinCode, ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['slug:' + row.id, slug]], projEvent(row.id, me.id, `${me.name} 把網址英文名改成 ${slug}`, at)]);
-    return projectsResponse(ctx);
+    return projectsSeenBy(ctx, me);
   });
   route('PUT', '/api/projects/:id/dm', async ({ ctx, me, req, params }) => {
     requireHuman(me);
@@ -2271,7 +2278,7 @@ ${ending}`;
       ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['dm:' + row.id, JSON.stringify({ on: body.on, by: me.id, at })]],
       projEvent(row.id, me.id, `${me.name} ${body.on ? '開放' : '關閉'}成員私訊自己的 AI`, at),
     ]);
-    return projectsResponse(ctx);
+    return projectsSeenBy(ctx, me);
   });
 
   // ---------- 私訊自己的 AI ----------
@@ -2473,7 +2480,7 @@ ${ending}`;
     Object.assign(p, { status: 'created', decidedAt: now, createdKey: def.key, draft: def });
     await rpSave(p);
     await db.batch([projEvent(p.project, me.id, `${me.name} 建立 AI 職務「${def.role}」（${def.key}）`, at)]);
-    return { proposal: rpView(p, { ...rdefs, [p.project]: next }, false), ...scopeProjects(await projectsResponse(ctx), me) };
+    return { proposal: rpView(p, { ...rdefs, [p.project]: next }, false), ...(await projectsSeenBy(ctx, me)) };
   });
   route('POST', '/api/role-proposals/:id/skip', async ({ me, params }) => {
     const p = await rpOfHuman(me, params.id);
@@ -2482,7 +2489,7 @@ ${ending}`;
   });
   // 專案設定 ›「角色」：改名稱與五題、停用／啟用；代碼不改
   async function roleDefOf(ctx, me, pj, key) {
-    if (!PROJECTS.includes(pj)) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    if (!PROJECTS.includes(pj) || !discovers(me, pj)) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案'); // 看不到的私人專案＝沒有這個專案
     if (!(await roleManagerOf(ctx, me))(pj)) throw new ApiError(403, 'FORBIDDEN', `只有「${nameOf(pj)}」的專案管理員能管理 AI 職務。`);
     const defs = (await roleDefsMap())[pj] || [];
     const i = defs.findIndex(d => d.key === key);
@@ -2510,7 +2517,7 @@ ${ending}`;
     await saveRoleDefs(params.id, defs.map((d, j) => (j === i ? next : d)));
     await db.batch([projEvent(params.id, me.id, `${me.name} ${what} AI 職務「${next.role}」（${next.key}）`, at)]);
     invalidatePeople();
-    return scopeProjects(await projectsResponse(ctx), me);
+    return projectsSeenBy(ctx, me);
   });
   // 刪除：沒人在用才行（停用後在用的照舊）
   route('DELETE', '/api/projects/:id/roles/:key', async ({ ctx, me, params }) => {
@@ -2521,7 +2528,7 @@ ${ending}`;
     const at = nowIso();
     await saveRoleDefs(params.id, defs.filter((_, j) => j !== i));
     await db.batch([projEvent(params.id, me.id, `${me.name} 刪除 AI 職務「${d.role}」（${d.key}）`, at)]);
-    return scopeProjects(await projectsResponse(ctx), me);
+    return projectsSeenBy(ctx, me);
   });
 
   // ---------- AI 產頭像、人類按「套用」才換 ----------
@@ -2616,13 +2623,13 @@ ${ending}`;
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    if (row.archived) return projectsResponse(ctx);
+    if (row.archived) return projectsSeenBy(ctx, me);
     if (projectRows.filter(r => !r.archived).length <= 1) throw new ApiError(409, 'LAST_PROJECT', '至少要保留一個專案');
     const open = (await db.get("SELECT COUNT(*) AS n FROM cards WHERE project = ? AND status IN ('待整理','待處理','進行中','待確認','受阻')", row.id)).n;
     if (open) throw new ApiError(409, 'HAS_OPEN_CARDS', `這個專案還有 ${open} 張未結案的卡片，請先結案或把卡片移到別的專案。`);
     await db.batch([['UPDATE projects SET archived = 1 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 封存專案`, nowIso())]);
     invalidateProjects();
-    return projectsResponse(ctx);
+    return projectsSeenBy(ctx, me);
   });
   route('POST', '/api/projects/:id/unarchive', async ({ ctx, me, params }) => {
     await access.check(ctx, me, 'manage_project', { project: params.id }, { what: '還原專案' });
@@ -2633,7 +2640,7 @@ ${ending}`;
       await db.batch([['UPDATE projects SET archived = 0 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 還原專案`, nowIso())]);
       invalidateProjects();
     }
-    return projectsResponse(ctx);
+    return projectsSeenBy(ctx, me);
   });
   // 永久刪除已封存的專案：只有群組管理員、要先封存、要輸入專案名稱；刪掉就救不回來
   // 刪：卡片與紀錄、訊息與通知、決策、上傳檔與文件（含檔案本體）、技能、加入申請、私訊、專案事件與設定；人和 AI 帳號留著，只是不再屬於這個專案
@@ -2732,7 +2739,7 @@ ${ending}`;
     projRolesAt = 0;
     invalidatePeople(); invalidateProjects();
     await membership.loadMembers(true);
-    return projectsResponse(ctx, { deleted: log });
+    return projectsSeenBy(ctx, me, { deleted: log });
   });
   route('GET', '/api/project-deletions', async ({ ctx, me }) => {
     await access.check(ctx, me, 'delete_project', 'workspace');
