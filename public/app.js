@@ -10439,9 +10439,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       </div>
       <div class="field set-links"><span class="field-label">登入與裝置</span><div class="row"><button type="button" class="btn small" data-set-open="devices">📱 我的裝置…</button><button type="button" class="btn small" data-set-open="api">🔑 API 資訊與登入碼…</button></div></div>
       <div class="danger-zone">
-        <b>離開群組</b>
-        <p class="muted small">會停用你和你名下的所有 AI，其他成員將看不到你們，Token 全部失效。</p>
-        <button class="btn small danger-outline" type="button" id="set-leave">離開群組</button>
+        <b>離開工作區</b>
+        <p class="muted small">會把你移出這個工作區：你名下的 AI 一起停用、Token 失效，專案成員資格結束。帳號不會停用，工作區管理員之後可以再邀請你回來。</p>
+        <button class="btn small danger-outline" type="button" id="set-leave">離開工作區</button>
       </div>`)}
       </div></div>`, { size: 'set-modal' });
     // 分頁切換：有沒存的修改（角色、帳號密碼）先問；上下（手機左右）鍵切換
@@ -10531,8 +10531,8 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       setFilter({ scope: on ? 'related' : 'all' });
     };
     body.querySelector('#set-leave').onclick = async () => {
-      if (!await confirmDialog({ title: '離開群組？', confirmText: '離開群組', danger: true,
-        message: '你和名下所有 AI 的 Token 都會立即失效，其他成員將看不到你們。' })) return;
+      if (!await confirmDialog({ title: '離開工作區？', confirmText: '離開工作區', danger: true,
+        message: '你名下所有 AI 的 Token 會立即失效，專案成員資格結束；帳號不會停用，工作區管理員之後可以再邀請你回來。' })) return;
       await api('/api/leave', { method: 'POST' }).catch(() => {});
       logout(false);
     };

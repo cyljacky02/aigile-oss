@@ -2993,6 +2993,10 @@ ${ending}`;
     if (t.id === me.id) throw new ApiError(400, 'SELF', '不能把自己移出工作區。');
     if (t.workspace_status === 'removed') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyRemoved: true };
     await access.check(ctx, me, 'remove_member', { target: t }); // 不能動上層管理權：移出平台管理員要是平台管理員
+    return removeFromWorkspace(ctx, me, t);
+  });
+  // 移出工作區（工作區管理員移出別人、自己離開都走這裡）：t 是資料庫裡最新的那列
+  async function removeFromWorkspace(ctx, me, t) {
     await assertNotLastAdmin(ctx, t);
     const at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
     await db.batch([
@@ -3007,9 +3011,9 @@ ${ending}`;
     const [impact] = t.status === 'active' ? await applyMembership(ctx, me, [{ id: t.id, projects: [], allowEmpty: true }]) : []; // 專案成員資格結束：卡片退回、專案紀錄
     live?.dropPerson?.(t.id);
     for (const a of ais) live?.dropPerson?.(a.id);
-    console.log(`成員已移出工作區：${t.name}（${me.name} 操作）`);
+    console.log(t.id === me.id ? `成員離開工作區：${t.name}` : `成員已移出工作區：${t.name}（${me.name} 操作）`);
     return { participant: publicParticipant(after, await peopleMap(ctx)), revokedAiTokens: ais.length, returnedCards: impact?.returnedCards || [] };
-  });
+  }
   // 已停用的人類（只有管理員看）：成員頁列出來、可以恢復
   route('GET', '/api/participants/disabled', async ({ ctx, me }) => {
     await access.check(ctx, me, 'manage_accounts', 'platform', { what: '看已停用的成員' });
@@ -3875,17 +3879,16 @@ ${ending}`;
     return { messageId: m.id, resolvedBy: r.resolved_by, resolvedAt: r.resolved_at };
   });
 
+  // 自己離開工作區＝移出工作區（帳號不受影響：不是停用，之後可以再被邀請回來）；最後一位工作區管理員要先升別人
   route('POST', '/api/leave', async ({ ctx, me }) => {
     requireHuman(me);
-    await assertNotLastAdmin(ctx, me, { platform: true }); // 最後一位工作區管理員、平台管理員要先升別人
-    invalidatePeople();
-    const at = nowIso();
-    // 比照刪除 AI：一併登出所有裝置、清掉本人與他的 AI 的待處理通知（不留殘留資料）
+    const t = await db.get('SELECT * FROM participants WHERE id = ?', me.id);
+    if (t.workspace_status === 'removed') return { ok: true }; // 平台管理員被移出後還進得來
+    await removeFromWorkspace(ctx, me, t);
+    // 一併登出所有裝置、清掉本人與他的 AI 的待處理通知（不留殘留資料）
     await db.batch([
-      ...(isWorkspaceAdmin(me) ? membership.setWorkspaceRoleStmts(me.id, 'member', at) : []), // 離開的人不再是工作區管理員
-      ["UPDATE participants SET status = 'disabled', updated_at = ? WHERE id = ? OR owner_id = ?", [at, me.id, me.id]],
       ['UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL', [Date.now(), me.id]],
-      ["UPDATE notifications SET status = 'acked', acked_at = ? WHERE status = 'pending' AND recipient_id IN (SELECT id FROM participants WHERE id = ? OR owner_id = ?)", [at, me.id, me.id]],
+      ["UPDATE notifications SET status = 'acked', acked_at = ? WHERE status = 'pending' AND recipient_id IN (SELECT id FROM participants WHERE id = ? OR owner_id = ?)", [nowIso(), me.id, me.id]],
     ]);
     return { ok: true };
   });
@@ -3898,7 +3901,7 @@ ${ending}`;
     const t = new Date();
     if (!force && !(t.getUTCHours() === 19 && t.getUTCMinutes() < 10)) return 0; // 排程每 10 分鐘跑；只在台灣 03:00 那次做
     const r = await db.run(`UPDATE notifications SET status = 'acked', acked_at = ? WHERE status = 'pending' AND (
-      recipient_id IN (SELECT id FROM participants WHERE status != 'active')
+      recipient_id IN (SELECT id FROM participants WHERE status != 'active' OR workspace_status = 'removed')
       OR (created_at < ? AND recipient_id IN (SELECT id FROM participants WHERE kind = 'human')))`, nowIso(), new Date(Date.now() - AUTO_ACK_DAYS * 86400_000).toISOString());
     if (r.changes) { pendCache = { at: 0, rows: null }; teamCache = { at: 0, data: null }; }
     return r.changes;

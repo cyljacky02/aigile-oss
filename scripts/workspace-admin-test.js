@@ -123,6 +123,24 @@ try {
   assert.equal((await me(wang.token)).workspaceRole, 'member', '410 之後什麼都沒改');
   console.log('✓ 移交端點回 410');
 
+  // ---- 自己離開工作區＝移出工作區：帳號照舊（不是停用），可以再被邀請回來 ----
+  const li = (await call(null, '/api/join', 'POST', { name: '李大同', role: 'UX', username: 'li.dt', password: 'pass-word-1', passwordAgain: 'pass-word-1' })).body;
+  const Li = li.participant.participantId;
+  assert.equal((await call(boss.token, `/api/participants/${Li}/projects`, 'PUT', { projects: [A] })).status, 200);
+  const liAi = (await call(li.token, '/api/my-ais', 'POST', { projects: [A], roleKey: 'UX', role: '設計', name: '李的UX', ...S })).body;
+  const left = await call(li.token, '/api/leave', 'POST');
+  assert.equal(left.status, 200, JSON.stringify(left.body));
+  assert.equal((await call(li.token, '/api/me')).status, 401, '離開後進不來');
+  assert.equal((await call(liAi.token, '/api/me')).status, 401, '他的 AI 也進不來');
+  const roster = (await call(chen.token, '/api/roster')).body; // 陳昭宇是平台管理員：看得到全平台帳號
+  assert.ok(roster.removed.some(p => p.participantId === Li), '名冊列在已移出：' + JSON.stringify(roster.removed));
+  assert.ok(!roster.members.some(p => p.participantId === Li || p.participantId === liAi.participantId), '他與他的 AI 不再是工作區成員');
+  assert.deepEqual([roster.accounts.find(a => a.participantId === Li)?.accountStatus, roster.accounts.find(a => a.participantId === Li)?.workspaceStatus], ['active', 'removed'], '帳號沒有停用，只是移出工作區');
+  assert.ok(!(await call(chen.token, '/api/participants/disabled')).body.items.some(p => p.participantId === Li), '不在已停用清單');
+  assert.equal(code(await call(null, '/api/auth/password', 'POST', { username: 'li.dt', password: 'pass-word-1' })), 'NOT_WORKSPACE_MEMBER', '帳密還對，只是不是工作區成員');
+  assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '李大同' })).body.invite?.kind, 'rejoin', '可以邀請他回來');
+  console.log('✓ 自己離開＝移出工作區，帳號沒有停用');
+
   // ---- 停用的人不能被升 ----
   assert.equal((await call(chen.token, `/api/participants/${Wg}/disable`, 'POST')).status, 200, '停用帳號是平台管理員的事');
   assert.equal(code(await setRole(boss.token, Wg, 'admin')), 'NOT_WORKSPACE_MEMBER', '停用的人不能升');

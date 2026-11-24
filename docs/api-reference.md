@@ -232,7 +232,7 @@ B. 不接受，等全部完成
 三層：**平台**（平台管理員）＞**工作區**（工作區管理員、成員；第一階段只有一個預設工作區）＞**專案**（專案管理員、專案成員、唯讀成員）。上層管理員對下層有**隱含權限**，但不算成員、不出現在成員清單。每一層的最後一位管理員不能被降級、移出或停用（409 `LAST_WORKSPACE_ADMIN`／`LAST_PLATFORM_ADMIN`）。這節的端點 AI 一律 403；你不用呼叫，只要知道權限從哪來。
 - **成員名冊** `GET /api/roster`（工作區成員都可讀）→ `{ members: [{ participantId, name, memberType, role, workspaceRole, platformRole, ownerParticipantId?, status, memberships: [{ project, projectName, role, title }] }], can }`。`memberships` 只列查詢者看得到的專案（私人專案不露出）；AI 的範圍跟所屬人類一樣。工作區管理員另有 `removed`（已移出工作區），平台管理員另有 `accounts`（所有帳號，含停用）。
 - **工作區角色**：`PUT /api/participants/:id/workspace-role {role: admin|member}`（工作區管理員）。**平台角色**：`PUT /api/participants/:id/platform-role {role: admin|none}`（平台管理員）。交棒＝先升別人、再降自己；舊的 `POST /api/admin/transfer` 回 410 `GONE`。
-- **移出工作區** `POST /api/participants/:id/remove`（工作區管理員）：結束成員資格，專案成員資格一起結束、他名下的 AI 停用，名字與歷史紀錄保留，帳號不受影響；之後可以用邀請找回來。**停用帳號** `POST /api/participants/:id/disable`、恢復 `…/enable`、已停用清單 `GET /api/participants/disabled`（只有平台管理員）：所有登入與他的 AI 立刻失效，角色保留。
+- **移出工作區** `POST /api/participants/:id/remove`（工作區管理員）：結束成員資格，專案成員資格一起結束、他名下的 AI 停用，名字與歷史紀錄保留，帳號不受影響；之後可以用邀請找回來。自己離開 `POST /api/leave` 也一樣是移出工作區（帳號不停用，裝置登出；最後一位工作區管理員回 409 `LAST_WORKSPACE_ADMIN`）。**停用帳號** `POST /api/participants/:id/disable`、恢復 `…/enable`、已停用清單 `GET /api/participants/disabled`（只有平台管理員）：所有登入與他的 AI 立刻失效，角色保留。
 - **專案成員**：見 3.13 的專案成員端點。`PUT /api/participants/:id/projects {projects, dryRun?}`（工作區管理員）把一個人的專案成員資格整份換成這份清單：新加入的是專案成員，已在的專案角色不變，沒列的專案移出（卡片退回待處理）。職稱 `PUT /api/participants/:id/project-roles {roles: {專案: 職稱}}`（專案管理員或本人）。
 - **建立專案** `POST /api/projects`：工作區管理員；工作區設定 `createProjects` 是 `members` 時一般成員也可以（`GET /api/projects` 的 `canCreateProject`）。建立的人成為該專案的專案管理員。
 - **邀請**（工作區管理員）：`POST /api/invites {name, ttl?, projects: [專案 | {project, role: admin|member|viewer, title?}]}` → `{ invite, token, url }`；`GET /api/invites[?status=pending]`（每筆有 `kind: new|rejoin|reset`、`presets: [{project, role, title}]`）、`POST /api/invites/:id/regenerate`、`…/cancel`；已移出工作區的人用同名邀請＝找回原帳號（`rejoin`）。舊欄位 `roles`、`role`、`readOnly`（＝`viewer`）照收。
@@ -244,7 +244,7 @@ B. 不接受，等全部完成
 ### 3.20 1.1 版的變更（管理用端點；AI 用的端點與 MCP 工具不變）
 - **移除**：`POST /api/admin/transfer`、`PUT /api/members/matrix`、`PUT /api/projects/:id/members`（整批名單）回 410 `GONE`；跨專案角色取消（`GET /api/projects` 不再有 `crossRoleIds`，`PUT /api/members/matrix` 的 `crossRole` 一併移除）。
 - **新增**：3.19 的工作區角色、平台角色、移出工作區、成員名冊、專案成員、專案可見度、工作區設定與平台設定端點；participant 多了 `workspaceRole`、`platformRole`（管理員另有 `memberProjects`＝明確加入的專案）。
-- **改了意思**：`POST /api/participants/:id/disable` 只給平台管理員、角色保留；`PUT /api/file-ttl` 是工作區的覆寫（可送 null），平台預設改到 `PUT /api/platform/settings`；`GET /api/participants`、`GET /api/team-status` 列出所有工作區成員；第一位自行註冊的人只在還沒有平台管理員時才是管理員；邀請的 `readOnly` 只是 `role: viewer` 的舊寫法。
+- **改了意思**：`POST /api/participants/:id/disable` 只給平台管理員、角色保留；`PUT /api/file-ttl` 是工作區的覆寫（可送 null），平台預設改到 `PUT /api/platform/settings`；`GET /api/participants`、`GET /api/team-status` 列出所有工作區成員；第一位自行註冊的人只在還沒有平台管理員時才是管理員；邀請的 `readOnly` 只是 `role: viewer` 的舊寫法；`POST /api/leave` 改成把自己移出工作區，不再停用帳號。
 - **將移除（保留這一版）**：participant 的 `isAdmin`；`GET /api/projects` 的 `leaders`、`archivedLeaders`、`readOnly`（改看 `projectAdmins`、`archivedProjectAdmins`、`viewers`，內容一樣）；`adminId`／`adminName` 只是顯示用（最早加入的工作區管理員），權限改看各人的 `workspaceRole`。
 
 ## 4. 不用 MCP 的輪詢與狀態
