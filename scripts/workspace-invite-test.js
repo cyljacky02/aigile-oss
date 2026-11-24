@@ -92,6 +92,34 @@ try {
   assert.ok((await call(boss.token, '/api/participants')).body.items.some(p => p.participantId === Wg), '自行加入者在名冊上');
   console.log('✓ 自行註冊：關閉被拒、房間碼錯誤被拒、自行加入者沒有專案但在名冊上');
 
+  // ---- 邀請的預設要對；待接受的邀請清單 ----
+  assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '錯角色', projects: [{ project: A, role: 'owner' }] })).status, 400, '專案角色只能是 admin／member／viewer');
+  assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '錯專案', projects: [{ project: '沒這個', role: 'member' }] })).status, 400, '沒有的專案不行');
+  const gone = (await call(boss.token, '/api/invites', 'POST', { name: '取消掉', projects: [A] })).body.invite;
+  await call(boss.token, `/api/invites/${gone.id}/cancel`, 'POST', {});
+  const pend = (await call(boss.token, '/api/invites?status=pending')).body.items;
+  assert.deepEqual(pend.map(i => i.name), ['待接受'], '待接受的邀請：只有還有效的（已用、已取消的不算）：' + JSON.stringify(pend));
+  assert.deepEqual([pend[0].kind, pend[0].status, pend[0].presets], ['new', '有效', [{ project: A, role: 'member', title: '' }]], '待接受的邀請帶預設專案');
+  assert.equal((await call(chen.token, '/api/invites?status=pending')).status, 403, '一般成員看不到待接受的邀請');
+  console.log('✓ 待接受的邀請清單');
+
+  // ---- 已移出工作區的人再被邀請：用原本的帳號回來，依預設加入專案 ----
+  assert.equal((await call(boss.token, `/api/participants/${Cn}/remove`, 'POST', {})).status, 200, '陳昭宇被移出工作區');
+  assert.equal((await call(chen.token, '/api/me')).status, 401, '移出後進不來');
+  r = await call(boss.token, '/api/invites', 'POST', { name: '陳昭宇', projects: [{ project: B, role: 'member', title: 'PG' }] });
+  assert.equal(r.status, 201, '可以邀請已移出的人回來：' + JSON.stringify(r.body));
+  assert.equal(r.body.invite.kind, 'rejoin', '邀請標出是重新加入');
+  assert.equal(code(await call(boss.token, '/api/invites', 'POST', { name: '陳昭宇' })), 'INVITE_EXISTS', '已經有有效的邀請就不再發');
+  assert.equal((await call(null, '/api/auth/invite/peek', 'POST', { token: tokenOf(r.body.url) })).body.kind, 'rejoin', '被邀請的人看得到是重新加入');
+  const back = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url) });
+  assert.equal(back.status, 200, '接受邀請：' + JSON.stringify(back.body));
+  assert.equal(back.body.participant.participantId, Cn, '回來的是原本的帳號（歷史紀錄接得上）');
+  const cBack = await me(back.body.token);
+  assert.deepEqual([cBack.workspaceRole, cBack.projects, !!cBack.removed], ['member', [B], false], '重新是工作區成員，依預設加入專案');
+  assert.equal((await roleIn(B, Cn)).title, 'PG', '職稱照預設');
+  assert.ok((await call(boss.token, '/api/participants')).body.items.some(p => p.participantId === Cn), '回到名冊上');
+  console.log('✓ 已移出的人可以再被邀請回來');
+
   // ---- 4. 第一位自行註冊的人：只在還沒有平台管理員時成為管理員 ----
   {
     const N = await mk('first', { openJoin: '1' });

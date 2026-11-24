@@ -254,8 +254,10 @@ export function registerLogin(d) {
   const listOf = s => String(s || '').split(',').map(x => x.trim()).filter(x => PROJECTS.includes(x));
   const readProjectRole = v => { if (!Object.values(PROJECT_ROLE).includes(v)) throw invalid('role 需為 admin（專案管理員）、member（專案成員）或 viewer（唯讀成員）'); return v; };
   const inviteStatus = (iv, now = Date.now()) => (iv.used_at ? '已使用' : iv.revoked_at ? '已取消' : iv.expires_at <= now ? '已過期' : '有效');
+  // 邀請種類：new＝新的人（接受時建帳號）、rejoin＝已移出工作區的人用原本的帳號回來、reset＝管理員「重設登入」給的新連結
+  const inviteKind = iv => (!iv.participant_id ? 'new' : roleJson(iv.role)?.__rejoin ? 'rejoin' : 'reset');
   const inviteView = (iv, people) => ({
-    id: iv.id, kind: iv.participant_id ? 'reset' : 'new', name: iv.name, role: roleText(iv.role), roles: rolesOf(iv.role), readOnly: roOf(iv.role), projects: listOf(iv.projects), presets: presetsOf(iv),
+    id: iv.id, kind: inviteKind(iv), name: iv.name, role: roleText(iv.role), roles: rolesOf(iv.role), readOnly: roOf(iv.role), projects: listOf(iv.projects), presets: presetsOf(iv),
     status: inviteStatus(iv), createdAt: iso(iv.created_at), expiresAt: iso(iv.expires_at), usedAt: iso(iv.used_at),
     ttl: Object.keys(INVITE_TTLS).find(k => INVITE_TTLS[k] === iv.expires_at - iv.created_at) || null,
     usedByName: iv.used_by ? people.get(iv.used_by)?.name ?? null : null, createdByName: people.get(iv.created_by)?.name ?? null,
@@ -314,9 +316,14 @@ export function registerLogin(d) {
     await access.check(ctx, me, 'invite', 'workspace', { what: '邀請新成員' });
     const body = await readJson(req);
     const name = validateName(body.name);
-    await assertNameFree(name);
+    // 已移出工作區的人（帳號沒停用）：邀請他用原本的帳號回來；其他人在用的名字不能邀請
+    const taken = await db.get('SELECT id, kind, status, workspace_status FROM participants WHERE name = ?', name);
+    const rejoin = taken && taken.kind === 'human' && taken.status === 'active' && taken.workspace_status === 'removed' ? taken.id : null;
+    if (!rejoin) await assertNameFree(name);
     const now = Date.now();
-    const dup = await db.get('SELECT id FROM invites WHERE name = ? COLLATE NOCASE AND participant_id IS NULL AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?', name, now);
+    const dup = rejoin
+      ? await db.get('SELECT id FROM invites WHERE participant_id = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?', rejoin, now)
+      : await db.get('SELECT id FROM invites WHERE name = ? COLLATE NOCASE AND participant_id IS NULL AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?', name, now);
     if (dup) throw new ApiError(409, 'INVITE_EXISTS', `已經有給「${name}」的有效邀請，可以在「邀請」清單重新產生`);
     const { projects, roles: projRoles, titles } = readInviteProjects(body.projects);
     const ttlMs = readTtl(body.ttl);
@@ -334,20 +341,22 @@ export function registerLogin(d) {
       for (const pj of ro) if (projRoles[pj] !== PROJECT_ROLE.ADMIN) projRoles[pj] = PROJECT_ROLE.VIEWER;
     }
     const ro = projects.filter(pj => projRoles[pj] === PROJECT_ROLE.VIEWER), pa = projects.filter(pj => projRoles[pj] === PROJECT_ROLE.ADMIN);
-    if (Object.keys(titles).length || ro.length || pa.length) {
+    if (Object.keys(titles).length || ro.length || pa.length || rejoin) {
       const t = Object.keys(titles).length || !role ? titles : Object.fromEntries(projects.map(pj => [pj, role.slice(0, 10)]));
-      role = JSON.stringify({ ...t, ...(ro.length ? { __ro: ro } : {}), ...(pa.length ? { __admin: pa } : {}) });
+      role = JSON.stringify({ ...t, ...(ro.length ? { __ro: ro } : {}), ...(pa.length ? { __admin: pa } : {}), ...(rejoin ? { __rejoin: 1 } : {}) });
     }
     const id = randId('inv'), token = newToken();
     await db.run('INSERT INTO invites (id, token_hash, name, role, projects, participant_id, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)',
-      id, await sha256(token), name, role, projects.join(','), null, me.id, now, now + ttlMs);
+      id, await sha256(token), name, role, projects.join(','), rejoin, me.id, now, now + ttlMs);
     return { __status: 201, ...(await inviteOut(ctx, base, id, token)) };
   });
-  route('GET', '/api/invites', async ({ me, ctx }) => {
+  // 邀請清單（最近 7 天）；?status=pending 只回待接受的：還有效、要加入工作區的（new、rejoin；不含重設登入）
+  route('GET', '/api/invites', async ({ me, ctx, url }) => {
     await access.check(ctx, me, 'invite', 'workspace', { what: '查看邀請' });
     const rows = await db.all('SELECT * FROM invites WHERE created_at > ? ORDER BY created_at DESC LIMIT 100', Date.now() - INVITE_LIST_MS);
     const people = await peopleMap(ctx);
-    return { items: rows.map(iv => inviteView(iv, people)) };
+    const pending = url.searchParams.get('status') === 'pending';
+    return { items: rows.filter(iv => !pending || (inviteStatus(iv) === '有效' && inviteKind(iv) !== 'reset')).map(iv => inviteView(iv, people)) };
   });
   async function myInvite(ctx, me, id) {
     await access.check(ctx, me, 'invite', 'workspace', { what: '管理邀請' });
@@ -361,9 +370,10 @@ export function registerLogin(d) {
     const prevTtl = Object.values(INVITE_TTLS).find(v => v === iv.expires_at - iv.created_at) || INVITE_TTLS[INVITE_TTL_DEFAULT];
     const ttlMs = readTtl((await readJson(req).catch(() => ({}))).ttl, prevTtl);
     if (iv.used_at) throw new ApiError(400, 'INVITE_USED', `${iv.name} 已經用這個邀請加入，不需要重發`);
-    if (!iv.participant_id) {
-      const taken = await db.get('SELECT id FROM participants WHERE name = ?', iv.name);
-      if (taken) throw new ApiError(409, 'NAME_TAKEN', `「${iv.name}」已經是成員了，不需要邀請`);
+    const kind = inviteKind(iv);
+    if (kind !== 'reset') {
+      const taken = await db.get('SELECT id, workspace_status FROM participants WHERE name = ?', iv.name);
+      if (taken && !(kind === 'rejoin' && taken.id === iv.participant_id && taken.workspace_status === 'removed')) throw new ApiError(409, 'NAME_TAKEN', `「${iv.name}」已經是成員了，不需要邀請`);
     }
     return inviteOut(ctx, base, iv.id, await newInviteToken(iv.id, ttlMs));
   });
@@ -382,7 +392,7 @@ export function registerLogin(d) {
     const people = await peopleMap(ctx);
     const admin = adminOf(people);
     if (!iv) { failed(req); return { valid: false }; } // 失效連結不回管理員姓名
-    return { valid: true, kind: iv.participant_id ? 'reset' : 'new', inviterName: people.get(iv.created_by)?.name || admin?.name || null,
+    return { valid: true, kind: inviteKind(iv), inviterName: people.get(iv.created_by)?.name || admin?.name || null,
       groupName: await groupName(), name: iv.participant_id ? people.get(iv.participant_id)?.name ?? iv.name : iv.name,
       role: roleText(iv.role), projects: listOf(iv.projects).map(id => ({ id, name: nameOf(id) })), expiresAt: iso(iv.expires_at) };
   }, { open: true });
@@ -472,12 +482,13 @@ export function registerLogin(d) {
         if (!iv) return null;
         const now = Date.now();
         let pid = iv.participant_id, name = iv.name, created = false;
+        const rejoin = inviteKind(iv) === 'rejoin';
         if (!pid) {
           name = validateName(body.name ?? iv.name);
           await assertNameFree(name);
         } else {
           const t = await db.get("SELECT * FROM participants WHERE id = ? AND status = 'active'", pid);
-          if (!t) throw gone();
+          if (!t || (rejoin && t.workspace_status !== 'removed')) throw gone(); // 重新加入的連結只給還在「已移出」的人用
           name = t.name;
         }
         // 選填帳號密碼；三格都空＝不設，填了就要都對（在佔用邀請前檢查，錯了連結還能用）
@@ -507,6 +518,14 @@ export function registerLogin(d) {
           }
           await loadMembers(true);
           await setInitialRoles(pid, roles || Object.fromEntries(listOf(iv.projects).map(pj => [pj, iv.role || ''])));
+          created = true;
+        } else if (rejoin) {
+          // 已移出的人用原本的帳號回到工作區（工作區成員），依邀請預設的專案與專案角色加入；帳密、歷史紀錄照舊，他的 AI 維持停用
+          invalidatePeople();
+          await db.batch([["UPDATE participants SET workspace_status = 'active', workspace_role = 'member', updated_at = ? WHERE id = ? AND workspace_status = 'removed'", [nowIso(), pid]],
+            ...presetsOf(iv).flatMap(x => addMemberStmts(pid, x.project, x.role))]);
+          await loadMembers(true);
+          await setInitialRoles(pid, rolesOf(iv.role) || {});
           created = true;
         }
         await db.run('UPDATE invites SET used_by = ? WHERE id = ?', pid, iv.id);
