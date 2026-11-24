@@ -105,6 +105,8 @@ try {
 
   // 專案清單
   assert.ok(!(await call(chen.token, '/api/projects')).body.items.some(p => p.id === P), '私人專案不在非成員的專案清單');
+  const lists = (await call(chen.token, '/api/projects')).body;
+  for (const k of ['projectAdmins', 'archivedProjectAdmins', 'viewers', 'leaders', 'archivedLeaders', 'readOnly', 'join']) assert.ok(!(P in (lists[k] || {})), `${k} 不列私人專案`);
   assert.ok(!(await joinable(chen.token)).some(p => p.id === P), '私人專案不在可以加入的清單');
   assert.ok((await call(wang.token, '/api/projects')).body.items.some(p => p.id === P && p.visibility === 'private'), '成員看得到');
   // 跟「沒有這個專案」分不出來：同樣的狀態碼與錯誤（訊息裡的專案代號換掉再比）

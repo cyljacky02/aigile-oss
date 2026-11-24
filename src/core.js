@@ -1959,7 +1959,15 @@ ${ending}`;
   route('PUT', '/api/projects/:id/members', goneMembers);
   // UX ：不屬於全部專案的人，專案清單只回自己所屬的專案（不露出別專案名稱）
   // PLAT-381：被隔離的成員也列出自己所屬、已封存的專案（leader 才能還原）
-  const scopeProjects = (r, me) => { if (!isolatedFrom(me)) return r; const mine = [...new Set([...projectsOf(me), ...listOf(me)])]; return { ...r, items: r.items.filter(p => mine.includes(p.id)), leaders: Object.fromEntries(Object.entries(r.leaders || {}).filter(([k]) => mine.includes(k))), archivedLeaders: Object.fromEntries(Object.entries(r.archivedLeaders || {}).filter(([k]) => mine.includes(k))), readOnly: Object.fromEntries(Object.entries(r.readOnly || {}).filter(([k]) => mine.includes(k))), join: Object.fromEntries(Object.entries(r.join || {}).filter(([k]) => mine.includes(k))) }; };
+  // 以專案為鍵的清單都只留自己的專案（新名 projectAdmins／archivedProjectAdmins／viewers 與保留一版的舊名 leaders／archivedLeaders／readOnly）
+  const PROJECT_MAPS = ['projectAdmins', 'archivedProjectAdmins', 'viewers', 'leaders', 'archivedLeaders', 'readOnly', 'join'];
+  const scopeProjects = (r, me) => {
+    if (!isolatedFrom(me)) return r;
+    const mine = [...new Set([...projectsOf(me), ...listOf(me)])];
+    const out = { ...r, items: r.items.filter(p => mine.includes(p.id)) };
+    for (const k of PROJECT_MAPS) out[k] = Object.fromEntries(Object.entries(r[k] || {}).filter(([pj]) => mine.includes(pj)));
+    return out;
+  };
   route('GET', '/api/projects', async ({ ctx, me }) => ({ ...scopeProjects(await projectsResponse(ctx), me), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace') })); // canCreateProject：網頁要不要顯示「新增專案」
   // 群組名稱（登入頁也要顯示，所以讀取不用登入）；只有管理員能改
   route('GET', '/api/group', async () => ({ name: await groupName() }), { open: true });
