@@ -99,9 +99,8 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
         ...membership.enterWorkspaceStmts(p.id, joinedAt), ...membership.setProjectsStmts(p.id, [pj], null));
     }
     // 你（管理員）加進示範專案，才看得到
-    const mine = await membership.fetchProjectsOf(me.id);
-    const addedMe = !mine.includes(pj);
-    if (addedMe) stmts.push(...membership.setProjectsStmts(me.id, [...mine, pj], null));
+    // 你是工作區管理員：靠隱含權限就看得到示範專案，不加入（加入了反而列在成員裡）
+    const addedMe = false;
 
     // 卡片：不同狀態＋一張等你決定的決策卡
     let no = 0;

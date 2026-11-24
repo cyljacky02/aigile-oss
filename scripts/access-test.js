@@ -1,7 +1,8 @@
 // 權限模組（src/access.js）：「這個人在這個範圍的實際角色」與「能不能在這個範圍做某件事」
 // 用法：node scripts/access-test.js
 // 規則依第一階段之前的行為（GLOSSARY「成員與權限」用語）：
-//   工作區管理員＝唯一的管理員（同時是平台管理員），對所有專案有隱含權限；leader＝專案管理員；唯讀＝唯讀成員；AI 不能做任何管理動作
+//   工作區管理員＝workspace_role 是 admin 的人類，可以有多位（第一階段同時是平台管理員），對所有專案有隱含權限；
+//   leader＝專案管理員；唯讀＝唯讀成員；AI 不能做任何管理動作
 import assert from 'node:assert';
 import { createAccess, ACCESS_ROLE } from '../src/access.js';
 
@@ -9,7 +10,9 @@ class ApiError extends Error { constructor(status, code, message) { super(messag
 const requireHuman = me => { if (me.kind !== 'human') throw new ApiError(403, 'FORBIDDEN', '此操作僅限人類成員'); };
 
 const P = (id, kind, projects, extra = {}) => ({ id, kind, name: id, status: 'active', created_at: '2026-01-0' + id.length, projects, ...extra });
-const admin = P('admin', 'human', ['main', 'side'], { is_admin: 1 });
+const admin = P('admin', 'human', ['main', 'side'], { workspace_role: 'admin' });
+const admin2 = P('admin2', 'human', [], { workspace_role: 'admin' }); // 第二位工作區管理員，沒加入任何專案
+const exAdmin = P('exAdmin', 'human', [], { workspace_role: 'admin', status: 'disabled' }); // 停用的不算
 const lead = P('lead', 'human', ['main']);
 const member = P('member', 'human', ['main']);
 const viewer = P('viewer', 'human', ['main']);
@@ -17,7 +20,7 @@ const loner = P('loner', 'human', []);
 const sider = P('sider', 'human', ['side']);
 const bot = P('bot', 'ai', ['main'], { owner_id: 'member' });
 const viewerBot = P('viewerBot', 'ai', ['main'], { owner_id: 'viewer' });
-const people = new Map([admin, lead, member, viewer, loner, sider, bot, viewerBot].map(p => [p.id, p]));
+const people = new Map([admin, admin2, exAdmin, lead, member, viewer, loner, sider, bot, viewerBot].map(p => [p.id, p]));
 const ACTIVE = ['main', 'side']; // 「old」是封存的專案
 const leaders = { main: ['lead'], old: ['lead'] };
 const readOnly = { main: ['viewer'] };
@@ -29,7 +32,7 @@ const access = createAccess({
   isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)),
   loadLeaders: async () => leaders, leadersOf: pj => leaders[pj] || [],
   loadReadOnly: async () => readOnly, isReadOnly: (p, pj) => (readOnly[pj] || []).includes(p.kind === 'ai' ? p.owner_id : p.id),
-  titles: () => titles,
+  titles: () => titles, memberProjectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
 });
 const ctx = {};
 const code = async p => { try { await p; return null; } catch (e) { return e.code; } };
@@ -59,8 +62,10 @@ try {
     assert.ok(v.can(admin, action, 'platform'), action);
     assert.ok(!v.can(lead, action, 'platform'), action + '：leader 不行');
   }
-  for (const action of ['manage_workspace', 'invite', 'reset_login', 'assign_members', 'create_project']) {
+  for (const action of ['manage_workspace', 'assign_workspace_admin', 'invite', 'reset_login', 'assign_members', 'create_project']) {
     assert.ok(v.can(admin, action, 'workspace'), action);
+    assert.ok(v.can(admin2, action, 'workspace'), action + '：第二位工作區管理員也可以');
+    assert.ok(!v.can(exAdmin, action, 'workspace'), action + '：停用的不行');
     assert.ok(!v.can(lead, action, 'workspace'), action + '：leader 不行');
   }
   for (const action of ['delete_project', 'set_project_code', 'set_project_slug']) {
@@ -126,10 +131,21 @@ try {
   assert.ok(!v.can(sider, 'see_ai_state', { target: bot }));
   console.log('✓ 名冊可見範圍');
 
-  // 隱含權限不算成員：管理員在沒有職稱的專案不列為成員
-  assert.ok(v.implicitOnlyIn(admin.id, 'main'));
+  // 隱含權限不算成員：工作區管理員在沒加入、也沒有職稱的專案不列為成員
+  assert.ok(v.implicitOnlyIn(admin2.id, 'main'), '沒加入的專案：只有隱含權限');
+  assert.ok(!v.implicitOnlyIn(admin.id, 'main'), '有加入的專案照舊是成員');
   assert.ok(!v.implicitOnlyIn(lead.id, 'main'));
+  assert.equal(v.roleIn(admin2, { project: 'side' }), PROJECT_ADMIN, '沒加入也是專案管理員（隱含）');
   console.log('✓ 隱含權限');
+
+  // 多位工作區管理員與最後一位保護
+  assert.deepEqual(v.admins().map(p => p.id), ['admin', 'admin2'], '兩位啟用中的工作區管理員');
+  assert.ok(!v.lastAdmin(admin), '還有別人：不是最後一位');
+  assert.ok(!v.lastAdmin(member), '一般成員不算');
+  const solo = access.view({ people: new Map([admin, exAdmin, member].map(p => [p.id, p])) });
+  assert.ok(solo.lastAdmin(admin), '停用的不算：admin 是最後一位');
+  assert.equal(solo.admin().id, 'admin');
+  console.log('✓ 多位工作區管理員、最後一位');
 
   // 建立專案：工作區設定是「所有成員」時一般成員也可以；AI 永遠不行（上面沒注入設定＝只有管理員）
   let wsRead = 0;

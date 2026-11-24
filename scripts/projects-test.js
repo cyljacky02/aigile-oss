@@ -342,6 +342,7 @@ const msg = (tok, text, extra = {}) => call(tok, '/api/messages', 'POST', { requ
     assert.equal((await addToProject(call, amy.token, '第二專案', [mate.participant.participantId])).status, 403, '專案管理員不能改別的專案');
     assert.equal((await setProjectRole(call, amy.token, '預設專案', mate.participant.participantId, 'admin')).status, 200, '專案管理員可以任命其他專案管理員');
     assert.equal((await setProjectRole(call, amy.token, '預設專案', mate.participant.participantId, 'member')).status, 200, '也可以卸任');
+    await addToProject(call, boss.token, '預設專案', [bossId]); // 工作區管理員靠隱含權限；明確加入後才是專案成員
     assert.equal(code(await removeFromProject(call, amy.token, '預設專案', bossId)), 'CANNOT_MANAGE_ADMIN', '專案管理員不能動工作區管理員');
     const lev = (await call(boss.token, '/api/projects/預設專案/events?limit=10')).body.items.map(e => e.text);
     assert.ok(lev.some(t => /Amy 把 陳建宏 加入專案（專案成員）/.test(t)), '專案管理員的變更記在異動紀錄');
