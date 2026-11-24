@@ -9,6 +9,7 @@
 // - 專案管理員＝該專案的 leader（app_settings.project_leaders），或有隱含權限的工作區管理員
 // - 唯讀成員＝app_settings.read_only 列的人類，他名下的 AI 跟著唯讀；明確設成唯讀時一律不能寫（不看其他角色）
 // - AI 不能做任何管理動作
+// - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
 // 資料都由呼叫端注入（成員資料歸成員資格模組管），這裡只做判斷。
 export const ACCESS_ROLE = Object.freeze({
   PLATFORM_ADMIN: 'platform_admin',
@@ -41,7 +42,7 @@ const ACTIONS = {
   reset_login: { admin: true, rule: workspaceAdmin },
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬專案、某專案成員名單、跨專案角色
   assign_project_admin: { admin: true, rule: workspaceAdmin }, // 指定 leader
-  create_project: { admin: true, rule: workspaceAdmin },
+  create_project: { admin: true, fresh: true, rule: (v, me) => workspaceAdmin(v, me) || (v.membersCreateProjects() && v.roleIn(me, 'workspace') === R.MEMBER) }, // fresh：check 時重讀工作區設定
   // 專案（只有工作區管理員）
   delete_project: { admin: true, rule: workspaceAdmin },
   set_project_code: { admin: true, rule: workspaceAdmin },
@@ -77,6 +78,7 @@ const scopeOf = scope => {
 //   loadLeaders(force)       → 讀 leader 名單（10 秒快取；force 重讀）；leadersOf(pj) → 目前快取裡該專案的 leader id（含封存專案）
 //   loadReadOnly(force)      → 讀唯讀名單；isReadOnly(p, pj) → 目前快取裡 p 在 pj 唯讀（AI 跟著所屬人類）
 //   titles()                 → { 成員id: { 專案id: 職稱 } }（目前快取）
+//   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
 export function createAccess(deps) {
   const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, isCrossRole, leadersOf, isReadOnly, titles } = deps;
 
@@ -95,6 +97,7 @@ export function createAccess(deps) {
     const v = {
       people, admin: adminNow, projects, projectsOf, isolatedFrom, crossRole: isCrossRole,
       active: pj => projects().includes(pj),
+      membersCreateProjects: () => !!deps.membersCreateProjects?.(),
       leads: (p, pj) => !!p && leadersOf(pj).includes(p.id),
       readOnlyAt: (p, pj) => (pj ? readOnlyIn(p, pj) : readOnlyList(p).length > 0),
       roleIn(p, scope) {
@@ -123,6 +126,7 @@ export function createAccess(deps) {
     if (light) return view();
     const people = await deps.people(ctx);
     await deps.loadLeaders(fresh);
+    await deps.loadWorkspace?.(fresh);
     return view({ people });
   }
 
@@ -146,7 +150,7 @@ export function createAccess(deps) {
     const def = ACTIONS[action];
     if (!def) throw new Error(`沒有這個權限動作：${action}`);
     if (def.human) requireHuman(me);
-    const v = await load(ctx, { fresh: !!def.leads, light: def.light });
+    const v = await load(ctx, { fresh: !!(def.leads || def.fresh), light: def.light });
     if (!v.can(me, action, scope)) throw denial(v, me, action, scopeOf(scope), opts);
     return v;
   }
