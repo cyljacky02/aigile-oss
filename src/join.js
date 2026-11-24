@@ -9,7 +9,7 @@ export const JOIN_DESC_MAX = 100;
 export function registerJoin(d) {
   const { route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf,
     loadProjects, projectRows, loadLeaders, adminOf, applyMembership, loadProjectRoles, saveProjectRoles, projRoles, readRole,
-    loadReadOnly, invalidatePeople, projEvent, liveTo = () => {} } = d; // liveTo：內建即時通道（本機／Docker），申請結果幾秒內推給申請人
+    addReadOnly, invalidatePeople, projEvent, liveTo = () => {} } = d; // liveTo：內建即時通道（本機／Docker），申請結果幾秒內推給申請人
 
   async function joinSettings() {
     const r = await db.get("SELECT value FROM app_settings WHERE key = 'join_settings'").catch(() => null);
@@ -123,12 +123,7 @@ export function registerJoin(d) {
     if (!upd.changes) throw new ApiError(409, 'JOIN_DECIDED', '這個申請已經處理過了');
     if (!projectsOf(p).includes(r.project)) await applyMembership(ctx, me, [{ id: p.id, projects: PROJECTS.filter(x => projectsOf(p).includes(x) || x === r.project) }], { byLeader: !admin });
     if (role) { await loadProjectRoles(true); const cur = projRoles(); await saveProjectRoles({ ...cur, [p.id]: { ...(cur[p.id] || {}), [r.project]: role } }); }
-    if (ro) {
-      const map = { ...(await loadReadOnly(true)) };
-      map[r.project] = [...new Set([...(map[r.project] || []), p.id])];
-      await db.run("INSERT INTO app_settings (key, value) VALUES ('read_only', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify(map));
-      await loadReadOnly(true);
-    }
+    if (ro) await addReadOnly(p.id, [r.project]);
     await db.batch([projEvent(r.project, me.id, `${me.name} 核准 ${p.name} 加入${role ? `（${role}）` : ''}${ro ? '，唯讀' : ''}`, at), notice(p.id, 'join_approved', `「${row.name}」已核准你加入${ro ? '（唯讀）' : ''}`)]);
     invalidatePeople();
     liveTo([p.id], 'join', { project: r.project, name: row.name, status: 'approved' });
