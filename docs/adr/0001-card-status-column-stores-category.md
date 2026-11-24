@@ -12,5 +12,5 @@ Projects can define their own Statuses, but every workflow rule is keyed on the 
 
 - 資料庫欄位 `cards.status` 的意思是「類別」，而 API 回傳的 `status` 是自訂狀態名稱（另附 `category`、`statusId`）。兩者同名不同義，是刻意的取捨，不要「修正」成一致。
 - 改變卡片狀態時兩欄必須一起寫：跨類別移動走既有規則並更新 `status`；同類別內移動只改 `status_id`。只改 `status` 的寫入要一併把 `status_id` 設成「該類別排最前面的狀態」（`src/statuses.js` 的 `FIRST_STATUS_SQL`／`firstStatusSql`）。
-- `status_id` 為空或對不上（別的專案、別的類別、已刪除）時，卡片算在「同專案、同類別、排最前面」的狀態；程式第一次讀到沒有狀態的專案時補上預設狀態組並補齊卡片的 `status_id`，改狀態設定前也會先補齊。所以升級（007）只加表與欄位，SQLite、D1、Postgres 共用同一套補資料的程式。
+- `status_id` 為空或對不上（別的專案、別的類別、已刪除）時，卡片算在「同專案、同類別、排最前面」的狀態；程式第一次讀到沒有狀態的專案時補上預設狀態組並補齊卡片的 `status_id`，改狀態設定前也會先補齊。所以升級（007）只加表與欄位，SQLite、D1、Postgres 共用同一套補資料的程式。補預設狀態組只在專案還沒有任何狀態時做（整組一句插入），同時補兩次或補好後使用者已經改過，都不會把改掉的狀態加回來。
 - The DB column `cards.status` means Category while the API field `status` means the Status name. The mismatch is deliberate; don't "fix" it.

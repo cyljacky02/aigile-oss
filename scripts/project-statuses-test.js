@@ -16,7 +16,8 @@ const db = await openTestDb(path.join(dataDir, 'switch.db'));
 // 模擬寫入到一半失敗：開了之後，刪除狀態那一步會出錯（在交易裡就換成一步會失敗的語句，讓資料庫自己回復）
 // 模擬同時有人改卡：beforeStatusDelete 在刪除狀態的交易開始前執行一次
 // beforeCardWrite 在下一次寫卡片（UPDATE／INSERT cards）之前執行一次（模擬讀完狀態清單、還沒寫進去時狀態被刪）
-let failStatusDelete = false, beforeStatusDelete = null, beforeCardWrite = null;
+// beforeStatusInit 在下一次補預設狀態組之前執行一次（模擬初始化慢了一步）
+let failStatusDelete = false, beforeStatusDelete = null, beforeCardWrite = null, beforeStatusInit = null;
 const STATUS_DELETE = /^DELETE FROM project_statuses WHERE id\b/, CARD_WRITE = /^\s*(UPDATE cards SET|INSERT INTO cards)\b/;
 const isStatusDelete = sql => failStatusDelete && STATUS_DELETE.test(sql);
 const cardWriteHook = async sqls => { if (beforeCardWrite && sqls.some(q => CARD_WRITE.test(q))) { const f = beforeCardWrite; beforeCardWrite = null; await f(); } };
@@ -24,6 +25,7 @@ const appDb = { ...db,
   run: async (sql, ...args) => { await cardWriteHook([sql]); if (isStatusDelete(sql)) throw new Error('模擬寫入失敗'); return db.run(sql, ...args); },
   batch: async stmts => {
     await cardWriteHook(stmts.map(([sql]) => sql));
+    if (beforeStatusInit && stmts.some(([sql]) => /^INSERT OR IGNORE INTO project_statuses\b/.test(sql))) { const f = beforeStatusInit; beforeStatusInit = null; await f(); }
     if (beforeStatusDelete && stmts.some(([sql]) => STATUS_DELETE.test(sql))) { const f = beforeStatusDelete; beforeStatusDelete = null; await f(); }
     return db.batch(stmts.map(([sql, args]) => (isStatusDelete(sql) ? ['SELECT x FROM no_such_table', []] : [sql, args])));
   } };
@@ -346,6 +348,19 @@ try {
     await blockedOnly('卡住4');
     assert.equal(fail(await call(boss.token, `/api/suggestions/${sug.suggestionId}/apply`, 'POST', {}), 409, '採用建議').error.code, 'STATUS_DELETED');
     assert.equal(ok(await call(boss.token, `/api/cards?q=${encodeURIComponent('建議的阻塞')}&include=archived`), '搜尋').items.length, 0, '沒有建出卡');
+  }
+
+  // 19) 兩個請求都發現專案還沒有狀態：一個先補好、使用者接著拿掉「受阻」，慢的那個再補也不會把它加回來
+  {
+    let pj = null;
+    beforeStatusInit = async () => {
+      pj = (await db.get('SELECT p.id FROM projects p WHERE NOT EXISTS (SELECT 1 FROM project_statuses s WHERE s.project = p.id)')).id;
+      const P3 = encodeURIComponent(pj);
+      ok(await del((await byName('受阻', P3)).id, {}, boss.token, P3), '另一個請求補好之後拿掉受阻');
+    };
+    ok(await call(boss.token, '/api/projects', 'POST', { name: '初始化慢一步' }), '建專案（不給狀態）');
+    assert.ok(pj && beforeStatusInit === null, '真的有兩個初始化');
+    assert.deepEqual((await statuses(encodeURIComponent(pj))).map(s => s.name), ['待整理', '待處理', '進行中', '待確認', '已完成'], '拿掉的受阻沒有被加回來');
   }
 
   console.log('project-statuses-test：全部通過');

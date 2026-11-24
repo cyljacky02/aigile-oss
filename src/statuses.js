@@ -63,11 +63,14 @@ function makeBook(rows, invalid) {
 
 export function createStatuses({ db, invalid }) {
   const ROWS_SQL = 'SELECT p.id AS pj, s.id, s.project, s.name, s.category, s.position, s.color FROM projects p LEFT JOIN project_statuses s ON s.project = p.id';
-  // 還沒有狀態的專案（剛升級、剛建立）補上預設狀態組，並把卡片的 status_id 補齊
+  // 還沒有狀態的專案（剛升級、剛建立）補上預設狀態組，並把卡片的 status_id 補齊。
+  // 整組用一句插入、而且只在專案還沒有任何狀態時插：兩個請求同時補，或先補好、使用者接著改過，慢的那個什麼都不做
+  const DEFAULTS_SQL = DEFAULT_STATUSES.map((s, i) => `SELECT '${s.name}' AS name, '${s.category}' AS category, ${i} AS position, '${s.color}' AS color`).join(' UNION ALL ');
   async function ensureDefaults(pjs) {
     const stmts = [];
     for (const pj of pjs) {
-      DEFAULT_STATUSES.forEach((s, i) => stmts.push(['INSERT OR IGNORE INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [pj, s.name, s.category, i, s.color]]));
+      stmts.push([`INSERT OR IGNORE INTO project_statuses (project, name, category, position, color) SELECT p.id, d.name, d.category, d.position, d.color
+        FROM projects p CROSS JOIN (${DEFAULTS_SQL}) d WHERE p.id = ? AND NOT EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.project = p.id)`, [pj]]);
       stmts.push([`UPDATE cards SET status_id = (SELECT ps.id FROM project_statuses ps WHERE ps.project = cards.project AND ps.category = cards.status ORDER BY ps.position, ps.id LIMIT 1) WHERE project = ? AND status_id IS NULL AND status != '${ARCHIVED}'`, [pj]]);
     }
     await db.batch(stmts);
