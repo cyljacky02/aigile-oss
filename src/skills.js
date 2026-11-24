@@ -84,7 +84,8 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
 
   // 管理技能（核准、下架、改發給誰）：該專案 leader 或群組管理員（權限模組的 manage_project）
   const canManage = (ctx, me, pj) => access.can(ctx, me, 'manage_project', { project: pj });
-  const requireProject = pj => { if (!PROJECTS.includes(pj)) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案'); };
+  // 沒有這個專案，或是看不到的私人專案（權限模組 discover_project）：一樣回 404
+  const requireProject = async (ctx, me, pj) => { if (!PROJECTS.includes(pj) || !(await access.can(ctx, me, 'discover_project', { project: pj }))) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案'); };
   const inProject = (me, pj) => projectsOf(me).includes(pj);
   // 唯讀成員（及他的 AI）不能上傳、核准、下架技能
   const assertWritable = (me, pj) => access.check({}, me, 'write', { project: pj });
@@ -255,7 +256,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
 
   // ---------- 技能庫（專案）----------
   route('GET', '/api/projects/:id/skills', async ({ ctx, me, params }) => {
-    const pj = params.id; requireProject(pj);
+    const pj = params.id; await requireProject(ctx, me, pj);
     if (!(await canSee(ctx, me, pj))) throw new ApiError(403, 'FORBIDDEN', '你不屬於這個專案');
     const manage = await canManage(ctx, me, pj);
     const rows = await db.all(`SELECT id, project, name, version, description, sha256, size, has_scripts, roles, CASE WHEN substr(files, 1, 1) = '{' THEN files END AS pack_meta, ${TPL_HINT}, status, uploaded_by, uploaded_at, reviewed_by, reviewed_at, review_note FROM skills WHERE project = ? ORDER BY name, version DESC`, pj);
@@ -266,7 +267,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
     return { items: shown.map(r => ({ ...view(r, people), ...(stats.get(r.id) ? { install: stats.get(r.id) } : {}) })), canManage: manage, canUpload: me.kind === 'human' && inProject(me, pj) && await access.can(ctx, me, 'write', { project: pj }), roles: await roleOptions(pj) };
   });
   route('POST', '/api/projects/:id/skills', async ({ ctx, me, params, req, base }) => {
-    const pj = params.id; requireProject(pj);
+    const pj = params.id; await requireProject(ctx, me, pj);
     if (me.kind !== 'human') throw new ApiError(403, 'FORBIDDEN', 'AI 不能上傳技能，請所屬人類上傳');
     if (!inProject(me, pj)) throw new ApiError(403, 'FORBIDDEN', '只有這個專案的成員能上傳技能');
     await assertWritable(me, pj);
@@ -341,7 +342,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
   });
   // 下架：目前上架的版本（含待核准的）全部收起，私訊主人
   route('POST', '/api/projects/:id/skills/:name/remove', async ({ ctx, me, params, base }) => {
-    const pj = params.id; requireProject(pj);
+    const pj = params.id; await requireProject(ctx, me, pj);
     if (!(await canManage(ctx, me, pj))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的 leader 或群組管理員能下架技能');
     await assertWritable(me, pj);
     const cur = await db.get("SELECT project, roles FROM skills WHERE project = ? AND name = ? AND status = 'published'", pj, params.name);
@@ -353,7 +354,7 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
   // 改發給誰：不用重傳、不升版本；上架版與待核准版一起改。跟下架同一批人（leader、管理員）能改
   // 新加入的 AI 主人收到「有新技能」，被拿掉的收到「不再發給，同步後移除」
   route('PUT', '/api/projects/:id/skills/:name/target', async ({ ctx, me, params, req, base }) => {
-    const pj = params.id; requireProject(pj);
+    const pj = params.id; await requireProject(ctx, me, pj);
     if (!(await canManage(ctx, me, pj))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的 leader 或群組管理員能改發給誰');
     await assertWritable(me, pj);
     const rows = await db.all("SELECT * FROM skills WHERE project = ? AND name = ? AND status IN ('published', 'pending') ORDER BY version DESC", pj, params.name);

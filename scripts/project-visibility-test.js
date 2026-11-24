@@ -122,6 +122,20 @@ try {
   await same('卡片篩專案', pj => call(chen.token, `/api/cards?project=${pj}`));
   await same('建卡', pj => call(chen.token, '/api/cards', 'POST', { requestId: 'x' + pj, project: pj, title: '試' }));
   await same('發訊息', pj => call(chen.token, '/api/messages', 'POST', { requestId: 'm' + pj, project: pj, text: '試' }));
+  // 檔案、文件、知識庫、技能：帶專案的路由一律跟「沒有這個專案」一樣（404）
+  const upload = (pj, extra = '') => app(new Request('http://localhost' + encodeURI(`/api/files?name=a.txt&declared=true&project=${pj}${extra}`), { method: 'POST', headers: { Authorization: `Bearer ${chen.token}`, 'Content-Type': 'application/octet-stream' }, body: '你好' }), 'http://localhost')
+    .then(async x => ({ status: x.status, body: await x.json().catch(() => ({})) }));
+  assert.equal((await same('上傳檔案', pj => upload(pj))).status, 404);
+  assert.equal((await same('上傳檔案（不發文）', pj => upload(pj, '&post=false'))).status, 404);
+  const probes = [
+    ['GET', '/docs'], ['POST', '/docs?name=a.txt&declared=true'], ['GET', '/docs/d_x'], ['PATCH', '/docs/d_x', { name: 'b.txt' }], ['DELETE', '/docs/d_x'],
+    ['POST', '/doc-folders', { name: '資料夾' }], ['PATCH', '/doc-folders/f_x', { name: '資料夾' }], ['DELETE', '/doc-folders/f_x'],
+    ['GET', '/kb/search?q=' + encodeURIComponent('機密')], ['GET', '/docs/d_x/text'], ['POST', '/kb/reindex'], ['POST', '/kb/docs', { docIds: ['d_x'] }],
+    ['GET', '/kb/settings'], ['PUT', '/kb/settings', { aiId: null }], ['POST', '/kb/organize'], ['GET', '/kb/pages'], ['GET', '/kb/pages/index'], ['POST', '/kb/pages', { title: 'x', body: 'x' }],
+    ['PATCH', '/kb/pages/k_x', { body: 'x' }], ['POST', '/kb/pages/k_x/return', { reason: 'x' }], ['POST', '/kb/pages/k_x/refresh'], ['DELETE', '/kb/pages/k_x'],
+    ['GET', '/skills'], ['POST', '/skills', { files: [] }], ['POST', '/skills/x/remove'], ['PUT', '/skills/x/target', { roles: [] }],
+  ];
+  for (const [m, sub, body] of probes) assert.equal((await same(`${m} /api/projects/:id${sub}`, pj => call(chen.token, `/api/projects/${pj}${sub}`, m, body))).status, 404, `${m} ${sub} 回 404`);
   // 卡片代號
   const k404 = async (label, path) => { const a = await call(chen.token, path(key)), b = await call(chen.token, path('SECR-999'));
     assert.equal(JSON.stringify({ s: a.status, e: a.body.error }).replace(key, '#'), JSON.stringify({ s: b.status, e: b.body.error }).replace('SECR-999', '#'), `${label}：私人專案的卡跟沒有這張卡一樣`); return a; };

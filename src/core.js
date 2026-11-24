@@ -3257,6 +3257,8 @@ ${ending}`;
       await audit('reject', me, null, { name: name || null, size, declared: declared ? 1 : 0, detail: code });
       return new ApiError(status, code, message);
     };
+    // 沒有這個專案，或是看不到的私人專案：一樣回 404（先擋，不讀檔、不存檔）
+    { const qp = q.get('project'); if (qp && qp !== 'all' && (!PROJECTS.includes(qp) || !discovers(me, qp))) throw await reject(404, 'NOT_FOUND', '找不到這個專案', Number(req.headers.get('content-length')) || 0); }
     // ；唯讀擋下也記進稽核（查「AI 上傳 403」時才知道是不是平台擋的）
     try { const qp = q.get('project'); await assertWritable(me, PROJECTS.includes(qp) ? qp : qp === 'all' ? null : projectsOf(me).length === 1 ? projectsOf(me)[0] : null); }
     catch (e) { if (e instanceof ApiError && e.status === 403) throw await reject(403, e.code, e.message, Number(req.headers.get('content-length')) || 0); throw e; }
