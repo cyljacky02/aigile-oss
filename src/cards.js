@@ -279,14 +279,22 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     const where = [], args = [];
     const status = q.get('status');
     if (status === 'open') where.push(`status IN ${UNFINISHED_SQL}`);
-    else if (status && CATEGORIES.includes(status)) { where.push('status = ?'); args.push(status); } // 狀態類別：跟以前一樣
-    else if (status) { // 自訂狀態（名稱或 ID）：看得到的專案裡對得上的狀態
+    else if (status) { // 跟 PATCH 同一個順序，各專案各自比對：狀態名稱 → 狀態 ID → 狀態類別名稱（整個類別）
       const pjs = PROJECTS.includes(q.get('project')) ? [q.get('project')] : isolatedFrom(me) ? projectsOf(me) : PROJECTS;
-      const hits = pjs.flatMap(pj => book.list(pj).filter(s => s.name === status || String(s.id) === status).map(s => ({ ...s, pj })));
-      if (!hits.length) throw invalid(`找不到狀態「${status}」：status 可以是 open、狀態類別（${CATEGORIES.join('、')}），或專案的狀態名稱、狀態 ID`);
-      // status_id 空的卡算在該類別第一個狀態
-      where.push('(' + hits.map(s => `(project = ? AND status = ? AND (status_id = ?${book.first(s.pj, s.category)?.id === s.id ? ' OR status_id IS NULL' : ''}))`).join(' OR ') + ')');
-      args.push(...hits.flatMap(s => [s.pj, s.category, s.id]));
+      const isCategory = CATEGORIES.includes(status);
+      const hits = pjs.flatMap(pj => {
+        const l = book.list(pj), s = l.find(x => x.name === status) || (/^\d+$/.test(status) ? l.find(x => String(x.id) === status) : null);
+        return s ? [{ ...s, pj, only: l.filter(x => x.category === s.category).length === 1 }] : [];
+      }).filter(s => !(isCategory && s.only)); // 類別裡只有這一個狀態：等於依類別篩（沒自訂過的專案 SQL 跟以前一樣）
+      if (!hits.length && !isCategory) throw invalid(`找不到狀態「${status}」：status 可以是 open、狀態類別（${CATEGORIES.join('、')}），或專案的狀態名稱、狀態 ID`);
+      // status_id 空的卡算在該類別第一個狀態；類別裡只有一個狀態就不看 status_id
+      const conds = hits.map(s => `(project = ? AND status = ?${s.only ? '' : ` AND (status_id = ?${book.first(s.pj, s.category)?.id === s.id ? ' OR status_id IS NULL' : ''})`})`);
+      args.push(...hits.flatMap(s => (s.only ? [s.pj, s.category] : [s.pj, s.category, s.id])));
+      if (isCategory) { // 其他專案：依類別
+        conds.push(`(status = ?${hits.length ? ` AND project NOT IN (${hits.map(() => '?').join(',')})` : ''})`);
+        args.push(status, ...hits.map(s => s.pj));
+      }
+      where.push(conds.length === 1 ? conds[0] : `(${conds.join(' OR ')})`);
     }
     else if (!q.get('since') && q.get('include') !== 'archived') where.push(`status IN ${NOT_ARCHIVED_SQL}`);
     if (q.get('owner')) { where.push('owner_id = ?'); args.push(q.get('owner')); }

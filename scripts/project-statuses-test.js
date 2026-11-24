@@ -228,6 +228,25 @@ try {
     assert.equal(h.waitFor.participantId, boss.participant.participantId, '等人類驗收');
   }
 
+  // 13) 卡片清單的 status 篩選跟 PATCH 同一個順序：狀態名稱 → 狀態 ID → 類別名稱
+  //     預設專案的「待處理」類別有兩個狀態（待處理、待辦）：status=待處理 是那個狀態，不是整個類別；別的專案照類別
+  {
+    const later = ok(await add({ name: '待辦', category: '待處理' }), '新增').items.at(-1);
+    const a = ok(await mkCard(boss.token, { status: '待處理' }), '待處理的卡');
+    const b = ok(await mkCard(boss.token, { status: '待辦' }), '待辦的卡');
+    const other = ok(await mkCard(boss.token, { project: '第二專案', status: '待處理' }), '第二專案待處理的卡');
+    const list = async qs => ok(await call(boss.token, `/api/cards?limit=200&${qs}`), '篩選').items.map(x => x.cardId);
+    let ids = await list(`status=${encodeURIComponent('待處理')}&project=${P}`);
+    assert.ok(ids.includes(a.cardId) && !ids.includes(b.cardId), '狀態名稱優先：只有「待處理」那個狀態');
+    ids = await list(`status=${later.id}&project=${P}`);
+    assert.ok(ids.includes(b.cardId) && !ids.includes(a.cardId), '狀態 ID');
+    ids = await list(`status=${encodeURIComponent('待處理')}`);
+    assert.ok(ids.includes(a.cardId) && !ids.includes(b.cardId) && ids.includes(other.cardId), '不指定專案：各專案各自比對');
+    ids = await list(`status=${encodeURIComponent('進行中')}&project=${P}`);
+    const dev = ok(await call(boss.token, `/api/cards?limit=200&status=${encodeURIComponent('開發中')}&project=${P}`), '開發中').items.map(x => x.cardId);
+    assert.ok(dev.length && dev.every(id => ids.includes(id)), '沒有叫「進行中」的狀態：照類別');
+  }
+
   console.log('project-statuses-test：全部通過');
 } finally {
   db.close?.();

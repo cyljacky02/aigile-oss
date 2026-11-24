@@ -64,7 +64,7 @@ export const MCP_TOOLS = [
   { name: 'aigile_card_get', description: `讀一張卡：最前面是 claim（誰在做）與 handover（上一棒交接四欄），另有紀錄與關聯訊息。${UNTRUSTED}`,
     inputSchema: obj({ cardId: CARD_ID }, ['cardId']) },
   { name: 'aigile_cards', description: `查卡。預設只查自己負責、未結案的（owner=me、status=open）；輪詢用 since（上次的 nextSince）。卡片 status＝狀態名稱、category＝類別；回傳的 statuses 是各專案的狀態清單（各專案不同，規則只看類別）。${UNTRUSTED}`,
-    inputSchema: obj({ owner: str('me（預設）、any，或 participantId'), status: str('open（預設）、all、類別（待整理、待處理、進行中、待確認、受阻、已完成、已封存），或專案的狀態名稱／ID'),
+    inputSchema: obj({ owner: str('me（預設）、any，或 participantId'), status: str('open（預設）、all，或依序比對：專案的狀態名稱 → 狀態 ID → 類別（待整理、待處理、進行中、待確認、受阻、已完成、已封存；整個類別）'),
       q: str('關鍵字（至少 2 字）'), project: str('專案代號'), since: str('增量：上次回傳的 nextSince'), limit: { type: 'integer', minimum: 1, maximum: 100 } }) },
   { name: 'aigile_card_update', description: '改自己負責的卡（別人的卡要用建議，這個工具不做）。version 不帶會先讀最新版本再改。',
     inputSchema: obj({ cardId: CARD_ID, version: { type: 'integer', minimum: 1 }, status: str('這個專案的狀態名稱、狀態 ID，或類別（待整理、待處理、進行中、待確認、受阻、已完成；落在該類別第一個狀態）'), title: str('標題', { maxLength: 100 }),
