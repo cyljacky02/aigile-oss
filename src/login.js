@@ -371,6 +371,11 @@ export function registerLogin(d) {
     const ttlMs = readTtl((await readJson(req).catch(() => ({}))).ttl, prevTtl);
     if (iv.used_at) throw new ApiError(400, 'INVITE_USED', `${iv.name} 已經用這個邀請加入，不需要重發`);
     const kind = inviteKind(iv);
+    // 重設登入的連結重發＝再重設一次：跟第一次發一樣不能動對方的上層管理權（平台管理員的連結要平台管理員才能重發）
+    if (kind === 'reset') {
+      const t = (await peopleMap(ctx)).get(iv.participant_id);
+      if (t) await access.check(ctx, me, 'reset_login', { target: t }, { what: '重設成員登入' });
+    }
     if (kind !== 'reset') {
       const taken = await db.get('SELECT id, workspace_status FROM participants WHERE name = ?', iv.name);
       if (taken && !(kind === 'rejoin' && taken.id === iv.participant_id && taken.workspace_status === 'removed')) throw new ApiError(409, 'NAME_TAKEN', `「${iv.name}」已經是成員了，不需要邀請`);

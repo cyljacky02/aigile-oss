@@ -114,6 +114,14 @@ try {
   assert.equal((await me(wang.token)).platformRole, 'admin', '王小美的登入照舊');
   const rsOk = await reset(wang.token, Bo);
   assert.equal(rsOk.status, 200, '平台管理員可以重設另一位平台管理員的登入：' + JSON.stringify(rsOk.body));
+  // 重發平台管理員還沒用的重設登入連結也一樣：工作區管理員不能重發，也不能拿到新連結
+  const renew = await call(chen.token, `/api/invites/${rsOk.body.invite.id}/regenerate`, 'POST', {});
+  assert.equal(renew.status, 403, '工作區管理員不能重發平台管理員的重設登入連結：' + JSON.stringify(renew.body));
+  assert.equal(code(renew), 'CANNOT_MANAGE_ADMIN');
+  assert.ok(!JSON.stringify(renew.body).includes('/invite/'), '沒有拿到新連結');
+  const renewOk = await call(wang.token, `/api/invites/${rsOk.body.invite.id}/regenerate`, 'POST', {});
+  assert.equal(renewOk.status, 200, '平台管理員可以重發：' + JSON.stringify(renewOk.body));
+  rsOk.body.url = renewOk.body.url;
   boss.token = (await call(null, '/api/auth/invite', 'POST', { token: rsOk.body.url.split('/invite/')[1] })).body.token;
   assert.equal((await me(boss.token)).platformRole, 'admin', '林志明用新連結登入');
   assert.equal((await remove(chen.token, liAi.participantId)).status, 404, 'AI 不是用這個移出（主人刪掉它）');
