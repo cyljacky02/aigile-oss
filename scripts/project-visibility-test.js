@@ -207,13 +207,20 @@ try {
     assert.equal((await setVisibility(wang.token, Q, 'private')).status, 200);
     assert.equal((await call(wang.token, '/api/messages', 'POST', { requestId: 'pq1', project: Q, text: '封存密案的訊息QQQ' })).status, 201);
     assert.equal((await call(wang.token, `/api/projects/${Q}/archive`, 'POST')).status, 200);
+    // 另外兩個封存的專案：開放、審核（可見度一個一個算，看不到的私人封存專案不影響它們）
+    const R = (await call(wang.token, '/api/projects', 'POST', { name: '封存開放' })).body.id, S = (await call(wang.token, '/api/projects', 'POST', { name: '封存審核' })).body.id;
+    assert.equal((await setVisibility(wang.token, R, 'open')).status, 200);
+    assert.equal((await call(wang.token, '/api/messages', 'POST', { requestId: 'pr1', project: R, text: '封存開放的訊息RRR' })).status, 201);
+    for (const x of [R, S]) assert.equal((await call(wang.token, `/api/projects/${x}/archive`, 'POST')).status, 200);
     const all = await join('全員');
     const active = (await call(boss.token, '/api/projects')).body.items.filter(p => !p.archived).map(p => p.id);
     assert.equal((await call(boss.token, `/api/participants/${all.id}/projects`, 'PUT', { projects: active })).status, 200);
     assert.deepEqual((await call(all.token, '/api/me')).body.projects.sort(), [...active].sort(), '全員在每個未封存專案');
     const seen = (await call(all.token, '/api/projects')).body;
     assert.ok(!JSON.stringify(seen).includes(Q), '封存的私人專案不在專案清單：' + JSON.stringify(seen.items.map(p => p.id)));
-    assert.ok(!JSON.stringify((await call(all.token, '/api/messages?limit=200')).body).includes('QQQ'), '封存的私人專案的訊息看不到');
+    assert.ok(!JSON.stringify((await call(all.token, '/api/messages?limit=100')).body.items.map(m => m.text)).includes('QQQ'), '封存的私人專案的訊息看不到');
+    assert.ok(seen.items.some(p => p.id === R) && seen.items.some(p => p.id === S), '封存的開放、審核專案照樣看得到（不因為有一個看不到的私人封存專案就全部藏起來）：' + JSON.stringify(seen.items.map(p => p.id)));
+    assert.ok(JSON.stringify((await call(all.token, '/api/messages?limit=100')).body.items.map(m => m.text)).includes('RRR'), '封存的開放專案的訊息照樣看得到');
     assert.ok((await call(wang.token, '/api/projects')).body.items.some(p => p.id === Q), '專案管理員看得到自己封存的私人專案');
     console.log('✓ 管理專案的路由、錯誤訊息不提到私人專案；封存的私人專案對在所有專案的人也看不到');
   }

@@ -396,13 +396,16 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     isoSince = r?.value || ''; isoAt = Date.now();
     return isoSince;
   }
-  // 在所有未封存專案、但有看不到的封存私人專案的人也算受隔離：私人專案的可見度一律照算，不因「在所有專案」就全部看得到
-  const isolatedFrom = me => !!me && me.kind !== 'system' && (PROJECTS.some(x => !projectsOf(me).includes(x))
-    || projectRows.some(r => r.archived && r.visibility === 'private' && !listOf(me).includes(r.id) && !discovers(me, r.id)));
+  const isolatedFrom = me => !!me && me.kind !== 'system' && PROJECTS.some(x => !projectsOf(me).includes(x));
+  // 看不到的封存私人專案（可見度一個一個專案算）：不受隔離的人（在所有未封存專案）照樣看不到沒加入的封存私人專案，其他封存專案照常看得到
+  const hiddenArchived = me => (!me || me.kind === 'system' ? [] : projectRows.filter(r => r.archived && r.visibility === 'private' && !listOf(me).includes(r.id) && !discovers(me, r.id)).map(r => r.id));
   // 訊息可見範圍的 SQL 片段（col：資料表別名）；不受限回 null
   // 隔離前的舊訊息，只有當時就在群組的人看得到（訊息時間 ≥ 加入時間）；之後才加入的人看不到
   async function messageScope(me, col = '') {
-    if (!isolatedFrom(me)) return null;
+    if (!isolatedFrom(me)) {
+      const h = hiddenArchived(me), c = col ? col + '.' : '';
+      return h.length ? { sql: `(${c}project IS NULL OR ${c}project NOT IN (${h.map(() => '?').join(',')}))`, args: h } : null;
+    }
     const since = await isolationSince();
     if (!since) return null;
     const c = col ? col + '.' : '', mine = projectsOf(me), joined = me.created_at || '';
@@ -411,7 +414,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     return { sql: `(${mine.length ? `${c}project IN (${mine.map(() => '?').join(',')}) OR ` : ''}(${c}created_at >= ? AND ${c}project IS NULL) OR (${c}created_at < ? AND ${c}created_at >= ?${notHidden}))`, args: [...mine, since, since, joined, ...hidden] };
   }
   async function canSeeMessage(me, m) {
-    if (!isolatedFrom(me) || (m.project && projectsOf(me).includes(m.project))) return true;
+    if (!isolatedFrom(me)) return !m.project || !hiddenArchived(me).includes(m.project);
+    if (m.project && projectsOf(me).includes(m.project)) return true;
     const since = await isolationSince();
     if (!since) return true;
     return m.created_at >= since ? !m.project : m.created_at >= (me.created_at || '') && (!m.project || discovers(me, m.project));
@@ -1574,7 +1578,7 @@ ${ending}`;
   // nameOf 在下面才定義（const），所以包一層
   const access = createAccess({
     loadWorkspace: workspace.load, membersCreateProjects: workspace.membersCreateProjects,
-    ApiError, requireHuman, nameOf: id => nameOf(id), people: peopleMap, projects: () => PROJECTS, projectsOf, isolatedFrom,
+    ApiError, requireHuman, nameOf: id => nameOf(id), people: peopleMap, projects: () => PROJECTS, projectsOf, isolatedFrom, hiddenArchived,
     memberProjectsOf: membership.projectsOf, visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
     loadProjectAdmins: membership.loadProjectAdmins, projectAdminsOf: membership.projectAdminsOf,
     loadReadOnly: membership.loadReadOnly, isReadOnly: membership.isReadOnly, isPlatformAdmin: membership.isPlatformAdmin, ownerOf,
@@ -1771,8 +1775,11 @@ ${ending}`;
       const seen = new Set(scopeProjects(r, ownerOf(me)).items.map(p => p.id));
       mine = listOf(me).filter(pj => seen.has(pj));
     } else {
-      if (!isolatedFrom(me)) return r; // 不受隔離＝看得到所有專案（含封存的私人專案，見 isolatedFrom）
-      mine = [...new Set([...projectsOf(me), ...listOf(me)])];
+      if (!isolatedFrom(me)) { // 不受隔離＝看得到所有專案，只除了看不到的封存私人專案
+        const h = hiddenArchived(me);
+        if (!h.length) return r;
+        mine = r.items.map(p => p.id).filter(id => !h.includes(id));
+      } else mine = [...new Set([...projectsOf(me), ...listOf(me)])];
     }
     const out = { ...r, items: r.items.filter(p => mine.includes(p.id)) };
     for (const k of PROJECT_MAPS) out[k] = Object.fromEntries(Object.entries(r[k] || {}).filter(([pj]) => mine.includes(pj)));
@@ -3831,7 +3838,7 @@ ${ending}`;
   registerUpdateCheck({ route, db, access, requireHuman, config });
   registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership,
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });
-  const cardsApi = registerCards({ route: cardRoute, statuses, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, canSeeMessage, discovers, visibleProjects, archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
+  const cardsApi = registerCards({ route: cardRoute, statuses, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, hiddenArchived, canSeeMessage, discovers, visibleProjects, archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
   registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, access, cardKey, projEvent, moveCardStmts: cardsApi.moveCardStmts, invalidatePeople,
     projectExists: async pj => !!(await db.get('SELECT id FROM projects WHERE id = ?', pj)) });
   Object.assign(kbHooks, registerKbPages({ route, db, ApiError, invalid, readJson, randId, nowIso, peopleMap, identity, projectsOf, PROJECTS, assertWritable, roIn: access.readOnlyIn, kbManager, findSecret, getJson, setJson, createMessage, cardKey, cardsApi, claimsOf, kbSkillState: (pj, ais) => skillsApi.templateState(pj, 'kb-curation', ais) })); // 知識頁、整理卡

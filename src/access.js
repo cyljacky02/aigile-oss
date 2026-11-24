@@ -122,7 +122,7 @@ const ACTIONS = {
   request_join: { human: true, rule: (v, me, s) => !!v.roleIn(me, 'workspace') && v.visibilityOf(s.project) === VIS.REVIEW, deny: DENY.join }, // 送加入申請：審核專案
   // 一般
   write: { light: true, rule: (v, me, s) => !v.readOnlyAt(me, s.project), deny: d => d.readOnly() },
-  see_project: { rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。') },
+  see_project: { rule: (v, me, s) => (!v.isolatedFrom(me) && !v.hiddenArchived(me).includes(s.project)) || v.projectsOf(me).includes(s.project), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。') },
   see_project_events: { rule: (v, me, s) => v.projectsOf(me).includes(s.project) || workspaceAdmin(v, me) },
   see_member: { rule: (v, me, { target: p }) => p.id === me.id || !!v.roleIn(me, 'workspace'), deny: d => d.err(404, 'NOT_FOUND', `找不到成員 ${d.s.target?.id || ''}`) }, // 成員名冊：工作區成員（含 AI）看得到工作區裡所有人；對象是不是啟用中的工作區成員由呼叫端過濾
   see_ai_state: { light: true, rule: (v, me, { target }) => v.projectsOf(target).some(p => v.projectsOf(me).includes(p)), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。') }, // 工作記憶：至少一個共同專案
@@ -141,6 +141,7 @@ const scopeOf = scope => {
 //   projects()               → 未封存的專案 id
 //   projectsOf(p)            → 他所在、未封存的專案
 //   isolatedFrom(p)          → 不在所有專案（看不到別專案的東西）
+//   hiddenArchived(p)        → 他看不到的封存私人專案（沒注入＝沒有）
 //   loadProjectAdmins(force)       → 讀專案管理員名單（10 秒快取；force 重讀）；projectAdminsOf(pj) → 目前快取裡該專案的專案管理員 id（含封存專案）
 //   loadReadOnly(force)      → 讀唯讀成員名單；isReadOnly(p, pj) → 目前快取裡 p 在 pj 是唯讀成員（AI 跟著所屬人類）
 //   ownerOf(ai)              → AI 所屬人類的列（實際的唯讀要看他有沒有隱含權限）
@@ -175,7 +176,7 @@ export function createAccess(deps) {
     };
     const isAdmin = adminInWorkspace;
     const v = {
-      people, admin: adminNow, projects, projectsOf, isolatedFrom,
+      people, admin: adminNow, projects, projectsOf, isolatedFrom, hiddenArchived: p => deps.hiddenArchived?.(p) || [],
       admins: () => adminsOf(needPeople()),
       platformAdmins: () => [...needPeople().values()].filter(isPlatformAdmin).sort(byJoined),
       // 最後一位保護：p 是該層的管理員，而且除了他沒有別的（降級、移出、停用、離開都要先問）。工作區只算明確的工作區管理員

@@ -73,7 +73,7 @@ export async function teamCards(db, keyOf = c => cardNo(c.seq)) {
   return { work, open, decisions: decisions.map(d => ({ cardId: keyOf(d), title: d.question || d.title, createdAt: d.created_at, proposerId: d.proposer_id, deciderId: d.decider_id, project: d.project })) };
 }
 
-export function registerCards({ route, statuses, searchQuota = () => {}, cardKey = () => null, cardSeqByKey = async () => null, createMessage, readCardReturn, storeCardReturnFile, checkFiles = async () => { throw new Error('checkFiles 未提供'); }, filesText = (note, files) => note, isolatedFrom, canSeeMessage = async () => true, projectName = id => id, discovers = () => true, visibleProjects = () => PROJECTS, archiveEveryMs = 10 * 60_000, PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople, cardStaleHours }) {
+export function registerCards({ route, statuses, searchQuota = () => {}, cardKey = () => null, cardSeqByKey = async () => null, createMessage, readCardReturn, storeCardReturnFile, checkFiles = async () => { throw new Error('checkFiles 未提供'); }, filesText = (note, files) => note, isolatedFrom, hiddenArchived = () => [], canSeeMessage = async () => true, projectName = id => id, discovers = () => true, visibleProjects = () => PROJECTS, archiveEveryMs = 10 * 60_000, PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople, cardStaleHours }) {
   const STALE_CARD_MS = (cardStaleHours !== undefined && cardStaleHours !== '' && Number.isFinite(Number(cardStaleHours)) ? Number(cardStaleHours) : 24) * 3600_000; // 卡片多久沒更新才可能過時
   const notFound = () => new ApiError(404, 'NOT_FOUND', '找不到這張卡片');
   // 要輸出卡片或換狀態的路由先讀好這次請求的專案狀態清單（book）
@@ -324,6 +324,7 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     const pf = projectFilter(q.get('project'), me, 'project', false);
     if (pf) { where.push(pf.sql); args.push(...pf.args); }
     if (isolatedFrom(me)) { const mine = projectsOf(me); where.push(mine.length ? `project IN (${mine.map(() => '?').join(',')})` : '1 = 0'); args.push(...mine); }
+    else { const h = hiddenArchived(me); if (h.length) { where.push(`project NOT IN (${h.map(() => '?').join(',')})`); args.push(...h); } } // 看不到的封存私人專案
     const kw = (q.get('q') || '').trim();
     if (kw) { // 關鍵字搜尋卡片（人類、AI 都算）：至少 2 字、算進每人每分鐘 10 次、最多 20 筆
       if ([...kw].length < 2) throw invalid('搜尋至少 2 個字');
@@ -342,7 +343,7 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
       const have = new Set(items.map(c => c.seq));
       const extra = [...stale.keys()].filter(seq => !have.has(seq));
       if (extra.length) out = [...items, ...(await db.all(`SELECT * FROM cards WHERE seq IN (SELECT value FROM json_each(?))${pf ? ' AND ' + pf.sql : ''}`, JSON.stringify(extra), ...(pf ? pf.args : [])))].filter(c => me.kind === 'human' || c.type !== NOTE || q.get('type') === NOTE)
-        .filter(c => !isolatedFrom(me) || projectsOf(me).includes(c.project)); // 過時提示的卡也只能是看得到的專案（曾經會帶出別專案的卡）
+        .filter(c => (isolatedFrom(me) ? projectsOf(me).includes(c.project) : !hiddenArchived(me).includes(c.project))); // 過時提示的卡也只能是看得到的專案（曾經會帶出別專案的卡）
     }
     let counts;
     if (q.get('counts') === '1') { // 已封存總數（依可見專案）
