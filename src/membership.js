@@ -84,6 +84,8 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     [`INSERT OR IGNORE INTO project_members (project_id, participant_id, role) SELECT json_extract(value, '$.p'), json_extract(value, '$.id'), '${role}' FROM json_each(?)`, [rowsOf(map)]],
   ];
   const setLeadersStmts = map => setRoleStmts(map, PR.ADMIN);
+  // 某人在某專案設成專案管理員（不在專案就以專案管理員加入）：建立專案的人用
+  const makeProjectAdminStmts = (id, pj) => [[`INSERT INTO project_members (project_id, participant_id, role) VALUES (?, ?, '${PR.ADMIN}') ON CONFLICT(project_id, participant_id) DO UPDATE SET role = excluded.role`, [pj, id]]];
 
   // ---------- 唯讀成員：只記人類；他名下的 AI 在該專案跟著唯讀（AI 權限不超過主人） ----------
   const loadReadOnly = async force => (await loadMembers(force)).ro; // 回 { 專案id: [人類id] }
@@ -232,6 +234,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
 
   return { projectsOf, allProjectsOf, setProjectsStmts,
     loadLeaders, leadersOf, leaderProjectsOf, setLeadersStmts,
+    makeProjectAdminStmts,
     loadReadOnly, isReadOnlyHuman, isReadOnly, readOnlyProjectsOf, readOnlyOf, setReadOnlyStmts, addReadOnly,
     loadCrossRoles, isCrossRole, crossRoles, setCrossRole, setCrossRolesStmts,
     fetchProjectsOf, fetchMembersOf, removeProjectStmts,

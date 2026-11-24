@@ -34,12 +34,13 @@ try {
     assert.equal((await call(tok, `/api/projects/${encodeURIComponent(pj)}/archive`, 'POST')).status, 403, `${who}不能封存`);
     assert.equal((await call(tok, `/api/projects/${encodeURIComponent(pj)}/unarchive`, 'POST')).status, 403, `${who}不能還原`);
   }
+  assert.equal((await call(liu.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' })).status, 200, '工作區設定：只有管理員能建立專案');
   assert.equal((await call(wang.token, '/api/projects', 'POST', { name: '偷建' })).status, 403, 'leader 不能新增專案');
   assert.equal((await call(wang.token, '/api/invites', 'POST', { name: '某人', projects: ['預設專案'], ttl: '1h' })).status, 403, 'leader 不能發邀請');
   assert.equal((await call(wang.token, `/api/projects/${encodeURIComponent(TP)}/archive`, 'POST')).status, 200, 'leader 能封存自己的專案');
   const pv = (await call(wang.token, '/api/projects')).body;
   assert.ok(pv.items.find(p => p.id === TP)?.archived, '已封存：' + JSON.stringify(pv.items.map(p => [p.id, p.name, p.archived])));
-  assert.deepEqual(pv.archivedLeaders?.[TP], [id(wang)], '封存的專案也帶 leader（前端才能讓 leader 還原）');
+  assert.deepEqual([...(pv.archivedLeaders?.[TP] || [])].sort(), [id(liu), id(wang)].sort(), '封存的專案也帶 leader（前端才能讓 leader 還原；建立者劉昱志也是）');
   assert.equal((await call(chen.token, `/api/projects/${encodeURIComponent(TP)}/unarchive`, 'POST')).status, 403, '不是 leader 不能還原');
   assert.equal((await call(wang.token, `/api/projects/${encodeURIComponent(TP)}/delete-preview`)).status, 403, 'leader 不能永久刪除');
   assert.equal((await call(wang.token, `/api/projects/${encodeURIComponent(TP)}/unarchive`, 'POST')).status, 200, 'leader 能還原自己的專案');

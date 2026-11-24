@@ -156,6 +156,7 @@ const msg = (tok, text, extra = {}) => call(tok, '/api/messages', 'POST', { requ
     const pr = (await call(amy.token, '/api/projects')).body;
     assert.equal(pr.adminId, bossId, '群組管理員＝最早加入的人類');
     assert.ok(pr.crossRoleIds.includes(percyId), 'PO 是跨專案角色');
+    assert.equal((await call(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' })).status, 200, '工作區設定：只有管理員能建立專案');
     assert.equal((await call(amy.token, '/api/projects', 'POST', { name: '非管理員' })).body.error?.code, 'NOT_ADMIN', '非管理員不能新增專案');
     assert.equal((await call(amy.token, `/api/projects/${newId}`, 'PATCH', { name: 'x' })).body.error?.code, 'NOT_ADMIN', '非管理員不能改名');
     // ③ 跨專案角色固定，不能移出
