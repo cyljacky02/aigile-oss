@@ -51,7 +51,7 @@ try {
   const gone = await join('趙離開');
   assert.equal((await call(boss.token, `/api/participants/${gone.id}/disable`, 'POST')).status, 200);
   r = await addToProject(call, wang.token, A, gone.id);
-  assert.equal(r.status, 400, JSON.stringify(r.body));
+  assert.equal(r.status, 403, '不是工作區成員一律 403：' + JSON.stringify(r.body));
   assert.equal(code(r), 'NOT_WORKSPACE_MEMBER', '停用的人不是工作區成員');
   assert.equal((await addToProject(call, wang.token, A, 'p_nobody')).status, 404, '不存在的人');
   assert.equal((await roleOf(boss.token, A, gone.id)), undefined, '沒有被加進去');

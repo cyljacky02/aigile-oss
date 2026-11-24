@@ -51,8 +51,8 @@ try {
   assert.equal(code(await setRole(chen.token, Cn, 'admin')), 'NOT_ADMIN', '一般成員不能把自己升為管理員');
   assert.equal(code(await setRole(chen.token, Bo, 'member')), 'NOT_ADMIN', '一般成員不能降管理員');
   assert.equal(code(await setRole(ai.token, Cn, 'admin')), 'NOT_ADMIN', 'AI 不能升降管理員');
-  assert.equal((await setRole(boss.token, ai.participantId, 'admin')).status, 404, 'AI 不能當工作區管理員');
-  assert.equal(code(await setRole(boss.token, ai.participantId, 'admin')), 'NOT_WORKSPACE_MEMBER');
+  const notMember = await setRole(boss.token, ai.participantId, 'admin');
+  assert.deepEqual([notMember.status, code(notMember)], [403, 'NOT_WORKSPACE_MEMBER'], 'AI 不能當工作區管理員（不是工作區成員一律 403）');
   assert.equal((await setRole(boss.token, 'p_nobody', 'admin')).status, 404, '找不到的人');
   assert.equal((await setRole(boss.token, Cn, 'owner')).status, 400, 'role 只能是 admin 或 member');
   console.log('✓ 一般成員、AI 不能升降；只能升降人類成員');
@@ -137,13 +137,15 @@ try {
   assert.ok(!roster.members.some(p => p.participantId === Li || p.participantId === liAi.participantId), '他與他的 AI 不再是工作區成員');
   assert.deepEqual([roster.accounts.find(a => a.participantId === Li)?.accountStatus, roster.accounts.find(a => a.participantId === Li)?.workspaceStatus], ['active', 'removed'], '帳號沒有停用，只是移出工作區');
   assert.ok(!(await call(chen.token, '/api/participants/disabled')).body.items.some(p => p.participantId === Li), '不在已停用清單');
-  assert.equal(code(await call(null, '/api/auth/password', 'POST', { username: 'li.dt', password: 'pass-word-1' })), 'NOT_WORKSPACE_MEMBER', '帳密還對，只是不是工作區成員');
+  const relog = await call(null, '/api/auth/password', 'POST', { username: 'li.dt', password: 'pass-word-1' });
+  assert.deepEqual([relog.status, code(relog)], [403, 'NOT_WORKSPACE_MEMBER'], '帳密還對，只是不是工作區成員');
   assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '李大同' })).body.invite?.kind, 'rejoin', '可以邀請他回來');
   console.log('✓ 自己離開＝移出工作區，帳號沒有停用');
 
   // ---- 停用的人不能被升 ----
   assert.equal((await call(chen.token, `/api/participants/${Wg}/disable`, 'POST')).status, 200, '停用帳號是平台管理員的事');
-  assert.equal(code(await setRole(boss.token, Wg, 'admin')), 'NOT_WORKSPACE_MEMBER', '停用的人不能升');
+  const off = await setRole(boss.token, Wg, 'admin');
+  assert.deepEqual([off.status, code(off)], [403, 'NOT_WORKSPACE_MEMBER'], '停用的人不能升');
   console.log('workspace-admin-test：全部通過');
 } catch (e) {
   console.error('workspace-admin-test 失敗：', e.stack || e.message);

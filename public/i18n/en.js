@@ -3237,7 +3237,7 @@ window.AIGILE_EN = {
     "升降工作區管理員": "change workspace admins",
     "這是最後一位工作區管理員：請先把另一位成員升為工作區管理員。": "This is the last workspace admin. Make another member a workspace admin first.",
     "role 只能是 admin（工作區管理員）或 member（成員）": "role must be admin (workspace admin) or member",
-    "找不到這位工作區成員（只能升降啟用中的人類）": "Workspace member not found (only active humans can be made admins or members)",
+    "{0} 不是工作區成員（只能升降啟用中的人類）": "{0} isn't a workspace member (only active humans can be made admins or members)",
     "只有平台管理員能{0}。": "Only a platform admin can {0}.",
     "看平台設定": "view platform settings",
     "改平台設定": "change platform settings",

@@ -1886,7 +1886,7 @@ ${ending}`;
   function memberTarget(v, id) {
     const p = v.people.get(String(id));
     if (!p || p.kind === 'system') throw new ApiError(404, 'NOT_FOUND', `找不到成員 ${id}`);
-    if (p.status !== 'active' || (p.workspace_status && p.workspace_status !== 'active')) throw new ApiError(400, 'NOT_WORKSPACE_MEMBER', `${p.name} 不是工作區成員，不能加入專案；要先由工作區管理員邀請他加入工作區。`);
+    if (p.status !== 'active' || (p.workspace_status && p.workspace_status !== 'active')) throw new ApiError(403, 'NOT_WORKSPACE_MEMBER', `${p.name} 不是工作區成員，不能加入專案；要先由工作區管理員邀請他加入工作區。`);
     return p;
   }
   // 工作區管理員在專案裡的角色只有工作區管理員能動
@@ -3029,10 +3029,12 @@ ${ending}`;
     await access.check(ctx, me, 'assign_workspace_admin', 'workspace', { what: '升降工作區管理員' });
     const role = (await readJson(req)).role;
     if (role !== 'admin' && role !== 'member') throw invalid('role 只能是 admin（工作區管理員）或 member（成員）');
-    const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human' AND status = 'active'", params.id);
-    if (!t) throw new ApiError(404, 'NOT_WORKSPACE_MEMBER', '找不到這位工作區成員（只能升降啟用中的人類）');
+    const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind != 'system'", params.id);
+    if (!t) throw new ApiError(404, 'NOT_FOUND', `找不到成員 ${params.id}`);
+    const notMember = () => new ApiError(403, 'NOT_WORKSPACE_MEMBER', `${t.name} 不是工作區成員（只能升降啟用中的人類）`);
+    if (t.kind !== 'human' || t.status !== 'active') throw notMember();
     if (role === 'member') await assertNotLastAdmin(ctx, t);
-    if (role === 'admin' && t.workspace_status === 'removed') throw new ApiError(404, 'NOT_WORKSPACE_MEMBER', '找不到這位工作區成員（只能升降啟用中的人類）');
+    if (role === 'admin' && t.workspace_status === 'removed') throw notMember();
     if ((role === 'admin') !== isWorkspaceAdmin(t)) {
       const at = nowIso(), stmts = membership.setWorkspaceRoleStmts(t.id, role, at);
       if (role === 'member') {
