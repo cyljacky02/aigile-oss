@@ -28,13 +28,14 @@ try {
   };
   const a23 = await ai('剩23小時', 23 * H), a25 = await ai('剩25小時', 25 * H), a4 = await ai('剩4小時半', 4.5 * H), gone = await ai('已過期', -H);
   const st = async (appX, id) => (await call(appX, boss.token, '/api/team-status')).body.members.find(m => m.participantId === id);
+  const fresh = mk({}); // 上面直接改了資料庫（沒經過 API，成員快取不知道）→ 用新的一份程式讀（快取是空的）
 
-  let m = await st(app, a23);
+  let m = await st(fresh, a23);
   assert.equal(m.tokenExpiringSoon, true, '剩 23 小時 → 快到期');
-  assert.equal((await st(app, a4)).tokenExpiringSoon, true, '剩 4.5 小時 → 快到期（UX 10/20 回報的情況）');
-  m = await st(app, a25);
+  assert.equal((await st(fresh, a4)).tokenExpiringSoon, true, '剩 4.5 小時 → 快到期（UX 10/20 回報的情況）');
+  m = await st(fresh, a25);
   assert.equal(m.tokenExpiringSoon, false, '剩 25 小時 → 還不用提醒');
-  m = await st(app, gone);
+  m = await st(fresh, gone);
   assert.deepEqual([m.tokenExpired, m.tokenExpiringSoon], [true, false], '已過期照舊是「已過期」（紅），不算快到期');
 
   // 設定覆寫：TOKEN_WARN_HOURS=2 時，剩 23 小時不提醒
