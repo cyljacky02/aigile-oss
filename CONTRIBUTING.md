@@ -22,7 +22,7 @@ npm test -- --jobs 8 kb  # 也可以用 --jobs，跟篩選一起用
 node scripts/<名稱>-test.js   # 單獨跑一支
 ```
 
-- 並行時每支測試各有自己的暫存家目錄；寫死埠號的舊測試輪流跑，機器忙就會失敗的測試留到最後單獨跑（清單與原因在 `scripts/run-all.js` 開頭的 `FIXED_PORT`、`SERIAL`）。新測試請用隨機埠、用 `until` 等畫面，不要靠固定的 `sleep`。
+- 每支測試各有自己的暫存家目錄（外面設了 `AIGILE_HOME` 就在它底下各開一個子資料夾，跑完刪掉），`run-all-isolation-test` 會檢查；寫死埠號的舊測試輪流跑，機器忙就會失敗的測試留到最後單獨跑（清單與原因在 `scripts/run-all.js` 開頭的 `FIXED_PORT`、`SERIAL`）。新測試請用隨機埠、用 `until` 等畫面，不要靠固定的 `sleep`。
 
 - 測試會在暫存資料夾開獨立的本機伺服器，不會碰你的 `./data`。
 - 需要兩個專案的測試會設 `AIGILE_TEST_PROJECTS=1`，讓伺服器先建「預設專案」「第二專案」兩個固定代號的專案。

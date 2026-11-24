@@ -1,7 +1,8 @@
 // npm test 一次跑完全部測試（scripts/*-test.js 與冒煙測試 smoke.js），最後列出沒過的。
 // 預設一次跑一支；TEST_JOBS=N（或 --jobs N）同時跑 N 支，結果照跑完的順序印。
 // 並行時：固定埠的舊測試（FIXED_PORT）彼此輪流跑；會起 watcher 子程序、怕被拖慢的測試（SERIAL）等其他都跑完再一支一支單獨跑。
-// 每支測試各有一組暫存的家目錄（AIGILE_HOME、CODEX_HOME、Gemini、Copilot），同時跑也不會互相寫到。
+// 每支測試各有一組暫存的家目錄（AIGILE_HOME、CODEX_HOME、Gemini、Copilot），同時跑也不會互相寫到，跑完刪掉。
+// 外面已經設了 AIGILE_HOME：每支測試在它底下各開一個 run-XXXXXX 子資料夾當自己的 AIGILE_HOME（跑完刪掉，原本的檔案不動），不會共用同一個。
 // 用法：
 //   npm test                 全部
 //   npm test -- c341 s4      只跑檔名含這些字的
@@ -25,7 +26,8 @@ const FIXED_PORT = ['cards-test.js', 'files-test.js', 'login-test.js', 'notes-te
 //   message-view-ui-test：第一次載入後才設「上次看到」再重新整理，機器忙時舊頁面會蓋掉它，紅線等不到
 const SERIAL = ['boot-retry-ui-test.js', 'message-view-ui-test.js', 'wait-test.js'];
 
-const dir = fileURLToPath(new URL('.', import.meta.url));
+// AIGILE_TEST_RUN_DIR 只給 run-all-isolation-test 用：改跑那個資料夾裡的假測試
+const dir = process.env.AIGILE_TEST_RUN_DIR ? path.resolve(process.env.AIGILE_TEST_RUN_DIR) : fileURLToPath(new URL('.', import.meta.url));
 const args = process.argv.slice(2);
 const filters = [];
 let jobsArg;
@@ -44,13 +46,16 @@ const files = fs.readdirSync(dir).filter(f => /-test\.js$/.test(f) || f === 'smo
 if (!files.length) { console.error(`沒有符合「${filters.join(' ')}」的測試`); process.exit(1); }
 
 // 接入檢查會寫 ~/.aigile/、Codex 版會改 ~/.codex/config.toml、Antigravity CLI 寫 ~/.gemini、Copilot CLI 寫 ~/.copilot/mcp-config.json：
-// 每支測試開自己的暫存家目錄，跑完刪掉（有設 AIGILE_HOME 就照用）
+// 每支測試開自己的暫存家目錄，跑完刪掉（有設 AIGILE_HOME 就在它底下開子資料夾）
 const tempHome = kind => fs.mkdtempSync(path.join(os.tmpdir(), `aigile-${kind}-`));
+const AIGILE_HOME = process.env.AIGILE_HOME ? path.resolve(process.env.AIGILE_HOME) : '';
+if (AIGILE_HOME) fs.mkdirSync(AIGILE_HOME, { recursive: true });
+const aigileHome = () => AIGILE_HOME ? fs.mkdtempSync(path.join(AIGILE_HOME, 'run-')) : tempHome('home');
 const run = f => new Promise(resolve => {
   const started = Date.now();
-  const homes = { home: tempHome('home'), codex: tempHome('codexhome'), gemini: tempHome('geminihome'), copilot: tempHome('copilothome') };
+  const homes = { home: aigileHome(), codex: tempHome('codexhome'), gemini: tempHome('geminihome'), copilot: tempHome('copilothome') };
   let out = '', timedOut = false;
-  const p = spawn(process.execPath, [f], { cwd: fileURLToPath(new URL('..', import.meta.url)), env: { ...process.env, FORCE_COLOR: '0', AIGILE_HOME: process.env.AIGILE_HOME || homes.home, AIGILE_TEST_CODEX_HOME: homes.codex, CODEX_HOME: homes.codex, COPILOT_HOME: homes.copilot, AIGILE_TEST_COPILOT_HOME: homes.copilot, AIGILE_TEST_GEMINI_HOME: homes.gemini, AIGILE_GEMINI_HOME: homes.gemini, AIGILE_CODEX_BIN: fileURLToPath(new URL('./fake-codex.mjs', import.meta.url)), AIGILE_ANTIGRAVITY_BIN: fileURLToPath(new URL('./fake-antigravity.mjs', import.meta.url)) } });
+  const p = spawn(process.execPath, [f], { cwd: fileURLToPath(new URL('..', import.meta.url)), env: { ...process.env, FORCE_COLOR: '0', AIGILE_HOME: homes.home, AIGILE_TEST_CODEX_HOME: homes.codex, CODEX_HOME: homes.codex, COPILOT_HOME: homes.copilot, AIGILE_TEST_COPILOT_HOME: homes.copilot, AIGILE_TEST_GEMINI_HOME: homes.gemini, AIGILE_GEMINI_HOME: homes.gemini, AIGILE_CODEX_BIN: fileURLToPath(new URL('./fake-codex.mjs', import.meta.url)), AIGILE_ANTIGRAVITY_BIN: fileURLToPath(new URL('./fake-antigravity.mjs', import.meta.url)) } });
   p.stdout.on('data', d => { out += d; }); p.stderr.on('data', d => { out += d; });
   const timer = setTimeout(() => { timedOut = true; p.kill(); }, TIMEOUT_MS);
   p.on('close', code => {
@@ -77,7 +82,7 @@ if (PG_URL) { await dropTestSchemas(); console.log('資料庫：Postgres（AIGIL
 const failed = [];
 const t0 = Date.now();
 const runOne = async f => {
-  const r = await run('scripts/' + f);
+  const r = await run(path.join(dir, f));
   const last = r.out.trim().split('\n').pop() || '';
   // 整段一次印出，並行時別支測試的行不會插進來
   let text = `${r.ok ? '✓' : '✗'} ${f.padEnd(28)} ${r.sec.padStart(6)}s  ${r.ok ? last.slice(0, 80) : r.timedOut ? `逾時（${TIMEOUT_MS / 1000} 秒）` : `exit ${r.code}`}`;
