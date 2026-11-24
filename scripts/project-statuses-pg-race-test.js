@@ -175,6 +175,23 @@ try {
     assert.equal((await items()).length, 12, '最多 12 個狀態');
   }
 
+  // 9) 有暫緩中的決策卡時，兩個人同時刪「待確認」類別僅有的兩個狀態（第一個停在提交前）：第二個要等第一個做完，然後回 409，決策卡還回得去待確認
+  {
+    await fresh('競態九');
+    const confirm2 = await add('待確認二', '待確認');
+    const confirm = (await items()).find(s => s.category === '待確認' && s.id !== confirm2.id);
+    const dc = ok(await mkCard({ type: '決策', question: '要不要？', options: ['要', '不要'] }), '決策卡');
+    ok(await call(boss.token, `/api/cards/${dc.cardId}/defer`, 'POST', { reason: '下季' }), '暫緩');
+    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: del(confirm2.id), second: del(confirm.id), secondSql: '%UPDATE projects%' });
+    assert.equal(r1.status, 200, '第一個刪除：' + JSON.stringify(r1.body).slice(0, 200));
+    assert.ok(blocked, '第二個刪除要等第一個做完');
+    assert.equal(r2.status, 409, '第二個刪除：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'CONFLICT');
+    assert.deepEqual((await items()).filter(s => s.category === '待確認').map(s => s.id), [confirm.id], '待確認類別還有狀態');
+    ok(await call(boss.token, `/api/cards/${dc.cardId}/resume`, 'POST', {}), '恢復');
+    assert.equal((await getCard(dc.cardId)).statusId, confirm.id, '恢復後回到待確認');
+    assert.deepEqual(await stranded(), [], '沒有卡指向不存在的狀態');
+  }
+
   console.log('project-statuses-pg-race-test：全部通過');
 } finally {
   await ctl.end();

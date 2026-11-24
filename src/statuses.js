@@ -254,14 +254,15 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
     }
     // 搬卡、刪狀態、異動紀錄在同一個交易：中途失敗就整個回復，不會留下搬了一半的卡。
     // 最後一句檢查（上面讀到的清單可能已經過時，這裡看交易裡最新的）：沒有卡留在這個狀態、類別沒有狀態了也沒有卡留在這個類別；
-    // 必要類別還有狀態；至少 3 個狀態。讀完之後有卡搬進來、或同時有人刪了別的狀態，就整個不做
-    const required = REQUIRED_CATEGORIES.includes(s.category);
+    // 必要類別還有狀態；至少 3 個狀態；還有未決定（含暫緩中）的決策卡時待確認還有狀態。讀完之後有卡搬進來、或同時有人刪了別的狀態，就整個不做
+    const required = REQUIRED_CATEGORIES.includes(s.category), decisions = s.category === '待確認';
     const ok = `NOT EXISTS (SELECT 1 FROM cards c WHERE c.project = p.id AND c.status != '${ARCHIVED}' AND (c.status_id = ? OR (c.status = ? AND NOT ${catHas})))
-      AND (SELECT COUNT(*) FROM project_statuses ps WHERE ps.project = p.id) >= ${STATUS_LIMITS.min}${required ? ` AND ${catHas}` : ''}`;
+      AND (SELECT COUNT(*) FROM project_statuses ps WHERE ps.project = p.id) >= ${STATUS_LIMITS.min}${required ? ` AND ${catHas}` : ''}${decisions ? `
+      AND (${catHas} OR NOT EXISTS (SELECT 1 FROM cards c WHERE c.project = p.id AND c.type = '決策' AND c.decision_result IS NULL AND c.status IN ('待確認', '受阻')))` : ''}`;
     const at = nowIso(), stmts = [lockProject(pj)];
     for (const c of rows) stmts.push(...(await moveCardStmts(ctx, me, c, target, at)));
     stmts.push(['DELETE FROM project_statuses WHERE id = ?', [s.id]],
-      eventIf(pj, me, `刪除看板狀態「${s.name}」${target ? `（${rows.length} 張卡搬到「${target.name}」）` : ''}`, at, ok, [s.id, s.category, s.category, ...(required ? [s.category] : [])]));
+      eventIf(pj, me, `刪除看板狀態「${s.name}」${target ? `（${rows.length} 張卡搬到「${target.name}」）` : ''}`, at, ok, [s.id, s.category, s.category, ...(required ? [s.category] : []), ...(decisions ? [s.category] : [])]));
     try { await db.batch(stmts); }
     catch (e) { throw raced(e) ? conflict() : e; }
     if (rows.length) invalidatePeople();

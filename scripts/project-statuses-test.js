@@ -423,6 +423,37 @@ try {
     assert.deepEqual((await statuses(PJ)).filter(s => s.category === '進行中').map(s => s.name), ['A'], '進行中類別還有一個狀態');
   }
 
+  // 25) 「待確認」類別只有 Q1、Q2，還有未決定的決策卡：兩個人同時各刪一個，後做完的要 409，決策卡還回得去待確認
+  {
+    const mkPj = async name => {
+      const r = ok(await call(boss.token, '/api/projects', 'POST', { name, statuses: [{ name: '待', category: '待處理' }, { name: '做', category: '進行中' }, { name: '卡住', category: '受阻' }, { name: 'Q1', category: '待確認' }, { name: 'Q2', category: '待確認' }, { name: '完', category: '已完成' }] }), '建專案');
+      const sts = r.items.find(p => p.id === r.id).statuses;
+      const dc = ok(await mkCard(boss.token, { project: r.id, type: '決策', question: '要不要？', options: ['要', '不要'] }), '決策卡');
+      return { PJ: encodeURIComponent(r.id), dc, Q1: sts.find(s => s.name === 'Q1'), Q2: sts.find(s => s.name === 'Q2') };
+    };
+    const confirmLeft = async PJ => (await statuses(PJ)).filter(s => s.category === '待確認').map(s => s.name);
+    // 暫緩中的決策卡（在受阻）：Q1、Q2 都是空的
+    {
+      const { PJ, dc, Q1, Q2 } = await mkPj('同時刪待確認暫緩');
+      ok(await call(boss.token, `/api/cards/${dc.cardId}/defer`, 'POST', { reason: '下季' }), '暫緩');
+      beforeStatusDelete = async () => ok(await del(Q2.id, {}, boss.token, PJ), '另一個人先刪掉 Q2');
+      assert.equal(fail(await del(Q1.id, {}, boss.token, PJ), 409, '後做完的刪除（暫緩中）').error.code, 'CONFLICT');
+      assert.equal(beforeStatusDelete, null, '真的有同時刪');
+      assert.deepEqual(await confirmLeft(PJ), ['Q1'], '待確認類別還有狀態');
+      const back = ok(await call(boss.token, `/api/cards/${dc.cardId}/resume`, 'POST', {}), '恢復');
+      assert.equal((back.card ?? back).status, 'Q1', '恢復後回到待確認');
+    }
+    // 未決定的決策卡在 Q1：一個人刪 Q2（空的），同時另一個人刪 Q1、把卡搬到 Q2
+    {
+      const { PJ, dc, Q1, Q2 } = await mkPj('同時刪待確認未決定');
+      beforeStatusDelete = async () => ok(await del(Q1.id, { moveTo: Q2.id }, boss.token, PJ), '另一個人先刪掉 Q1、卡搬到 Q2');
+      assert.equal(fail(await del(Q2.id, {}, boss.token, PJ), 409, '後做完的刪除（未決定）').error.code, 'CONFLICT');
+      assert.equal(beforeStatusDelete, null, '真的有同時刪');
+      assert.deepEqual(await confirmLeft(PJ), ['Q2'], '待確認類別還有狀態');
+      assert.equal((await getCard(dc.cardId)).status, 'Q2', '決策卡還在待確認');
+    }
+  }
+
   console.log('project-statuses-test：全部通過');
 } finally {
   db.close?.();
