@@ -4,9 +4,9 @@ status: accepted
 
 # 平台 > 工作區 > 專案三層架構，分兩階段導入 · Platform > Workspace > Project tenancy, rolled out in two phases
 
-目前整個部署實例就是一個隱含的工作區：只有一位管理員（`participants.is_admin`），成員資格是 `participants.projects` 逗號字串，專案層權限散在 `app_settings` 的 JSON 裡。我們決定採三層架構（見 GLOSSARY「平台」「工作區」「帳號」）：帳號屬於平台，成員資格與角色分屬工作區與專案；工作區是硬隔離邊界；每一層的管理員都可以有多位且至少一位，上層管理員對下層只有隱含權限，不算成員。
+目前整個部署實例就是一個隱含的工作區：只有一位管理員（`participants.is_admin`），成員資格是 `participants.projects` 逗號字串，專案層權限散在 `app_settings` 的 JSON 裡。我們決定採三層架構（見 GLOSSARY「平台」「工作區」「帳號」）：帳號屬於平台，成員資格與角色分屬工作區與專案；工作區是硬隔離邊界；平台管理員與工作區管理員都可以有多位、且至少要有一位；專案管理員也可以有多位，但專案可以一位明確的專案管理員都沒有（工作區管理員對每個專案都有隱含權限）；上層管理員對下層只有隱含權限，不算成員。
 
-We're moving to a three-tier model: Accounts live on the Platform, memberships and roles live per Workspace and per Project, a Workspace is a hard isolation boundary, every admin tier allows many holders with last-one protection, and upper-tier admins get implicit access rather than membership.
+We're moving to a three-tier model: Accounts live on the Platform, memberships and roles live per Workspace and per Project, a Workspace is a hard isolation boundary, platform and workspace admins allow many holders with last-one protection, a project may have several project admins or none at all (workspace admins always have implicit rights over every project), and upper-tier admins get implicit access rather than membership.
 
 ## Considered Options
 
