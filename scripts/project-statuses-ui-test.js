@@ -2,6 +2,7 @@
 // 1. 桌面：欄＝專案的狀態（名稱、順序、顏色）；改過名的顯示新名稱；卡片在它的狀態那一欄
 // 2. 拖到同類別的另一欄：卡片換欄（伺服器記成那個狀態）
 // 3. 手機：預設顯示第一個「進行中」類別的欄
+// 4. 狀態編輯器：拖曳排序（伺服器記下新順序）；←／→ 按鈕還在（鍵盤、手機用）
 // 規則本身在 project-statuses-test.js 測；這裡只看畫面。需要 Chrome 或 Edge；找不到就略過。
 // 用法：node scripts/project-statuses-ui-test.js
 import assert from 'node:assert';
@@ -65,6 +66,29 @@ try {
   await openBoard();
   await sleep(200);
   assert.equal(await js("document.querySelector('.board .bcol .bcol-head b').textContent"), '測試中', '手機預設第一個進行中類別的欄');
+
+  // 4. 狀態編輯器：把 Review 拖到「待整理」上半部 → 排在它前面
+  await cdp('Emulation.clearDeviceMetricsOverride', {});
+  await js(`history.pushState(null, '', '/admin/projects'); window.__r = 1; location.reload(); true`);
+  await until(() => js('!window.__r'), 20000, '重新整理');
+  await until(() => js(`!!document.querySelector('[data-pm-more="${pj}"]')`), 20000, '專案管理');
+  await js(`document.querySelector('[data-pm-more="${pj}"]').click(); true`);
+  await until(() => js("!!document.querySelector('.pm-more-menu [data-pp=\"statuses\"]')"), 5000, '⋯ 選單');
+  await js("document.querySelector('.pm-more-menu [data-pp=\"statuses\"]').click(); true");
+  await until(() => js("document.querySelectorAll('#st-ed .st-row').length === 7"), 8000, '狀態編輯器');
+  assert.ok(await js("[...document.querySelectorAll('#st-ed .st-row')].every(r => r.querySelector('[data-st-move]'))"), '←／→ 按鈕還在');
+  const review = await byName('Review'), triage = await byName('待整理');
+  await js(`(() => {
+    const grip = document.querySelector('#st-ed .st-row[data-sid="${review.id}"] [data-st-grip]'), row = document.querySelector('#st-ed .st-row[data-sid="${triage.id}"]');
+    const dt = new DataTransfer(), y = row.getBoundingClientRect().top + 2;
+    grip.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+    row.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt, clientY: y }));
+    row.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt, clientY: y }));
+    grip.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+    return true;
+  })()`);
+  await until(async () => (await items()).map(s => s.name).join() === '測試中,Review,待整理,待處理,進行中,受阻,已完成', 8000, '伺服器記下新順序');
+  await until(() => js("[...document.querySelectorAll('#st-ed .st-name')].map(i => i.value).join() === '測試中,Review,待整理,待處理,進行中,受阻,已完成'"), 5000, '編輯器重畫');
   console.log('project-statuses-ui-test：全部通過');
 } catch (e) {
   console.error('project-statuses-ui-test 失敗：', e.message);

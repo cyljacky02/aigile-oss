@@ -9499,6 +9499,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const list = sts();
       host.innerHTML = `${ST_HELP}
         <ol class="st-list">${list.map((s, i) => `<li class="st-row" data-sid="${s.id}">
+          <span class="st-grip" draggable="true" data-st-grip title="拖曳排序" aria-hidden="true">⋮⋮</span>
           <span class="st-swatch" data-color="${esc(s.color)}" aria-hidden="true"></span>
           <input class="st-name" value="${esc(s.name)}" maxlength="20" aria-label="狀態名稱">
           <select class="st-cat" aria-label="狀態類別">${catOpts(s.category)}</select>
@@ -9539,6 +9540,39 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         api(`${base}/${id}`, { method: 'DELETE', body: {} }).then(r => done(r.items, true))
           .catch(err => { if (err.code === 'STATUS_NOT_EMPTY') { pending = { id, message: err.message }; draw(); } else draw(err.message); });
       }
+    });
+    // 拖曳排序（桌面）：拖左邊的把手到另一列的上半／下半＝排在它前面／後面；←／→ 按鈕留給鍵盤與手機
+    let dragSid = null;
+    const below = (row, e) => { const r = row.getBoundingClientRect(); return e.clientY > r.top + r.height / 2; };
+    const clearDrag = () => host.querySelectorAll('.st-row.dragging, .st-row.over-before, .st-row.over-after').forEach(r => r.classList.remove('dragging', 'over-before', 'over-after'));
+    host.addEventListener('dragstart', e => {
+      const row = e.target.closest?.('[data-st-grip]')?.closest('.st-row');
+      if (!row) return;
+      dragSid = Number(row.dataset.sid);
+      e.dataTransfer.setData('text/plain', String(dragSid));
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setDragImage?.(row, 12, 12);
+      row.classList.add('dragging');
+    });
+    host.addEventListener('dragover', e => {
+      const row = e.target.closest?.('.st-row');
+      if (!row || dragSid === null) return;
+      e.preventDefault();
+      const after = below(row, e);
+      host.querySelectorAll('.st-row.over-before, .st-row.over-after').forEach(r => r !== row && r.classList.remove('over-before', 'over-after'));
+      row.classList.toggle('over-before', !after); row.classList.toggle('over-after', after);
+    });
+    host.addEventListener('dragend', () => { dragSid = null; clearDrag(); });
+    host.addEventListener('drop', e => {
+      const row = e.target.closest?.('.st-row');
+      if (!row || dragSid === null) return;
+      e.preventDefault();
+      const from = dragSid, to = Number(row.dataset.sid), now = sts().map(s => s.id);
+      dragSid = null; clearDrag();
+      if (from === to) return;
+      const ids = now.filter(id => id !== from);
+      ids.splice(ids.indexOf(to) + (below(row, e) ? 1 : 0), 0, from);
+      if (ids.join() !== now.join()) run(() => api(`${base}/order`, { method: 'PUT', body: { ids } }), false);
     });
     host.addEventListener('submit', e => {
       e.preventDefault();

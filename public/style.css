@@ -819,6 +819,11 @@ hr { border: 0; border-top: 1px solid var(--border); width: 100%; margin: 4px 0;
 .st-row .st-name { flex: 1 1 140px; min-width: 0; }
 .st-row select { flex: 0 1 auto; }
 .st-acts { display: inline-flex; gap: 4px; }
+/* 拖曳排序：把手只在有滑鼠時出現（手機用 ←／→）；放下的位置畫一條線 */
+.st-grip { cursor: grab; color: var(--muted, #6b7280); user-select: none; letter-spacing: -2px; padding: 0 4px 0 0; flex: none; }
+@media (pointer: coarse) { .st-grip { display: none; } }
+.st-row.dragging { opacity: .45; }
+.st-row.over-before { box-shadow: 0 -2px 0 #93b4f5; } .st-row.over-after { box-shadow: 0 2px 0 #93b4f5; }
 .st-swatch { width: 12px; height: 12px; border-radius: 50%; background: var(--st-color, #9ca3af); flex: none; }
 .st-moveto { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 8px; background: var(--surface-2, rgba(0,0,0,.04)); }
 .st-add { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }

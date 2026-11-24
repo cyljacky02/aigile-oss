@@ -3405,6 +3405,7 @@ window.AIGILE_EN = {
     "顏色": "Color",
     "往左移": "Move left",
     "往右移": "Move right",
+    "拖曳排序": "Drag to reorder",
     "搬過去並刪除": "Move cards and delete",
     "請輸入狀態名稱": "Enter a status name",
     "＋ 新增一個狀態": "+ Add a status",
