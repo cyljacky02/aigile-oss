@@ -33,13 +33,11 @@ export const isWorkspaceAdmin = p => !!p && p.kind === 'human' && p.status === '
 const byJoined = (a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id));
 // 所有工作區管理員（照加入順序）
 export const adminsOf = people => [...people.values()].filter(isWorkspaceAdmin).sort(byJoined);
-// 顯示用的「管理員」（錯誤訊息的名字、通知對象）：最早加入的工作區管理員。
-// 都沒有（還沒轉換的舊資料、舊備份）才退回 is_admin 標記、最早加入的人類。「能不能」不看這個
+// 顯示用的「管理員」（錯誤訊息的名字、通知對象）：最早加入的工作區管理員；都沒有才退回最早加入的人類。「能不能」不看這個
 export const adminOf = people => {
   const admins = adminsOf(people);
   if (admins.length) return admins[0];
-  const hs = [...people.values()].filter(p => p.kind === 'human' && p.status === 'active');
-  return hs.find(p => Number(p.is_admin) === 1) || hs.sort(byJoined)[0] || null;
+  return [...people.values()].filter(p => p.kind === 'human' && p.status === 'active').sort(byJoined)[0] || null;
 };
 
 // 動作表。admin：管理動作（AI 一律不行）；human：check 時先擋 AI（回「僅限人類」）；light：只看唯讀名單，不必讀成員；

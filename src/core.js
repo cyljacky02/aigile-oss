@@ -976,8 +976,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     try {
       // 管理員、帳密和首次設定必須一起寫入，失敗時才能完整重試。
       await db.batch([
-        [`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, is_admin)
-          SELECT ?,?,?,?,?,?,?,?,?,?,1 WHERE NOT EXISTS (SELECT 1 FROM participants WHERE kind = 'human' AND status = 'active')`,
+        [`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, workspace_role)
+          SELECT ?,?,?,?,?,?,?,?,?,?,'admin' WHERE NOT EXISTS (SELECT 1 FROM participants WHERE kind = 'human' AND status = 'active')`,
         [id, 'human', '管理員', '', await newCode(), await tokenKey(newToken()), Date.now() + HUMAN_TOKEN_TTL_MS, ts, ts, 0]],
         ...membership.enterWorkspaceStmts(id, ts), // 預設工作區、帳號：平台管理員兼工作區管理員（所有專案靠隱含權限，不加入）
         ['INSERT INTO credentials (participant_id, username, pwd_hash, updated_at) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM participants WHERE id = ?)', [id, 'admin', await hashPassword(ADMIN_PASSWORD), Date.now(), id]],
@@ -1019,13 +1019,13 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const ts = nowIso();
     invalidatePeople();
     // 新加入的人類：工作區成員，預設沒有專案，只看得到「全部專案」，等被加入或自己加入開放專案。
-    // 平台還沒有任何平台管理員時，這位是平台管理員兼工作區管理員（is_admin＝1，enterWorkspaceStmts 照它寫兩個角色），所有專案靠隱含權限。
+    // 平台還沒有任何平台管理員時，這位是平台管理員兼工作區管理員（INSERT 時工作區角色是 admin，enterWorkspaceStmts 照它寫平台角色），所有專案靠隱含權限。
     // 「有沒有平台管理員」在同一條 INSERT 裡判斷，先鎖工作區這列：兩人同時註冊排隊（Postgres），只有一位是管理員
     await db.batch([['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
-      [`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, is_admin)
+      [`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, workspace_role)
       SELECT ?,?,?,?,?,?,?,?,?,?,
         CASE WHEN EXISTS (SELECT 1 FROM accounts a JOIN participants o ON o.account_id = a.id
-          WHERE a.platform_role = 'admin' AND a.status = 'active' AND o.kind = 'human' AND o.status = 'active') THEN 0 ELSE 1 END`, // 沒有平台管理員＝管理員
+          WHERE a.platform_role = 'admin' AND a.status = 'active' AND o.kind = 'human' AND o.status = 'active') THEN 'member' ELSE 'admin' END`, // 沒有平台管理員＝管理員
     [id, 'human', name, role, await newCode(), await tokenKey(token), Date.now() + HUMAN_TOKEN_TTL_MS, ts, ts, Date.now()]],
     ...membership.enterWorkspaceStmts(id, ts)]); // 預設工作區、帳號；同一批，一起成功或一起失敗
     if (jb) jb.n++; // 成功建立才算一次

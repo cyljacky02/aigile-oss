@@ -12,6 +12,7 @@ import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { addToProject, setProjectRole, listProjectMembers } from './test-members.js';
 import { testToken } from './test-token.js';
+import { toPrePhase1 } from './legacy-db.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pvis-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -185,11 +186,7 @@ try {
     const file = path.join(dataDir, 'old', 'switch.db');
     fs.mkdirSync(path.dirname(file));
     const old = await openTestDb(file);
-    for (const sql of ['DROP TABLE project_members', 'DROP TABLE accounts', 'DROP TABLE workspaces',
-      'ALTER TABLE participants DROP COLUMN account_id', 'ALTER TABLE participants DROP COLUMN workspace_id',
-      'ALTER TABLE participants DROP COLUMN workspace_role', 'ALTER TABLE participants DROP COLUMN workspace_status',
-      'ALTER TABLE projects DROP COLUMN workspace_id', 'ALTER TABLE projects DROP COLUMN visibility',
-      "DELETE FROM schema_migrations WHERE name = '008_members_access.sql'"]) await old.run(sql);
+    await toPrePhase1(old);
     const person = (id, name, at, projects, extra = {}) => old.run('INSERT INTO participants (id, kind, name, role, code, token, created_at, updated_at, projects, is_admin) VALUES (?,?,?,?,?,?,?,?,?,?)',
       id, 'human', name, 'PG', id.slice(2, 6).toUpperCase(), 'h:old_' + id, at, at, projects, extra.admin ? 1 : 0);
     await person('p_boss', '舊管理員', '2026-01-01T00:00:00.000Z', `${A},${B}`, { admin: true });

@@ -2,9 +2,10 @@
 // 這些資料的讀寫都只經過這裡。資料表依 docs/adr/0002（migrations/008）：
 //   participants.workspace_id／workspace_role／workspace_status／account_id、accounts、workspaces、
 //   project_members(project_id, participant_id, role)：role＝admin（專案管理員）| member（專案成員）| viewer（唯讀成員）。
-// 跨專案角色已取消：升級時 app_settings 的 cross_roles 轉成每個專案的明確成員資格（migrateLegacy），轉完刪掉。
+// 舊結構（is_admin、逗號字串的 participants.projects、app_settings 的 project_leaders／read_only／cross_roles）由 migrations/009 拿掉；
+// 從第一階段之前升級的站，舊資料由 migrateLegacy 轉進新表（只有它讀舊資料）。
 //
-// 讀：同步，看已載入的快照（project_members 整張＋cross_roles，10 秒快取；load(true) 重讀；invalidate() 標成過期）。
+// 讀：同步，看已載入的快照（project_members 整張，10 秒快取；load(true) 重讀；invalidate() 標成過期）。
 //     快照以成員 id 查：呼叫端拿到的 participant 列（不論從哪讀的）只用到 p.id、p.kind、p.owner_id。
 // 寫：回傳 [sql, args] 語句陣列，呼叫端跟卡片退回、專案事件放進同一個 db.batch（一起成功或一起失敗）；執行後呼叫 load(true)。
 // PROJECTS：未封存專案 id 的陣列（core.js 原地更新的同一個陣列）。
@@ -73,7 +74,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     return PROJECTS.filter(x => mine.has(x));
   };
   // 把某人的專案歸屬整個換成 projects（含封存的也要列，沒列＝移出；移出就沒有那個專案的角色）。新加入的是專案成員，已在的角色不變。
-  // at：同時更新 updated_at（null＝不動）。onlyIf：只在這位成員的列符合條件時才寫（participants 欄位的 SQL 條件，例如 'is_admin = 1'），用在同一批剛建的人
+  // at：同時更新 updated_at（null＝不動）。onlyIf：只在這位成員的列符合條件時才寫（participants 欄位的 SQL 條件，例如 "workspace_role = 'member'"）
   function setProjectsStmts(id, projects, at, { onlyIf = null } = {}) {
     const cond = onlyIf ? ` AND (${onlyIf})` : '';
     const list = JSON.stringify([...new Set(projects)]), rows = JSON.stringify([...new Set(projects)].map(p => ({ p })));
@@ -126,7 +127,6 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   }
 
   // ---------- 舊設定（app_settings） ----------
-  const upsert = key => `INSERT INTO app_settings (key, value) VALUES ('${key}', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
   const readSetting = async key => (await db.get('SELECT value FROM app_settings WHERE key = ?', key).catch(() => null))?.value;
   const readJson = async key => { try { return JSON.parse((await readSetting(key)) || 'null'); } catch { return null; } };
   // 舊的跨專案角色：cross_roles＝{ add: [id], remove: [id], frozen: 時間 }；還沒寫成固定名單（沒有 frozen）時，角色是 PO／SM 的人與 AI 也算
@@ -145,13 +145,9 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   }
 
   // ---------- 永久刪除專案：所有人的專案歸屬與角色都拿掉它 ----------
-  // people：要檢查的成員列（含停用、已刪除的；改到的人更新 updated_at）。舊的 leader／唯讀設定（升級前的資料）也一併清掉
+  // people：要檢查的成員列（含停用、已刪除的；改到的人更新 updated_at）
   async function removeProjectStmts(pj, people, at) {
     const stmts = [];
-    for (const key of ['read_only', 'project_leaders']) {
-      const v = await readJson(key);
-      if (v && typeof v === 'object' && pj in v) { delete v[pj]; stmts.push([upsert(key), [JSON.stringify(v)]]); }
-    }
     const members = new Set((await db.all('SELECT participant_id FROM project_members WHERE project_id = ?', pj)).map(r => r.participant_id));
     stmts.push(['DELETE FROM project_members WHERE project_id = ?', [pj]]);
     for (const p of people) if (members.has(p.id)) stmts.push(['UPDATE participants SET updated_at = ? WHERE id = ?', [at, p.id]]);
@@ -159,23 +155,23 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   }
 
   // ---------- 工作區成員資格 ----------
-  // 剛建的成員（同一批的 INSERT 之後）加入預設工作區：人類另建帳號；工作區角色、平台角色跟著 is_admin（#8／#9 才改成各自管理）
+  // 剛建的成員（同一批的 INSERT 之後）加入預設工作區：人類另建帳號。工作區角色由 INSERT 決定（預設 member）；
+  // INSERT 時就是工作區管理員的（第一位自行註冊的人、預設管理員）同時是平台管理員。AI 一律是工作區成員
   const enterWorkspaceStmts = (id, at) => [
     [`INSERT OR IGNORE INTO accounts (id, platform_role, status, created_at, updated_at)
-      SELECT ?, CASE WHEN is_admin = 1 THEN 'admin' ELSE 'none' END, 'active', ?, ? FROM participants WHERE id = ? AND kind = 'human'`, [accountIdOf(id), at, at, id]],
+      SELECT ?, CASE WHEN workspace_role = 'admin' THEN 'admin' ELSE 'none' END, 'active', ?, ? FROM participants WHERE id = ? AND kind = 'human'`, [accountIdOf(id), at, at, id]],
     [`UPDATE participants SET workspace_id = ?, account_id = CASE WHEN kind = 'human' THEN ? ELSE NULL END,
-      workspace_role = CASE WHEN kind = 'human' AND is_admin = 1 THEN 'admin' ELSE 'member' END WHERE id = ?`, [DEFAULT_WORKSPACE, accountIdOf(id), id]],
+      workspace_role = CASE WHEN kind = 'human' THEN workspace_role ELSE 'member' END WHERE id = ?`, [DEFAULT_WORKSPACE, accountIdOf(id), id]],
   ];
   // 升降工作區管理員（role：admin | member；只有啟用中的人類能升）。降級在同一句 SQL 裡檢查「還有別的啟用中工作區管理員」，
   // 沒有就什麼都不改（呼叫端再讀一次看有沒有改到）。第一句先鎖工作區這列：兩位管理員同時互降時排隊，後到的看得到前一位的結果（Postgres）。
-  // is_admin 跟著工作區角色走（#16 拿掉 is_admin）；平台角色另外管（setPlatformRoleStmts）
+  // 平台角色另外管（setPlatformRoleStmts）
   const setWorkspaceRoleStmts = (id, role, at) => [
     ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
     role === 'admin'
       ? ["UPDATE participants SET workspace_role = 'admin', updated_at = ? WHERE id = ? AND kind = 'human' AND status = 'active' AND workspace_role != 'admin'", [at, id]]
       : [`UPDATE participants SET workspace_role = 'member', updated_at = ? WHERE id = ? AND workspace_role = 'admin'
           AND EXISTS (SELECT 1 FROM participants o WHERE o.workspace_id = ? AND o.workspace_role = 'admin' AND o.kind = 'human' AND o.status = 'active' AND o.id != ?)`, [at, id, DEFAULT_WORKSPACE, id]],
-    ["UPDATE participants SET is_admin = CASE WHEN workspace_role = 'admin' THEN 1 ELSE 0 END WHERE id = ?", [id]],
   ];
   // 平台管理員（帳號的 platform_role）：是平台管理員、帳號啟用中、成員列是啟用中的人類（平台管理員被移出工作區也還是）
   const isPlatformAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && snap.platform.has(p.id);
@@ -199,10 +195,12 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // ---------- 升級轉換（ADR 0001 的做法：程式啟動後第一個請求做，SQLite、D1、Postgres 共用） ----------
   // 標記：participants.workspace_id 是空的＝還沒轉（新程式建的成員一定有）。每位成員的轉換是一批、每句都看這個標記，
   // 所以重跑、兩份程式同時跑都不會重複（project_members、accounts 的主鍵再擋一次）。
+  // 舊欄位 is_admin、projects 由 migrations/009 抄到 legacy_members 再拿掉；009 還沒套的資料庫（例：D1 先換程式、後跑升級）照舊讀欄位。
   // 舊資料：projects 逗號字串（NULL＝所有未封存專案）、project_leaders → 專案管理員、read_only → 唯讀成員（leader 優先）、
   // is_admin（沒有就最早加入的啟用人類）→ 工作區管理員＋平台管理員、停用 → 停用帳號、已刪除（人類）→ 已移出工作區。
   // 跨專案角色 → 每個未封存專案的明確成員資格（migrateCrossRoles）。隱形管理員（#8）：現任管理員在「沒有職稱（project_roles）也不是 leader」的專案
   // 移除成員資格，改靠隱含權限（升級前這些專案本來就不列他），其他保留；跨專案角色的轉換也照這個規則。匯入備份中（restore_state）不做，回 false。
+  // 每個人都轉完後，刪掉抄起來的舊資料與舊設定（project_leaders、read_only、cross_roles）。
   async function migrateLegacy() {
     if (await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
     const base = [
@@ -210,10 +208,13 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       ["UPDATE workspaces SET name = (SELECT value FROM app_settings WHERE key = 'group_name') WHERE id = ? AND name = '' AND EXISTS (SELECT 1 FROM app_settings WHERE key = 'group_name')", [DEFAULT_WORKSPACE]],
       ['UPDATE projects SET workspace_id = ? WHERE workspace_id IS NULL', [DEFAULT_WORKSPACE]],
     ];
-    const todo = await db.all('SELECT id, kind, status, role, role_key, projects FROM participants WHERE workspace_id IS NULL ORDER BY created_at, id');
-    if (!todo.length) { await db.batch(base); await migrateCrossRoles(false); return true; }
-    const humans = await db.all("SELECT id, is_admin FROM participants WHERE kind = 'human' AND status = 'active' ORDER BY created_at, id");
-    const adminId = (humans.find(p => Number(p.is_admin) === 1) || humans[0])?.id;
+    const todo = await db.all('SELECT id, kind, status, role, role_key FROM participants WHERE workspace_id IS NULL ORDER BY created_at, id');
+    if (!todo.length) { await db.batch(base); await migrateCrossRoles(false); await dropLegacy(); return true; }
+    const { rows: old, table } = await legacyRows();
+    // 管理員：還沒轉的看舊的 is_admin，已轉的看工作區角色；都沒有就最早加入的啟用人類
+    const humans = await db.all("SELECT id, workspace_id, workspace_role FROM participants WHERE kind = 'human' AND status = 'active' ORDER BY created_at, id");
+    const wasAdmin = h => (h.workspace_id === null || h.workspace_id === undefined ? Number(old.get(h.id)?.is_admin) === 1 : h.workspace_role === 'admin');
+    const adminId = (humans.find(wasAdmin) || humans[0])?.id;
     const projects = await db.all('SELECT id, archived FROM projects');
     const exists = new Set(projects.map(r => r.id)), active = projects.filter(r => !r.archived).map(r => r.id);
     const leaders = (await readJson('project_leaders')) || {}, ro = (await readJson('read_only')) || {}, cr = (await readJson('cross_roles')) || {};
@@ -225,7 +226,8 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     for (const p of todo) {
       const stmts = [];
       const human = p.kind === 'human', admin = human && p.id === adminId, guard = 'EXISTS (SELECT 1 FROM participants WHERE id = ? AND workspace_id IS NULL)';
-      const list = p.projects === null || p.projects === undefined ? active : [...new Set(String(p.projects).split(',').map(x => x.trim()))].filter(x => exists.has(x));
+      const raw = old.has(p.id) ? old.get(p.id).projects : ''; // 沒有舊資料＝沒有專案
+      const list = raw === null || raw === undefined ? active : [...new Set(String(raw).split(',').map(x => x.trim()))].filter(x => exists.has(x));
       const roleIn = pj => (human && listed(leaders, pj, p.id) ? PR.ADMIN : human && listed(ro, pj, p.id) ? PR.VIEWER : PR.MEMBER);
       const extra = human && isCross(p) ? [...exists].filter(pj => !list.includes(pj) && roleIn(pj) !== PR.MEMBER) : [];
       const ghost = pj => admin && !titles[p.id]?.[pj] && roleIn(pj) !== PR.ADMIN; // 隱形管理員的專案：改靠隱含權限
@@ -234,14 +236,35 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       if (human) stmts.push([`INSERT OR IGNORE INTO accounts (id, platform_role, status, created_at, updated_at) SELECT ?, ?, ?, ?, ? WHERE ${guard}`, [accountIdOf(p.id), admin ? 'admin' : 'none', p.status === 'disabled' ? 'disabled' : 'active', at, at, p.id]]);
       stmts.push(['UPDATE participants SET workspace_id = ?, account_id = ?, workspace_role = ?, workspace_status = ? WHERE id = ? AND workspace_id IS NULL',
         [DEFAULT_WORKSPACE, human ? accountIdOf(p.id) : null, admin ? 'admin' : 'member', human && p.status === 'deleted' ? 'removed' : 'active', p.id]]);
+      if (table) stmts.push(['DELETE FROM legacy_members WHERE participant_id = ?', [p.id]]);
       each.push(stmts);
     }
     await db.batch(base);
     for (let i = 0; i < each.length; i += 30) await db.batch(each.slice(i, i + 30).flat()); // 一批 30 人（D1 單批不要太大）
     console.log(`成員與權限：已把 ${todo.length} 位成員轉到新的資料表`);
     await migrateCrossRoles(true);
+    await dropLegacy();
     onChange();
     return true;
+  }
+  // 還沒轉的成員的舊資料：Map(成員 id → { is_admin, projects })；table＝legacy_members 在不在。
+  // 009 之後在 legacy_members；009 還沒套時舊欄位還在 participants 上（兩邊都有時 legacy_members 優先，例如匯入的舊版備份）
+  async function legacyRows() {
+    const rows = new Map();
+    const cols = new Set((await db.all('PRAGMA table_info(participants)').catch(() => [])).map(c => c.name));
+    if (cols.has('is_admin') || cols.has('projects')) {
+      const sql = `SELECT id, ${cols.has('is_admin') ? 'is_admin' : '0 AS is_admin'}, ${cols.has('projects') ? 'projects' : "'' AS projects"} FROM participants WHERE workspace_id IS NULL`;
+      for (const r of await db.all(sql)) rows.set(r.id, r);
+    }
+    let table = true;
+    try { for (const r of await db.all('SELECT participant_id, is_admin, projects FROM legacy_members')) rows.set(r.participant_id, r); } catch { table = false; }
+    return { rows, table };
+  }
+  // 每個人都轉完了：抄起來的舊資料、舊設定都不需要了（還有人沒轉就留著，下次再轉）
+  async function dropLegacy() {
+    const done = 'NOT EXISTS (SELECT 1 FROM participants WHERE workspace_id IS NULL)';
+    await db.batch([[`DELETE FROM app_settings WHERE key IN ('project_leaders', 'read_only', 'cross_roles') AND ${done}`, []]]);
+    await db.run(`DELETE FROM legacy_members WHERE ${done}`).catch(() => {}); // 009 還沒套就沒有這張表
   }
   // 跨專案角色 → 每個未封存專案的明確成員資格（INSERT OR IGNORE：已在的專案角色不變，負責人照舊是專案管理員）；轉完刪掉 cross_roles。
   // 同一批裡每句都看 cross_roles 還在不在：重跑、兩份程式同時跑都只轉一次，之後被移出的人不會被加回來。
