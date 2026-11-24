@@ -6,6 +6,7 @@
 //   run(sql, ...args) → { changes }       batch([[sql, args], ...]) → 原子執行
 import { ROLES, SETTING_FIELDS } from './roles.js';
 import { registerCards, teamCards, workFrom, autoArchive, claimsOf, CLAIM_LOG } from './cards.js';
+import { createStatuses, registerStatusRoutes, firstStatusSql, readStatusList } from './statuses.js'; // 專案看板狀態
 import { registerLogin } from './login.js';
 import { registerSkills, KEYISH } from './skills.js'; // 角色技能庫
 import { registerJoin, joinOpen } from './join.js'; // 申請加入專案
@@ -280,6 +281,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 專案：成員可屬於一或兩個；訊息 project 為空＝全部專案（人人可見）；卡片必填
   // 專案清單存在資料表；PROJECTS 是「未封存專案 id」的陣列，原地更新（cards.js 拿的是同一個陣列）
   const PROJECTS = [];
+  const statuses = createStatuses({ db, invalid }); // 各專案的看板狀態（每個請求讀一次）
   let projectRows = [], projectsAt = 0;
   async function loadProjects(force = false) {
     if (!force && Date.now() - projectsAt < 60_000 && projectRows.length) return; // 專案很少改，原 10 秒一天讀 8 千多次；改專案時會清除
@@ -1348,8 +1350,8 @@ ${mcp ? `1. 用 aigile_me 核對 participantId 是 ${ai.id}，不一致立刻停
 
 **卡片**
 - 只在接下任務、受阻或解除、要人類拍板（建決策卡）、完成（不要自己標已驗證）、交接時動卡片。
-- 發 [接單]／[進度] 帶 cardId＝認領（你是負責人卡會改「進行中」）；回應有 cardClaim＝別人在做，先協調或 takeover 接手；交接用四欄。相關訊息都帶 cardId。
-- 完成與交接的順序：先發 [完成]（附交付內容或 40 碼 SHA），再呼叫 ${mcp ? 'aigile_card_handover' : 'POST /api/cards/:id/handover'} 交給驗收的人；平台會代你發 [交接] 並 @ 對方。[完成] 不會把卡改成已完成。
+- 發 [接單]／[進度] 帶 cardId＝認領（你是負責人卡會改到「進行中」類別）；回應有 cardClaim＝別人在做，先協調或 takeover 接手；交接用四欄。相關訊息都帶 cardId。
+- 完成與交接的順序：先發 [完成]（附交付內容或 40 碼 SHA），再呼叫 ${mcp ? 'aigile_card_handover' : 'POST /api/cards/:id/handover'} 交給驗收的人；平台會代你發 [交接] 並 @ 對方。[完成] 不會把卡改到已完成類別。
 - 交付物是只在你本機的檔案時：把內容全文貼在 [完成] 訊息裡，驗收的人讀不到你的檔案。
 - 新工作開新卡。只能改自己負責的卡；要改別人的卡或派工用 POST /api/suggestions。
 
@@ -1743,13 +1745,14 @@ ${ending}`;
     const counts = new Map((await db.all("SELECT project, COUNT(*) AS n FROM cards WHERE status IN ('待整理','待處理','進行中','待確認','受阻') GROUP BY project")).map(r => [r.project, r.n]));
     const repos = await reposMap(), dms = await dmMap(), rdefs = await roleDefsMap(), slugs = await slugMap();
     await loadProjectRoles();
+    const book = await statuses.load(ctx);
     const adminId = adminOf(people)?.id;
     const inUse = (pj, d) => [...people.values()].filter(p => p.status === 'active' && listOf(p).includes(pj) && (p.kind === 'ai' ? p.role_key === d.key : projRoles[p.id]?.[pj] === d.role)).length;
     return projectRows.map(r => ({ id: r.id, name: r.name, slug: slugs[r.id], code: projCodes[r.id] || null, archived: !!r.archived, createdAt: r.created_at, repo: repos[r.id] || null, // ；C-xxx 網址英文名
       roles: (rdefs[r.id] || []).map(d => ({ ...d, createdByName: people.get(d.createdBy)?.name || null, inUse: inUse(r.id, d) })), // 本專案角色
       dm: dms[r.id] ? { ...dms[r.id], byName: people.get(dms[r.id].by)?.name || null } : { on: false, by: null, at: null, byName: null },
       memberCount: [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && listOf(p).includes(r.id) && !ghostAdminIn(p, r.id, adminId)).length,
-      openCards: counts.get(r.id) || 0 }));
+      openCards: counts.get(r.id) || 0, statuses: book.list(r.id) })); // 看板狀態（順序＝看板欄順序）
   }
   async function projectsResponse(ctx, extra = {}) {
     await loadCrossRoles();
@@ -1804,7 +1807,7 @@ ${ending}`;
     for (const x of plan) {
       stmts.push(['UPDATE participants SET projects = ?, updated_at = ? WHERE id = ?', [x.next.join(','), at, x.target.id]]);
       for (const c of x.cards) {
-        stmts.push(["UPDATE cards SET owner_id = NULL, status = '待處理', updated_at = ?, version = version + 1 WHERE seq = ?", [at, c.seq]]);
+        stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE seq = ?`, [at, c.seq]]);
         stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [c.seq, at, me.id, '網頁', `${x.target.name} 已移出「${nameOf(c.project)}」，改為未指派（狀態改為待處理）`]]);
       }
       for (const pj of x.added) stmts.push(projEvent(pj, me.id, `${who(pj)} 加入 ${x.target.name}`, at));
@@ -1996,7 +1999,7 @@ ${ending}`;
       for (const c of roChanges) {
         stmts.push(projEvent(c.project, me.id, `${me.name} 把 ${c.name} 設為${c.readOnly ? '唯讀' : '一般成員'}${c.returnedCards.length ? `（${c.returnedCards.length} 張卡退回待處理）` : ''}`, at));
         for (const seq of c.seqs) {
-          stmts.push(["UPDATE cards SET owner_id = NULL, status = '待處理', updated_at = ?, version = version + 1 WHERE seq = ?", [at, seq]]);
+          stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE seq = ?`, [at, seq]]);
           stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [seq, at, me.id, '網頁', `${c.name} 在「${nameOf(c.project)}」改為唯讀，改為未指派（狀態改為待處理）`]]);
         }
       }
@@ -2160,8 +2163,11 @@ ${ending}`;
     const slug = rawSlug ? checkSlug(rawSlug, name, used) : autoSlug(name, used); // 網址英文名選填，跟引導同一套規則
     if (used.has(slug)) throw new ApiError(409, 'SLUG_TAKEN', `「${slug}」已經有專案在用`, { suggestion: slugFree(slug, used) });
     const id = randId('prj'), at = nowIso();
+    // 看板狀態（選填）：建立時直接給整份清單；沒給就是預設狀態組（第一次讀狀態時補上）
+    const initial = body.statuses === undefined || body.statuses === null ? [] : readStatusList(body.statuses, invalid);
     await loadCrossRoles();
     const stmts = [['INSERT INTO projects (id, name, archived, created_by, created_at) VALUES (?,?,0,?,?)', [id, name, me.id, at]], projEvent(id, me.id, `${me.name} 建立專案`, at),
+      ...initial.map((st, i) => ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [id, st.name, st.category, i, st.color]]),
       ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['slug:' + id, slug]]];
     if (code) stmts.push(["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['pcode:' + id, code]]);
     // 新專案只含建立者＋目前的跨專案角色（不一定是 PO、SM，可在成員與權限開關）；其他人由管理員在專案成員勾選加入
@@ -2720,6 +2726,7 @@ ${ending}`;
       ['DELETE FROM dms WHERE project = ?', [id]],
       ['DELETE FROM messages WHERE project = ?', [id]],
       ['DELETE FROM cards WHERE project = ?', [id]],
+      ['DELETE FROM project_statuses WHERE project = ?', [id]],
       ['DELETE FROM docs WHERE project = ?', [id]],
       ['DELETE FROM doc_folders WHERE project = ?', [id]],
       ['DELETE FROM skills WHERE project = ?', [id]],
@@ -2746,7 +2753,7 @@ ${ending}`;
       ["UPDATE participants SET status = 'deleted', token = ?, token_expires_at = 0, projects = '', updated_at = ? WHERE id = ?", ['deleted_' + ai.id, at, ai.id]],
       ["UPDATE notifications SET status = 'acked', acked_at = ? WHERE recipient_id = ? AND status = 'pending'", [at, ai.id]],
       ['DELETE FROM ai_state WHERE participant_id = ?', [ai.id]],
-      ["UPDATE cards SET owner_id = NULL, status = '待處理', updated_at = ?, version = version + 1 WHERE owner_id = ? AND project != ? AND status IN ('待整理','待處理','進行中','待確認','受阻')", [at, ai.id, id]]);
+      [`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE owner_id = ? AND project != ? AND status IN ('待整理','待處理','進行中','待確認','受阻')`, [at, ai.id, id]]);
     for (const inv of await db.all("SELECT id, projects FROM invites WHERE used_at IS NULL AND revoked_at IS NULL AND (',' || projects || ',') LIKE ?", `%,${id},%`))
       settings.push(['UPDATE invites SET projects = ? WHERE id = ?', [String(inv.projects).split(',').filter(x => x && x !== id).join(','), inv.id]]);
     const log = { projectId: id, name: row.name, code: projCodes[id] || null, by: me.id, byName: me.name, at, counts, aisDeleted: onlyHere.map(p => p.name) };
@@ -3079,7 +3086,7 @@ ${ending}`;
     if (body.cardId !== undefined && body.cardId !== null && body.cardId !== '') {
       const m = /^C-(\d+)$/i.exec(String(body.cardId));
       cardSeq = m ? Number(m[1]) - 100 : ((await cardSeqByKey(body.cardId)) ?? NaN); // MAIN-12 也收
-      card = Number.isInteger(cardSeq) && cardSeq >= 1 ? await db.get('SELECT seq, status, owner_id, type, project FROM cards WHERE seq = ?', cardSeq) : null;
+      card = Number.isInteger(cardSeq) && cardSeq >= 1 ? await db.get('SELECT seq, status, status_id, owner_id, type, project FROM cards WHERE seq = ?', cardSeq) : null;
       if (!card) throw new ApiError(404, 'NOT_FOUND', '找不到 cardId 這張卡片');
       // （UX 退回）：發文帶 cardId 也要套專案隔離——看不到的卡不能掛；訊息專案要跟卡片一樣（平台訊息不能流進別專案的卡）
       if (isolatedFrom(me) && !projectsOf(me).includes(card.project)) throw new ApiError(403, 'CARD_FORBIDDEN', '這張卡屬於其他專案，你沒有權限查看。');
@@ -3097,10 +3104,10 @@ ${ending}`;
     // 卡片負責人發 [接單]／[進度] 並帶 cardId → 卡還在「待整理／待處理」就自動改「進行中」，看得出有人在做
     let cardStarted = false;
     if (card && !r.duplicate && card.owner_id === me.id && ['待整理', '待處理'].includes(card.status) && card.type !== '決策' && /^\s*\[(接單|進度)\]/.test(body.text || '')) {
-      const at = nowIso();
+      const at = nowIso(), book = await statuses.load(ctx); // 紀錄寫當時的狀態名稱
       await db.batch([
-        ["UPDATE cards SET status = '進行中', version = version + 1, updated_at = ? WHERE seq = ? AND status IN ('待整理', '待處理')", [at, card.seq]],
-        ['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [card.seq, at, me.id, me.kind === 'human' ? '網頁' : 'API', `${me.name} 發了 ${/\[進度\]/.test(body.text) ? '[進度]' : '[接單]'}：狀態 ${card.status} → 進行中`]],
+        [`UPDATE cards SET status = '進行中', status_id = ${firstStatusSql('進行中')}, version = version + 1, updated_at = ? WHERE seq = ? AND status IN ('待整理', '待處理')`, [at, card.seq]],
+        ['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [card.seq, at, me.id, me.kind === 'human' ? '網頁' : 'API', `${me.name} 發了 ${/\[進度\]/.test(body.text) ? '[進度]' : '[接單]'}：狀態 ${book.of(card)?.name || card.status} → ${book.first(card.project, '進行中')?.name || '進行中'}`]],
       ]);
       teamCache = { at: 0, data: null };
       cardStarted = true;
@@ -3119,7 +3126,7 @@ ${ending}`;
     }
     const warnings = [...(r.warnings || []), ...(cardMismatch ? [cardMismatch] : [])];
     if (cardClosed && inferState(body.text || '') === 'working') warnings.push(`${body.cardId} 已${cardClosed}，新工作請開新卡（或請人重新打開這張），不要掛在已結案的卡上。`);
-    return { __status: r.duplicate ? 200 : 201, ...r.message, ...(cardLinked === undefined ? {} : { cardLinked }), ...(cardStarted ? { cardStatus: '進行中' } : {}), ...(cardClaim ? { cardClaim } : {}), ...(warnings.length ? { warnings } : {}) };
+    return { __status: r.duplicate ? 200 : 201, ...r.message, ...(cardLinked === undefined ? {} : { cardLinked }), ...(cardStarted ? { cardStatus: (await statuses.load(ctx)).first(card.project, '進行中')?.name || '進行中' } : {}), ...(cardClaim ? { cardClaim } : {}), ...(warnings.length ? { warnings } : {}) };
   });
 
   route('GET', '/api/notifications', ({ ctx, me, url }) => listNotifications(ctx, me, url));
@@ -3165,7 +3172,7 @@ ${ending}`;
       ['DELETE FROM ai_state WHERE participant_id = ?', [ai.id]],
     ];
     for (const c of cards) {
-      stmts.push(["UPDATE cards SET owner_id = NULL, status = '待處理', wait_for_id = CASE WHEN wait_for_id = ? THEN NULL ELSE wait_for_id END, updated_at = ?, version = version + 1 WHERE seq = ?", [ai.id, at, c.seq]]);
+      stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, wait_for_id = CASE WHEN wait_for_id = ? THEN NULL ELSE wait_for_id END, updated_at = ?, version = version + 1 WHERE seq = ?`, [ai.id, at, c.seq]]);
       stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [c.seq, at, me.id, '網頁', `負責 AI「${ai.name}」已刪除，改為未指派（狀態改為待處理）`]]);
     }
     await db.batch(stmts);
@@ -3732,7 +3739,9 @@ ${ending}`;
   registerUpdateCheck({ route, db, requireAdmin, requireHuman, config });
   registerDemo({ route, db, ApiError, randId, nowIso, requireAdmin, requireHuman, newCode, newToken,
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });
-  const cardsApi = registerCards({ route: cardRoute, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, canSeeMessage,archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
+  const cardsApi = registerCards({ route: cardRoute, statuses, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, canSeeMessage,archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
+  registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, requireAdminOrLeader, cardKey, projEvent, moveCard: cardsApi.moveCard,
+    canSeeProject: (me, pj) => !isolatedFrom(me) || projectsOf(me).includes(pj), projectExists: async pj => !!(await db.get('SELECT id FROM projects WHERE id = ?', pj)) });
   Object.assign(kbHooks, registerKbPages({ route, db, ApiError, invalid, readJson, randId, nowIso, peopleMap, identity, projectsOf, PROJECTS, assertWritable, roIn, kbManager, findSecret, getJson, setJson, createMessage, cardKey, cardsApi, claimsOf, kbSkillState: (pj, ais) => skillsApi.templateState(pj, 'kb-curation', ais) })); // 知識頁、整理卡
 
   // 只屬部分專案的人：每個人的目前工作、張數、待處理則數只算看的人也在的專案（卡片看專案、訊息照隔離規則）
@@ -3968,7 +3977,7 @@ ${ending}`;
         e = new ApiError(500, 'INTERNAL', '伺服器錯誤');
       }
       const headers = e.extra.retryAfter ? { 'Retry-After': String(e.extra.retryAfter) } : {};
-      return json(e.status, { error: { code: e.code, message: e.message, ...(e.extra.captchaRequired ? { captchaRequired: true } : {}), ...(e.extra.suggestion ? { suggestion: e.extra.suggestion } : {}), ...(e.extra.field ? { field: e.extra.field } : {}) } }, headers);
+      return json(e.status, { error: { code: e.code, message: e.message, ...(e.extra.captchaRequired ? { captchaRequired: true } : {}), ...(e.extra.suggestion ? { suggestion: e.extra.suggestion } : {}), ...(e.extra.field ? { field: e.extra.field } : {}), ...(e.extra.cards ? { cards: e.extra.cards } : {}) } }, headers);
     }
   }
 }

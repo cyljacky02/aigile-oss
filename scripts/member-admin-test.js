@@ -127,7 +127,7 @@ try {
 
   // 舊資料庫升級：001 把原本的管理員（最早加入的人類）標起來
   {
-    const OLD = fs.readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8').replace(/\n\s*is_admin INTEGER[^\n]*/, '').replace(/\n\s*wake_(day|count|at) [^\n]*/g, '').replace(/,\n\s*kb_status TEXT[\s\S]*?kb_card INTEGER[^\n]*/, ''); // 之後的升級（002 叫醒次數、004／005 知識庫）加的欄位也拿掉
+    const OLD = fs.readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8').replace(/\n\s*is_admin INTEGER[^\n]*/, '').replace(/\n\s*wake_(day|count|at) [^\n]*/g, '').replace(/,\n\s*kb_status TEXT[\s\S]*?kb_card INTEGER[^\n]*/, '').replace(/\n\s*status_id INTEGER[^\n]*/, '').replace(/-- 專案看板狀態：[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS idx_project_statuses_name [^\n]*\n/, ''); // 之後的升級（002 叫醒次數、004／005 知識庫、007 看板狀態）加的欄位也拿掉
     assert.ok(!OLD.includes('is_admin'), '1.0 的結構沒有 is_admin');
     const odb = new DatabaseSync(path.join(dataDir, 'old.db'));
     odb.exec(OLD);
