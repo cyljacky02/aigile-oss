@@ -20,7 +20,6 @@ export function createWorkspaceSettings({ db, env = {}, hashPassword, verifyPass
     at = Date.now();
     return snap;
   }
-  const current = () => ({ ...snap });
   // 一般成員可以建立專案嗎（工作區管理員永遠可以，由權限模組判斷）
   const membersCreateProjects = () => snap.createProjects === CREATE_PROJECTS.MEMBERS;
   const setCreateProjectsStmts = value => [['UPDATE workspaces SET create_projects = ? WHERE id = ?', [value, DEFAULT_WORKSPACE]]];
@@ -43,5 +42,5 @@ export function createWorkspaceSettings({ db, env = {}, hashPassword, verifyPass
   // code：''＝清除（之後不用房間碼，也不再看環境變數）
   const setRoomCodeStmts = async code => [[upsert, ['room_code', code ? await hashPassword(code) : '']]];
 
-  return { load, current, membersCreateProjects, setCreateProjectsStmts, joinRules, setOpenJoinStmts, setRoomCodeStmts, invalidate: () => { at = 0; } };
+  return { load, membersCreateProjects, setCreateProjectsStmts, joinRules, setOpenJoinStmts, setRoomCodeStmts, invalidate: () => { at = 0; } };
 }

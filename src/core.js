@@ -7,7 +7,7 @@
 import { ROLES, SETTING_FIELDS } from './roles.js';
 import { registerCards, teamCards, workFrom, autoArchive, claimsOf, CLAIM_LOG } from './cards.js';
 import { createStatuses, registerStatusRoutes, firstStatusSql, readStatusList } from './statuses.js'; // 專案看板狀態
-import { createMembership, DEFAULT_WORKSPACE, PROJECT_ROLE } from './membership.js'; // 成員資格：誰在哪些專案、專案角色
+import { createMembership, DEFAULT_WORKSPACE, PROJECT_ROLE, WORKSPACE_ROLE } from './membership.js'; // 成員資格：誰在哪些專案、專案角色
 import { registerLogin } from './login.js';
 import { registerSkills, KEYISH } from './skills.js'; // 角色技能庫
 import { registerJoin, joinOpen } from './join.js'; // 申請加入專案
@@ -358,7 +358,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   const adminInWorkspace = p => hasWorkspaceAdminRights(p, membership.isPlatformAdmin);
   // 實際能進的專案（規則在權限模組）：AI 不超出所屬人類能進的專案。所屬人類的列看成員快取（AI 發請求時一定先讀好，見 handleInner）；
   // 快取裡沒有就只看他明確加入的專案（寧可少給）
-  const projectsOf = effectiveProjects({ projects: () => PROJECTS, memberProjectsOf: p => membership.projectsOf(p), implicitAll: adminInWorkspace,
+  const projectsOf = effectiveProjects({ projects: () => PROJECTS, memberProjectsOf: membership.projectsOf, implicitAll: adminInWorkspace,
     ownerOf: ai => peopleCache.map?.get(ai.owner_id) || { id: ai.owner_id, kind: 'human' } });
   // 專案可見度（權限模組 discover_project）：私人專案對看不到的人＝不存在（檢查、錯誤訊息列的專案都不提它）
   // 同步版，用目前的成員快取（非成員看私人專案才要判上層管理員）；me 沒帶＝平台自己，都看得到
@@ -415,7 +415,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const out = { participantId: p.id, name: p.status === 'deleted' ? p.name + '（已刪除）' : p.name, role: p.role, roleKey: p.role_key || null, avatar: p.avatar || null, avatarImg: p.avatar_v || null, shortCode: p.code, memberType: p.kind, projects: projectsOf(p) };
     if (p.status === 'deleted') out.deleted = true; // 已刪除成員的舊訊息仍顯示原名稱，前端加註（已刪除）
     if (p.kind === 'human' && p.status === 'disabled') out.disabled = true;
-    out.workspaceRole = isWorkspaceAdmin(p) ? 'admin' : 'member'; // 明確的工作區角色（平台管理員的隱含權不算）
+    out.workspaceRole = isWorkspaceAdmin(p) ? WORKSPACE_ROLE.ADMIN : WORKSPACE_ROLE.MEMBER; // 明確的工作區角色（平台管理員的隱含權不算）
     out.platformRole = membership.isPlatformAdmin(p) ? 'admin' : 'none';
     if (p.workspace_status === 'removed') out.removed = true; // 已移出工作區：歷史紀錄照樣顯示名字
     if (adminInWorkspace(p)) {
@@ -1566,22 +1566,22 @@ ${ending}`;
   // ---------- 專案與成員管理 ----------
   // 權限判斷全部走權限模組（src/access.js）：誰是什麼角色、能不能做什麼；它要讀的成員資料都來自成員資格模組（src/membership.js）
   const workspace = createWorkspaceSettings({ db, env: { openJoin: OPEN_JOIN, roomCode: ROOM_CODE }, hashPassword, verifyPassword });
+  // nameOf 在下面才定義（const），所以包一層；titles 是會換掉的變數，所以給讀取函式
   const access = createAccess({
-    loadWorkspace: force => workspace.load(force), membersCreateProjects: () => workspace.membersCreateProjects(),
-    ApiError, requireHuman, nameOf: id => nameOf(id), people: ctx => peopleMap(ctx), projects: () => PROJECTS, projectsOf, isolatedFrom,
-    titles: () => projRoles, memberProjectsOf: p => membership.projectsOf(p), visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
-    loadProjectAdmins: force => membership.loadProjectAdmins(force), projectAdminsOf: pj => membership.projectAdminsOf(pj),
-    loadReadOnly: force => membership.loadReadOnly(force), isReadOnly: (p, pj) => membership.isReadOnly(p, pj),
-    isPlatformAdmin: p => membership.isPlatformAdmin(p),
+    loadWorkspace: workspace.load, membersCreateProjects: workspace.membersCreateProjects,
+    ApiError, requireHuman, nameOf: id => nameOf(id), people: peopleMap, projects: () => PROJECTS, projectsOf, isolatedFrom,
+    titles: () => titles, memberProjectsOf: membership.projectsOf, visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
+    loadProjectAdmins: membership.loadProjectAdmins, projectAdminsOf: membership.projectAdminsOf,
+    loadReadOnly: membership.loadReadOnly, isReadOnly: membership.isReadOnly, isPlatformAdmin: membership.isPlatformAdmin,
   });
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
   const assertWritable = (me, pj) => access.check({}, me, 'write', { project: pj || null });
   // 人類在每個專案各自的職稱（存在 project_roles，API 欄位名稱是 projectRoles）。沒有紀錄＝「未設定」
   const ROLE_CHOICES = ['PO', 'PG', 'UX', 'QA', 'BA', 'SM', 'Sponsor', 'BU'];
-  let projRoles = {}, projRolesAt = 0;
+  let titles = {}, titlesAt = 0;
   async function loadProjectRoles(force = false) {
-    if (!force && Date.now() - projRolesAt < 10_000) return projRoles;
+    if (!force && Date.now() - titlesAt < 10_000) return titles;
     let r = await db.get("SELECT value FROM app_settings WHERE key = 'project_roles'").catch(() => null);
     if (!r) {
       // 第一次上線：把現有人類的角色帶到他所在的每個專案
@@ -1596,17 +1596,17 @@ ${ending}`;
       await db.run("INSERT INTO app_settings (key, value) VALUES ('project_roles', ?) ON CONFLICT(key) DO NOTHING", JSON.stringify(init));
       r = await db.get("SELECT value FROM app_settings WHERE key = 'project_roles'");
     }
-    try { projRoles = JSON.parse(r?.value || '{}') || {}; } catch { projRoles = {}; }
-    projRolesAt = Date.now();
-    return projRoles;
+    try { titles = JSON.parse(r?.value || '{}') || {}; } catch { titles = {}; }
+    titlesAt = Date.now();
+    return titles;
   }
   async function saveProjectRoles(next) {
     await db.run("INSERT INTO app_settings (key, value) VALUES ('project_roles', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify(next));
-    projRoles = next; projRolesAt = Date.now();
+    titles = next; titlesAt = Date.now();
     invalidatePeople();
   }
   // 人類：{ 專案id: 角色 }（只列他所在的專案，未設定是空字串）；AI 沒有
-  const projectRolesOf = p => (p.kind === 'human' ? Object.fromEntries(projectsOf(p).map(pj => [pj, projRoles[p.id]?.[pj] || ''])) : undefined);
+  const projectRolesOf = p => (p.kind === 'human' ? Object.fromEntries(projectsOf(p).map(pj => [pj, titles[p.id]?.[pj] || ''])) : undefined);
   function readRole(v) {
     const s = String(v ?? '').trim();
     if (s.length > 10) throw invalid('角色最多 10 字');
@@ -1730,7 +1730,7 @@ ${ending}`;
     await loadProjectRoles();
     const book = await statuses.load(ctx);
     const v = access.view({ people });
-    const inUse = (pj, d) => [...people.values()].filter(p => p.status === 'active' && listOf(p).includes(pj) && (p.kind === 'ai' ? p.role_key === d.key : projRoles[p.id]?.[pj] === d.role)).length;
+    const inUse = (pj, d) => [...people.values()].filter(p => p.status === 'active' && listOf(p).includes(pj) && (p.kind === 'ai' ? p.role_key === d.key : titles[p.id]?.[pj] === d.role)).length;
     return projectRows.map(r => ({ id: r.id, name: r.name, slug: slugs[r.id], code: projCodes[r.id] || null, archived: !!r.archived, createdAt: r.created_at, repo: repos[r.id] || null, // ；C-xxx 網址英文名
       visibility: access.visibilityOf(r.id), // 專案可見度：open｜review｜private
       roles: (rdefs[r.id] || []).map(d => ({ ...d, createdByName: people.get(d.createdBy)?.name || null, inUse: inUse(r.id, d) })), // 本專案角色
@@ -1826,10 +1826,10 @@ ${ending}`;
     await membership.loadMembers(true);
     ctx.people = null; // 同一請求接下來要讀到更新後的成員（例如回應裡的 projects）
     // 移出某專案，那個專案的角色一起清掉（之後再加入＝未設定）
-    const rmRoles = plan.filter(x => x.removed.length && projRoles[x.target.id]);
+    const rmRoles = plan.filter(x => x.removed.length && titles[x.target.id]);
     if (rmRoles.length) {
       await loadProjectRoles(true);
-      const nx = { ...projRoles };
+      const nx = { ...titles };
       for (const x of rmRoles) { const o = { ...(nx[x.target.id] || {}) }; for (const pj of x.removed) delete o[pj]; nx[x.target.id] = o; }
       await saveProjectRoles(nx);
     }
@@ -1854,7 +1854,7 @@ ${ending}`;
     if (!target || target.status !== 'active' || target.kind !== 'human') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員（AI 的角色在「我的 AI」改）');
     const body = await readJson(req);
     if (!body.roles || typeof body.roles !== 'object' || Array.isArray(body.roles)) throw invalid('roles 需為物件，例如 {"預設專案":"PO"}');
-    const inP = projectsOf(target), next = { ...projRoles, [target.id]: { ...(projRoles[target.id] || {}) } }, at = nowIso(), events = [];
+    const inP = projectsOf(target), next = { ...titles, [target.id]: { ...(titles[target.id] || {}) } }, at = nowIso(), events = [];
     for (const [pj, v] of Object.entries(body.roles)) {
       if (!PROJECTS.includes(pj) || !discovers(me, pj)) throw invalid('roles 裡有找不到的專案（只能設未封存的專案）'); // 看不到的私人專案跟沒有這個專案一樣，不回專案代號
       if (!inP.includes(pj)) throw invalid(`${target.name} 不在「${nameOf(pj)}」，不能設那個專案的角色`);
@@ -1905,7 +1905,7 @@ ${ending}`;
     const v = await access.load(ctx), people = v.people;
     const members = [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && listOf(p).includes(row.id) && !v.implicitOnlyIn(p.id, row.id))
       .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
-      .map(p => ({ participantId: p.id, name: p.name, memberType: p.kind, role: memberRoleOf(p, row.id), title: p.kind === 'human' ? projRoles[p.id]?.[row.id] || '' : p.role || '',
+      .map(p => ({ participantId: p.id, name: p.name, memberType: p.kind, role: memberRoleOf(p, row.id), title: p.kind === 'human' ? titles[p.id]?.[row.id] || '' : p.role || '',
         ...(p.kind === 'ai' ? { ownerParticipantId: p.owner_id } : {}) }));
     return { project: row.id, members };
   }
@@ -2751,7 +2751,7 @@ ${ending}`;
     const log = { projectId: id, name: row.name, code: projCodes[id] || null, by: me.id, byName: me.name, at, counts, aisDeleted: onlyHere.map(p => p.name) };
     settings.push(['DELETE FROM projects WHERE id = ?', [id]], [upsert, [`${DEL_LOG}${at}:${id}`, JSON.stringify(log)]]);
     await db.batch(settings);
-    projRolesAt = 0;
+    titlesAt = 0;
     invalidatePeople(); invalidateProjects();
     await membership.loadMembers(true);
     return projectsSeenBy(ctx, me, { deleted: log });
@@ -3000,7 +3000,7 @@ ${ending}`;
     await assertNotLastAdmin(ctx, t);
     const at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
     await db.batch([
-      ...(isWorkspaceAdmin(t) ? membership.setWorkspaceRoleStmts(t.id, 'member', at) : []), // 移出的人不再是工作區管理員（最後一位時這句不改，下一句也就不移出）
+      ...(isWorkspaceAdmin(t) ? membership.setWorkspaceRoleStmts(t.id, WORKSPACE_ROLE.MEMBER, at) : []), // 移出的人不再是工作區管理員（最後一位時這句不改，下一句也就不移出）
       ["UPDATE participants SET workspace_status = 'removed', updated_at = ?, version = version + 1 WHERE id = ? AND workspace_role = 'member'", [at, t.id]],
       ...await Promise.all(ais.map(async a => ["UPDATE participants SET status = 'disabled', workspace_status = 'removed', token = ?, token_expires_at = 1, updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')",
         [await tokenKey(newToken()), at, a.id, t.id]])),
@@ -3027,30 +3027,30 @@ ${ending}`;
   // 升降工作區管理員（只有工作區管理員；AI 不行）。role：admin | member。立刻生效；不能降最後一位
   route('PUT', '/api/participants/:id/workspace-role', async ({ ctx, me, req, params }) => {
     await access.check(ctx, me, 'assign_workspace_admin', 'workspace', { what: '升降工作區管理員' });
-    const role = (await readJson(req)).role;
-    if (role !== 'admin' && role !== 'member') throw invalid('role 只能是 admin（工作區管理員）或 member（成員）');
+    const role = (await readJson(req)).role, admin = role === WORKSPACE_ROLE.ADMIN;
+    if (!Object.values(WORKSPACE_ROLE).includes(role)) throw invalid('role 只能是 admin（工作區管理員）或 member（成員）');
     const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind != 'system'", params.id);
     if (!t) throw new ApiError(404, 'NOT_FOUND', `找不到成員 ${params.id}`);
     const notMember = () => new ApiError(403, 'NOT_WORKSPACE_MEMBER', `${t.name} 不是工作區成員（只能升降啟用中的人類）`);
     if (t.kind !== 'human' || t.status !== 'active') throw notMember();
-    if (role === 'member') await assertNotLastAdmin(ctx, t);
-    if (role === 'admin' && t.workspace_status === 'removed') throw notMember();
-    if ((role === 'admin') !== isWorkspaceAdmin(t)) {
+    if (!admin) await assertNotLastAdmin(ctx, t);
+    if (admin && !inWorkspace(t)) throw notMember();
+    if (admin !== isWorkspaceAdmin(t)) {
       const at = nowIso(), stmts = membership.setWorkspaceRoleStmts(t.id, role, at);
-      if (role === 'member') {
+      if (!admin) {
         // 降級後沒有隱含權限：他的 AI 所在的專案，他自己要是成員（AI 的專案不超出所屬人類）。只在真的降了才寫
         await membership.loadMembers(true);
         const ais = [...(await peopleMap(ctx)).values()].filter(p => p.kind === 'ai' && p.owner_id === t.id && p.status !== 'deleted');
         const keep = [...new Set([...listOf(t), ...ais.flatMap(a => listOf(a))])];
-        if (keep.length > listOf(t).length) stmts.push(...setProjectsStmts(t.id, keep, null, { onlyIf: "workspace_role = 'member'" }));
+        if (keep.length > listOf(t).length) stmts.push(...setProjectsStmts(t.id, keep, null, { onlyIfWorkspaceRole: WORKSPACE_ROLE.MEMBER }));
       }
       await db.batch(stmts);
       invalidatePeople();
       await membership.loadMembers(true);
     }
     const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
-    if ((role === 'admin') !== isWorkspaceAdmin(after)) throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
-    if (after.workspace_role !== t.workspace_role) console.log(`工作區管理員：${me.name} 把 ${t.name} ${role === 'admin' ? '升為工作區管理員' : '降為成員'}`);
+    if (admin !== isWorkspaceAdmin(after)) throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
+    if (after.workspace_role !== t.workspace_role) console.log(`工作區管理員：${me.name} 把 ${t.name} ${admin ? '升為工作區管理員' : '降為成員'}`);
     return { participant: publicParticipant(after, await peopleMap(ctx)) };
   });
   // 升降平台管理員（只有平台管理員；AI 不行）。role：admin | none。立刻生效；不能降最後一位。平台管理員對工作區有隱含的管理權，不必是工作區管理員
@@ -3758,7 +3758,7 @@ ${ending}`;
     const clean = Object.fromEntries(Object.entries(roles || {}).map(([k, v]) => [k, String(v || '').trim().slice(0, 10)]).filter(([k, v]) => v && PROJECTS.includes(k)));
     if (!Object.keys(clean).length) return;
     await loadProjectRoles(true);
-    await saveProjectRoles({ ...projRoles, [pid]: { ...(projRoles[pid] || {}), ...clean } });
+    await saveProjectRoles({ ...titles, [pid]: { ...(titles[pid] || {}), ...clean } });
   }
   login = registerLogin({ route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, addMemberStmts: membership.addMemberStmts, loadMembers: force => membership.loadMembers(force), enterWorkspaceStmts: membership.enterWorkspaceStmts, projectListOf: listOf,
     adminOf, access, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
@@ -3794,7 +3794,7 @@ ${ending}`;
     }
   }
   registerRoster({ route, db, access, peopleMap, membership, PROJECTS, nameOf, loadTitles: () => loadProjectRoles(), isWorkspaceAdmin, isOnline, iso });
-  const joinApi = registerJoin({ liveTo: (ids, type, data) => live?.toPeople(ids, type, data), route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf, loadProjects, projectRows: () => projectRows, loadProjectAdmins, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles: () => projRoles, readRole, addReadOnly: membership.addReadOnly, addMemberStmts: membership.addMemberStmts, loadMembers: force => membership.loadMembers(force), invalidatePeople, projEvent });
+  const joinApi = registerJoin({ liveTo: (ids, type, data) => live?.toPeople(ids, type, data), route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf, loadProjects, projectRows: () => projectRows, loadProjectAdmins, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, titles: () => titles, readRole, addReadOnly: membership.addReadOnly, addMemberStmts: membership.addMemberStmts, loadMembers: membership.loadMembers, invalidatePeople, projEvent });
   // 知識庫管理（補建索引、整理 AI 設定）：工作區管理員或這個專案的專案管理員（人類）
   const kbHooks = {}; // 文件區抽字、上傳、刪除時通知知識頁模組（卡片模組建好後才填）
   const kbManager = (ctx, me, pj) => access.can(ctx, me, 'manage_project', { project: pj });

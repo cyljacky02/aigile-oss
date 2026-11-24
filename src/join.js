@@ -13,7 +13,7 @@ export const JOIN_DESC_MAX = 100;
 
 export function registerJoin(d) {
   const { route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf,
-    loadProjects, projectRows, loadProjectAdmins, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles, readRole,
+    loadProjects, projectRows, loadProjectAdmins, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, titles, readRole,
     addReadOnly, addMemberStmts, loadMembers, invalidatePeople, projEvent, liveTo = () => {} } = d; // liveTo：內建即時通道（本機／Docker），申請結果幾秒內推給申請人
 
   async function joinSettings() {
@@ -147,7 +147,7 @@ export function registerJoin(d) {
     const upd = await db.run("UPDATE join_requests SET status = 'approved', role = ?, read_only = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'", role, ro ? 1 : 0, me.id, at, r.id);
     if (!upd.changes) throw new ApiError(409, 'JOIN_DECIDED', '這個申請已經處理過了');
     if (!projectsOf(p).includes(r.project)) await applyMembership(ctx, me, [{ id: p.id, projects: PROJECTS.filter(x => projectsOf(p).includes(x) || x === r.project) }], { byLeader: !admin });
-    if (role) { await loadProjectRoles(true); const cur = projRoles(); await saveProjectRoles({ ...cur, [p.id]: { ...(cur[p.id] || {}), [r.project]: role } }); }
+    if (role) { await loadProjectRoles(true); const cur = titles(); await saveProjectRoles({ ...cur, [p.id]: { ...(cur[p.id] || {}), [r.project]: role } }); }
     if (ro) await addReadOnly(p.id, [r.project]);
     await db.batch([projEvent(r.project, me.id, `${me.name} 核准 ${p.name} 加入${role ? `（${role}）` : ''}${ro ? '，唯讀' : ''}`, at), notice(p.id, 'join_approved', `「${row.name}」已核准你加入${ro ? '（唯讀）' : ''}`)]);
     invalidatePeople();

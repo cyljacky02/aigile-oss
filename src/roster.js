@@ -8,6 +8,7 @@
 // 欄位叫 memberships 而不是 projects：core 的 scrubProjects 會把別人的 projects 過濾成「自己在的專案」，名冊要照可見度過濾，不照共同專案。
 // 待接受的邀請不在這裡：畫面直接讀 GET /api/invites?status=pending（只有工作區管理員；邀請的存法歸 src/login.js 管）。
 import { inWorkspace, byJoined } from './access.js';
+import { WORKSPACE_ROLE } from './membership.js';
 
 export const ROSTER_STATUS = Object.freeze({ ACTIVE: 'active', REMOVED: 'removed' });
 
@@ -32,7 +33,7 @@ export function registerRoster({ route, db, access, peopleMap, membership, PROJE
       const owner = p.kind === 'ai' ? people.get(p.owner_id) : null;
       return {
         participantId: p.id, name: p.name, memberType: p.kind, role: p.role || '', avatar: p.avatar || null, avatarImg: p.avatar_v || null, shortCode: p.code,
-        workspaceRole: isWorkspaceAdmin(p) ? 'admin' : 'member', platformRole: membership.isPlatformAdmin(p) ? 'admin' : 'none',
+        workspaceRole: isWorkspaceAdmin(p) ? WORKSPACE_ROLE.ADMIN : WORKSPACE_ROLE.MEMBER, platformRole: membership.isPlatformAdmin(p) ? 'admin' : 'none',
         ...(p.kind === 'ai' ? { ownerParticipantId: p.owner_id, ownerName: owner?.name ?? null } : {}),
         status, isOnline: status === ROSTER_STATUS.ACTIVE && isOnline(p, now), joinedAt: p.created_at,
         memberships: status === ROSTER_STATUS.ACTIVE ? memberships(p) : [],
@@ -57,7 +58,7 @@ export function registerRoster({ route, db, access, peopleMap, membership, PROJE
       const acct = new Map(rows.map(r => [r.id, r]));
       out.accounts = all.filter(p => human(p) && acct.has(p.id)).map(p => ({
         participantId: p.id, name: p.name, accountStatus: acct.get(p.id).status === 'disabled' || p.status === 'disabled' ? 'disabled' : 'active',
-        platformRole: acct.get(p.id).platform_role === 'admin' ? 'admin' : 'none', workspaceRole: p.workspace_role === 'admin' ? 'admin' : 'member',
+        platformRole: acct.get(p.id).platform_role === 'admin' ? 'admin' : 'none', workspaceRole: p.workspace_role === WORKSPACE_ROLE.ADMIN ? WORKSPACE_ROLE.ADMIN : WORKSPACE_ROLE.MEMBER,
         workspaceStatus: inWorkspace(p) ? 'active' : 'removed', joinedAt: p.created_at,
       }));
     }

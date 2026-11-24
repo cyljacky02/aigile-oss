@@ -9144,7 +9144,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   const pmGrp = t => `<tr class="pm-grp-tr"><td colspan="4">${t}</td></tr>`;
   // 專案角色（GLOSSARY）：專案管理員／專案成員／唯讀成員。人類可改就下拉（改了直接存）；工作區管理員有隱含權限，不用設；
   // AI 跟著所屬人類；剛加入、還沒存的人照加入方式顯示
-  const PROJ_ROLE = { admin: '專案管理員', member: '專案成員', viewer: '唯讀成員' };
+  const PROJ_ROLE = { admin: '專案管理員', member: '專案成員', viewer: '唯讀成員' }; // 專案角色的名稱（成員管理、名冊、邀請共用）
   const projRoleOf = (id, pj) => (projectAdminsOf(pj).includes(id) ? 'admin' : roOf(id, pj) ? 'viewer' : 'member');
   function pmProjRoleCell(p, pj, isNew) {
     if (isAdmId(p.participantId)) return '<span class="muted small" title="工作區管理員本來就能管所有專案">工作區管理員</span>';
@@ -9591,7 +9591,6 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   // 待接受的邀請只從 loadPendingInvites 讀（GET /api/invites?status=pending；邀請的格式改了只要改這裡）
   // 升降工作區管理員／平台管理員、移出工作區、停用帳號都從這裡做（按鈕照 roster.can；最後一位時停用並說明原因）
   const RS_FILTERS = [['active', '啟用中'], ['removed', '已移出'], ['pending', '待接受邀請'], ['accounts', '所有帳號']];
-  const RS_ROLE = { admin: '專案管理員', member: '專案成員', viewer: '唯讀成員' };
   const loadPendingInvites = () => (isAdmin() ? api('/api/invites?status=pending').then(d => d.items || []).catch(() => null) : Promise.resolve(null));
   function loadRoster() {
     perm.roster = null;
@@ -9627,7 +9626,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     return out.join('');
   }
   const rsTags = p => [p.workspaceRole === 'admin' ? '<span class="pill-tag blue">工作區管理員</span>' : '', p.platformRole === 'admin' ? '<span class="pill-tag">平台管理員</span>' : '', p.participantId === meId() ? '<span class="muted small">· 你</span>' : ''].join('');
-  const rsProjects = (p, none = '還沒有專案') => (p.memberships || []).map(m => `<span class="rs-pj"><b>${esc(m.projectName || projName(m.project))}</b>${m.role !== 'member' ? ` <span class="muted small">${RS_ROLE[m.role] || ''}</span>` : ''}${m.title ? ` <span class="muted small">· ${esc(m.title)}</span>` : ''}</span>`).join('') || `<span class="muted small">${none}</span>`;
+  const rsProjects = (p, none = '還沒有專案') => (p.memberships || []).map(m => `<span class="rs-pj"><b>${esc(m.projectName || projName(m.project))}</b>${m.role !== 'member' ? ` <span class="muted small">${PROJ_ROLE[m.role] || ''}</span>` : ''}${m.title ? ` <span class="muted small">· ${esc(m.title)}</span>` : ''}</span>`).join('') || `<span class="muted small">${none}</span>`;
   function rosterHtml() {
     if (perm.roster === undefined) loadRoster();
     const r = perm.roster;

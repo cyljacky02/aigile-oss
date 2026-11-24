@@ -16,6 +16,8 @@
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
 // - 專案可見度：開放＝直接加入、審核＝送申請、私人＝只有專案成員與有隱含權限的人知道它存在（discover_project；其他人各處都當它不存在，回 404）
 // 資料都由呼叫端注入（成員資料歸成員資格模組管），這裡只做判斷。
+import { WORKSPACE_ROLE } from './membership.js';
+
 export const ACCESS_ROLE = Object.freeze({
   PLATFORM_ADMIN: 'platform_admin',
   WORKSPACE_ADMIN: 'workspace_admin', MEMBER: 'member',
@@ -43,7 +45,7 @@ export function effectiveProjects({ projects, memberProjectsOf, implicitAll, own
 }
 
 // 這一列是不是工作區管理員（啟用中的人類、workspace_role＝admin）。只看這一列，不必讀成員資料
-export const isWorkspaceAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && p.workspace_role === 'admin';
+export const isWorkspaceAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && p.workspace_role === WORKSPACE_ROLE.ADMIN;
 // 實際的工作區管理權：工作區管理員，或平台管理員（隱含權限）。isPlatformAdmin(p)：他的帳號是平台管理員（成員資格模組）
 export const hasWorkspaceAdminRights = (p, isPlatformAdmin) => isWorkspaceAdmin(p) || (!!p && p.kind === 'human' && p.status === 'active' && !!isPlatformAdmin?.(p));
 // 還在工作區裡（沒被移出；沒有 workspace_status 的舊列＝在）
@@ -64,24 +66,41 @@ export const adminOf = people => {
 // 動作表。admin：管理動作（AI 一律不行）；human：check 時先擋 AI（回「僅限人類」）；light：只看唯讀名單，不必讀成員；
 // fresh：check 時重讀專案管理員名單與工作區設定（別份程式剛改過也算數）
 // rule(v, me, s)：v 是 load() 的判斷視圖，s 是整理過的範圍 { kind, project, target }
+// deny(d)：不行時回的錯誤（沒寫＝DENY.workspace）。d＝{ v, me, s, action, what, err(status, code, message), adminName(), nameOf, readOnly() }
+// （訊息都要在 public/i18n/en.js 有英文，i18n-test 會掃；新訊息請沿用既有句型或一起加翻譯）
 const platformAdmin = (v, me) => v.roleIn(me, 'platform') === R.PLATFORM_ADMIN;
 const workspaceAdmin = (v, me) => v.roleIn(me, 'workspace') === R.WORKSPACE_ADMIN;
 // 改程式庫、私訊、AI 職務、職稱、專案成員：工作區管理員，或未封存專案的專案管理員
 const activeProjectAdmin = (v, me, s) => workspaceAdmin(v, me) || (v.active(s.project) && v.roleIn(me, s) === R.PROJECT_ADMIN);
 // 不能動對方的上層管理權：對象是平台管理員時，要是平台管理員才行（沒帶對象＝不看）
 const notAboveMe = (v, me, { target }) => !target || v.roleIn(target, 'platform') !== R.PLATFORM_ADMIN || platformAdmin(v, me);
+const DENY = {
+  platform: d => d.err(403, 'NOT_ADMIN', `只有平台管理員能${d.what || '管理平台'}。`),
+  workspace: d => d.err(403, 'NOT_ADMIN', `只有工作區管理員（${d.adminName()}）能${d.what || '管理專案與成員所屬專案'}。`),
+  project: d => d.err(403, 'NOT_ADMIN', `只有工作區管理員（${d.adminName()}）或這個專案的專案管理員能${d.what || '管理這個專案'}。`),
+  // 移出工作區、重設登入：是工作區管理員、但對象是平台管理員（不能動上層管理權）
+  upper: msg => d => (d.v.can(d.me, d.action, 'workspace') ? d.err(403, 'CANNOT_MANAGE_ADMIN', msg(d.s.target?.name || '')) : DENY.workspace(d)),
+  notFound: d => d.err(404, 'NOT_FOUND', '找不到這個專案'),
+  join: d => {
+    const vis = d.v.visibilityOf(d.s.project), name = d.nameOf(d.s.project); // （看不到的私人專案在 denial 已經回 404）
+    if (vis === VIS.PRIVATE) return d.err(403, 'JOIN_PRIVATE', `「${name}」是私人專案，只能由專案管理員把人加入。`);
+    if (vis === VIS.OPEN) return d.err(409, 'JOIN_DIRECTLY', `「${name}」是開放專案，直接加入就好，不用申請。`);
+    if (vis === VIS.REVIEW && d.action === 'join_project') return d.err(403, 'JOIN_NEEDS_APPROVAL', `「${name}」要送加入申請、由專案管理員核准才能加入。`);
+    return d.err(403, 'FORBIDDEN', '只有工作區成員能加入專案。');
+  },
+};
 const ACTIONS = {
   // 平台
-  manage_platform: { admin: true, rule: platformAdmin }, // 備份與還原、示範資料、更新檢查
-  manage_accounts: { admin: true, rule: platformAdmin }, // 停用／恢復帳號、已停用清單
-  assign_platform_admin: { admin: true, rule: platformAdmin }, // 任免平台管理員
+  manage_platform: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 備份與還原、示範資料、更新檢查
+  manage_accounts: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 停用／恢復帳號、已停用清單
+  assign_platform_admin: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 任免平台管理員
   // 工作區
   manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
   assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
-  remove_member: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s) }, // 把人移出工作區（帳號不受影響）；target 是平台管理員時只有平台管理員能
+  remove_member: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能把他移出工作區。`) }, // 把人移出工作區（帳號不受影響）；target 是平台管理員時只有平台管理員能
   see_removed_members: { admin: true, rule: workspaceAdmin }, // 成員名冊：已移出工作區的人（待接受的邀請是 GET /api/invites?status=pending，invite）
   invite: { admin: true, rule: workspaceAdmin },
-  reset_login: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s) }, // target 是平台管理員時只有平台管理員能
+  reset_login: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能重設他的登入。`) }, // target 是平台管理員時只有平台管理員能
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
   create_project: { admin: true, fresh: true, rule: (v, me) => workspaceAdmin(v, me) || (v.membersCreateProjects() && v.roleIn(me, 'workspace') === R.MEMBER) }, // fresh：check 時重讀工作區設定
   // 專案（只有工作區管理員）
@@ -89,22 +108,23 @@ const ACTIONS = {
   set_project_code: { admin: true, rule: workspaceAdmin },
   set_project_slug: { admin: true, rule: workspaceAdmin },
   // 專案（專案管理員）
-  manage_project: { admin: true, human: true, fresh: true, rule: (v, me, s) => v.roleIn(me, s) === R.PROJECT_ADMIN }, // 改名、封存、還原、看板狀態、知識庫、技能審核、加入申請（封存的專案也算）
-  configure_project: { admin: true, fresh: true, rule: activeProjectAdmin }, // 程式庫、私訊開關、AI 職務
-  manage_project_members: { admin: true, fresh: true, rule: activeProjectAdmin }, // 專案成員：從工作區成員挑人加入、移出、設專案成員／唯讀成員
+  manage_project: { admin: true, human: true, fresh: true, rule: (v, me, s) => v.roleIn(me, s) === R.PROJECT_ADMIN, deny: DENY.project }, // 改名、封存、還原、看板狀態、知識庫、技能審核、加入申請（封存的專案也算）
+  configure_project: { admin: true, fresh: true, rule: activeProjectAdmin, deny: DENY.project }, // 程式庫、私訊開關、AI 職務
+  manage_project_members: { admin: true, fresh: true, rule: activeProjectAdmin, deny: DENY.project }, // 專案成員：從工作區成員挑人加入、移出、設專案成員／唯讀成員
   assign_project_admin: { admin: true, fresh: true, rule: activeProjectAdmin }, // 任免專案管理員：工作區管理員，以及該專案的專案管理員
-  set_title: { admin: true, fresh: true, rule: (v, me, s) => activeProjectAdmin(v, me, s) || (!!s.target && s.target.id === me.id) },
-  set_visibility: { admin: true, fresh: true, rule: activeProjectAdmin }, // 專案可見度：開放／審核／私人
+  set_title: { admin: true, fresh: true, rule: (v, me, s) => activeProjectAdmin(v, me, s) || (!!s.target && s.target.id === me.id),
+    deny: d => d.err(403, 'NOT_PROJECT_LEADER', `只有工作區管理員、「${d.nameOf(d.s.project)}」的專案管理員或 ${d.s.target?.name || ''} 本人能改他在這個專案的職稱。`) },
+  set_visibility: { admin: true, fresh: true, rule: activeProjectAdmin, deny: DENY.project }, // 專案可見度：開放／審核／私人
   // 專案可見度
-  discover_project: { rule: (v, me, s) => v.discovers(me, s.project) }, // 知道這個專案存在（專案清單、卡片代號、搜尋、訊息、MCP、名冊）；看內容另外看 see_project
-  join_project: { human: true, rule: (v, me, s) => !!v.roleIn(me, 'workspace') && v.visibilityOf(s.project) === VIS.OPEN }, // 自己直接加入：開放專案
-  request_join: { human: true, rule: (v, me, s) => !!v.roleIn(me, 'workspace') && v.visibilityOf(s.project) === VIS.REVIEW }, // 送加入申請：審核專案
+  discover_project: { rule: (v, me, s) => v.discovers(me, s.project), deny: DENY.notFound }, // 知道這個專案存在（專案清單、卡片代號、搜尋、訊息、MCP、名冊）；看內容另外看 see_project
+  join_project: { human: true, rule: (v, me, s) => !!v.roleIn(me, 'workspace') && v.visibilityOf(s.project) === VIS.OPEN, deny: DENY.join }, // 自己直接加入：開放專案
+  request_join: { human: true, rule: (v, me, s) => !!v.roleIn(me, 'workspace') && v.visibilityOf(s.project) === VIS.REVIEW, deny: DENY.join }, // 送加入申請：審核專案
   // 一般
-  write: { light: true, rule: (v, me, s) => !v.readOnlyAt(me, s.project) },
-  see_project: { rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project) },
+  write: { light: true, rule: (v, me, s) => !v.readOnlyAt(me, s.project), deny: d => d.readOnly() },
+  see_project: { rule: (v, me, s) => !v.isolatedFrom(me) || v.projectsOf(me).includes(s.project), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。') },
   see_project_events: { rule: (v, me, s) => v.projectsOf(me).includes(s.project) || workspaceAdmin(v, me) },
-  see_member: { rule: (v, me, { target: p }) => p.id === me.id || !!v.roleIn(me, 'workspace') }, // 成員名冊：工作區成員（含 AI）看得到工作區裡所有人；對象是不是啟用中的工作區成員由呼叫端過濾
-  see_ai_state: { light: true, rule: (v, me, { target }) => v.projectsOf(target).some(p => v.projectsOf(me).includes(p)) }, // 工作記憶：至少一個共同專案
+  see_member: { rule: (v, me, { target: p }) => p.id === me.id || !!v.roleIn(me, 'workspace'), deny: d => d.err(404, 'NOT_FOUND', `找不到成員 ${d.s.target?.id || ''}`) }, // 成員名冊：工作區成員（含 AI）看得到工作區裡所有人；對象是不是啟用中的工作區成員由呼叫端過濾
+  see_ai_state: { light: true, rule: (v, me, { target }) => v.projectsOf(target).some(p => v.projectsOf(me).includes(p)), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。') }, // 工作記憶：至少一個共同專案
 };
 export const ACCESS_ACTIONS = Object.freeze(Object.keys(ACTIONS));
 
@@ -198,36 +218,14 @@ export function createAccess(deps) {
     return view({ people });
   }
 
-  // 不行就丟錯。opts.what：預設訊息裡「能…」的部分；opts.deny()：自己給錯誤
-  // （訊息都要在 public/i18n/en.js 有英文，i18n-test 會掃；新訊息請沿用既有句型或一起加翻譯）
+  // 不行就丟錯：動作表的 deny。opts.what：預設訊息裡「能…」的部分；opts.deny()：自己給錯誤
   function denial(v, me, action, s, { what, deny } = {}) {
+    const d = { v, me, s, action, what, nameOf, err: (status, code, message) => new ApiError(status, code, message),
+      adminName: () => v.admin()?.name || '未設定', readOnly: () => readOnlyError(me, s.project || readOnlyList(me)[0]) };
     // 私人專案對看不到的人＝沒有這個專案（跟專案不存在一樣回 404，不說「你不屬於」）
-    if (s.project && v.people && !v.discovers(me, s.project)) return new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    if (s.project && v.people && !v.discovers(me, s.project)) return DENY.notFound(d);
     if (deny) return deny();
-    const adminName = () => v.admin()?.name || '未設定';
-    if (s.kind === 'platform' && ACTIONS[action]?.rule === platformAdmin) return new ApiError(403, 'NOT_ADMIN', `只有平台管理員能${what || '管理平台'}。`);
-    if ((action === 'remove_member' || action === 'reset_login') && v.can(me, action, 'workspace')) { // 工作區管理員，但對象是平台管理員
-      const n = s.target?.name || '';
-      return new ApiError(403, 'CANNOT_MANAGE_ADMIN', action === 'reset_login' ? `${n} 是平台管理員，只有平台管理員能重設他的登入。` : `${n} 是平台管理員，只有平台管理員能把他移出工作區。`);
-    }
-    switch (action) {
-      case 'write': return readOnlyError(me, s.project || readOnlyList(me)[0]);
-      case 'manage_project': case 'configure_project': case 'manage_project_members': case 'set_visibility':
-        return new ApiError(403, 'NOT_ADMIN', `只有工作區管理員（${adminName()}）或這個專案的專案管理員能${what || '管理這個專案'}。`);
-      case 'set_title': return new ApiError(403, 'NOT_PROJECT_LEADER', `只有工作區管理員、「${nameOf(s.project)}」的專案管理員或 ${s.target?.name || ''} 本人能改他在這個專案的職稱。`);
-      case 'see_project': return new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
-      case 'see_ai_state': return new ApiError(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。');
-      case 'see_member': return new ApiError(404, 'NOT_FOUND', `找不到成員 ${s.target?.id || ''}`);
-      case 'discover_project': return new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-      case 'join_project': case 'request_join': {
-        const vis = v.visibilityOf(s.project); // （看不到的私人專案上面已經回 404）
-        if (vis === VIS.PRIVATE) return new ApiError(403, 'JOIN_PRIVATE', `「${nameOf(s.project)}」是私人專案，只能由專案管理員把人加入。`);
-        if (vis === VIS.OPEN) return new ApiError(409, 'JOIN_DIRECTLY', `「${nameOf(s.project)}」是開放專案，直接加入就好，不用申請。`);
-        if (vis === VIS.REVIEW && action === 'join_project') return new ApiError(403, 'JOIN_NEEDS_APPROVAL', `「${nameOf(s.project)}」要送加入申請、由專案管理員核准才能加入。`);
-        return new ApiError(403, 'FORBIDDEN', '只有工作區成員能加入專案。');
-      }
-      default: return new ApiError(403, 'NOT_ADMIN', `只有工作區管理員（${adminName()}）能${what || '管理專案與成員所屬專案'}。`);
-    }
+    return (ACTIONS[action].deny || DENY.workspace)(d);
   }
   async function check(ctx, me, action, scope, opts = {}) {
     const def = ACTIONS[action];
