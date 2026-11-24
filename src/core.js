@@ -243,16 +243,19 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 每份程式每 30 秒只讀這 1 列版本；版本沒變就只補「最近有活動的人」的在線時間（有 last_seen_at 索引，只讀幾列）。
   // 保險：最多 10 分鐘還是整張重讀一次。原本每 30 秒整張讀，一天 4,775 次、13 萬列
   const PEOPLE_CHECK_MS = Number(config.peopleCheckMs) || 30_000, PEOPLE_MAX_MS = 10 * 60_000; // 測試可調短
-  let peopleCache = { at: 0, map: null }, peopleDirty = false;
-  const invalidatePeople = () => { peopleCache = { at: 0, map: null }; teamCache = { at: 0, data: null }; peopleDirty = true; membership.invalidate(); }; // 成員資格快照一起過期
+  // peopleGen：每次清快取加一。整張重讀時記下開始時的值，讀完時已經變了（讀的途中有人寫入）就不存回快取，
+  // 只給這個請求用（Postgres 的查詢是非同步的，先開始讀的舊資料可能比後面的寫入晚讀完）
+  let peopleCache = { at: 0, map: null }, peopleDirty = false, peopleGen = 0;
+  const invalidatePeople = () => { peopleGen++; peopleCache = { at: 0, map: null }; teamCache = { at: 0, data: null }; peopleDirty = true; membership.invalidate(); }; // 成員資格快照一起過期
   const invalidateTeam = () => { teamCache = { at: 0, data: null }; }; // 卡片變動只影響團隊狀態，不用讓每份程式重讀成員表
   const peopleVer = async () => (await db.get("SELECT value FROM app_settings WHERE key = 'people_ver'").catch(() => null))?.value || '';
   async function bumpPeopleVer() { peopleDirty = false; await db.run("INSERT INTO app_settings (key, value) VALUES ('people_ver', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", String(Date.now()) + Math.random().toString(36).slice(2, 6)).catch(() => {}); }
   const loadPeople = async ctx => {
-    const now = Date.now();
+    const now = Date.now(), gen = peopleGen;
     const [ver, rows] = await Promise.all([peopleVer(), db.all('SELECT * FROM participants ORDER BY rowid'), membership.loadMembers(true)]); // 依加入順序（SQLite 不寫也是這個順序；Postgres 改過的列會跑到後面，要寫明）；成員資格快照跟成員表一起重讀
-    peopleCache = { at: now, loadedAt: now, seenAt: now, ver, map: new Map(rows.map(p => [p.id, p])) };
-    ctx.people = peopleCache.map;
+    const map = new Map(rows.map(p => [p.id, p]));
+    if (gen === peopleGen) peopleCache = { at: now, loadedAt: now, seenAt: now, ver, map };
+    ctx.people = map;
     ctx.peopleFresh = true;
   };
   async function refreshPresence() { // 只讀上次之後有活動的人（idx_participants_seen）

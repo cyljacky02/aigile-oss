@@ -27,9 +27,12 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // ---------- 快照：project_members 整張 ----------
   // byId：成員 id → [{ project, role }]（照專案建立順序）；leaders／ro：{ 專案id: [專案管理員／唯讀成員的 id] }（含封存專案、含停用的人）
   // platform：帳號是平台管理員、帳號啟用中的成員 id
-  let snap = { byId: new Map(), leaders: {}, ro: {}, platform: new Set() }, snapAt = 0;
+  // snapGen：每次標成過期加一。比現在的快照更早開始讀的不存回去（讀的途中有人寫入，讀到的可能是寫入前的）；
+  // 讀的途中又被標成過期的照樣存（比現在的新），但下次還是重讀
+  let snap = { byId: new Map(), leaders: {}, ro: {}, platform: new Set() }, snapAt = 0, snapGen = 0, snapFrom = 0;
   async function loadMembers(force = false) {
     if (!force && snapAt && Date.now() - snapAt < 10_000) return snap;
+    const gen = snapGen;
     const [rows, plat] = await Promise.all([
       db.all('SELECT m.project_id, m.participant_id, m.role FROM project_members m LEFT JOIN projects p ON p.id = m.project_id ORDER BY p.created_at, m.project_id, m.rowid'),
       db.all(PLATFORM_SQL).catch(() => []),
@@ -41,7 +44,9 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       if (r.role === PR.ADMIN) (leaders[r.project_id] ||= []).push(r.participant_id);
       if (r.role === PR.VIEWER) (ro[r.project_id] ||= []).push(r.participant_id);
     }
-    snap = { byId, leaders, ro, platform: new Set(plat.map(r => r.id)) }; snapAt = Date.now();
+    const next = { byId, leaders, ro, platform: new Set(plat.map(r => r.id)) };
+    if (gen < snapFrom) return next;
+    snap = next; snapFrom = gen; snapAt = gen === snapGen ? Date.now() : 0;
     return snap;
   }
   // 只重讀一個人（發請求的人）：他的權限一定看最新的（別份程式剛改過也算），別人的照快取
@@ -340,7 +345,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   async function load(force = false) {
     await loadMembers(force);
   }
-  function invalidate() { snapAt = 0; }
+  function invalidate() { snapAt = 0; snapGen++; }
 
   return { projectsOf, allProjectsOf, setProjectsStmts,
     loadProjectAdmins, projectAdminsOf, managedProjectsOf, setProjectAdminsStmts, roleOf, addMemberStmts, setMemberRoleStmts,
