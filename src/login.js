@@ -404,6 +404,7 @@ export function registerLogin(d) {
     const t = (await peopleMap(ctx)).get(params.id);
     if (!t || t.kind !== 'human' || t.status !== 'active') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員');
     if (t.id === me.id) throw new ApiError(400, 'RESET_SELF', '要換自己的登入碼，請到「API 資訊與登入碼」按「換一組登入碼」');
+    await access.check(ctx, me, 'reset_login', { target: t }); // 不能動上層管理權：重設平台管理員的登入要是平台管理員
     const ttlMs = readTtl((await readJson(req).catch(() => ({}))).ttl);
     const now = Date.now(), id = randId('inv'), token = newToken();
     invalidatePeople();

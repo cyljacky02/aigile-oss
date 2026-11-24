@@ -105,6 +105,17 @@ try {
   assert.equal(code(await remove(li.token, Cn)), 'NOT_ADMIN', '一般成員不能把人移出工作區');
   assert.equal(code(await remove(chen.token, Cn)), 'SELF', '不能把自己移出');
   assert.equal(code(await remove(chen.token, Wg)), 'CANNOT_MANAGE_ADMIN', '工作區管理員不能移出平台管理員');
+  // 重設登入也一樣：工作區管理員不能拿到平台管理員的登入連結（不能動對方的上層管理權）
+  const reset = (tok, id) => call(tok, `/api/participants/${id}/reset-login`, 'POST', {});
+  const rs = await reset(chen.token, Wg);
+  assert.equal(rs.status, 403, JSON.stringify(rs.body));
+  assert.equal(code(rs), 'CANNOT_MANAGE_ADMIN', '工作區管理員不能重設平台管理員的登入');
+  assert.ok(!JSON.stringify(rs.body).includes('/invite/'), '沒有拿到連結');
+  assert.equal((await me(wang.token)).platformRole, 'admin', '王小美的登入照舊');
+  const rsOk = await reset(wang.token, Bo);
+  assert.equal(rsOk.status, 200, '平台管理員可以重設另一位平台管理員的登入：' + JSON.stringify(rsOk.body));
+  boss.token = (await call(null, '/api/auth/invite', 'POST', { token: rsOk.body.url.split('/invite/')[1] })).body.token;
+  assert.equal((await me(boss.token)).platformRole, 'admin', '林志明用新連結登入');
   assert.equal((await remove(chen.token, liAi.participantId)).status, 404, 'AI 不是用這個移出（主人刪掉它）');
   const rm = await remove(chen.token, Li); // 工作區管理員（不是平台管理員）就能移出
   assert.equal(rm.status, 200, JSON.stringify(rm.body));

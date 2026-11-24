@@ -3249,6 +3249,7 @@ window.AIGILE_EN = {
     "要帶 fileTtlHours": "fileTtlHours is required",
     "不能把自己移出工作區。": "You can't remove yourself from the workspace.",
     "{0} 是平台管理員，只有平台管理員能把他移出工作區。": "{0} is a platform admin; only a platform admin can remove them from the workspace.",
+    "{0} 是平台管理員，只有平台管理員能重設他的登入。": "{0} is a platform admin; only a platform admin can reset their login.",
     "這是最後一位平台管理員：請先把另一個帳號升為平台管理員。": "This is the last platform admin. Make another account a platform admin first.",
     "role 只能是 admin（平台管理員）或 none（一般帳號）": "role must be admin (platform admin) or none (regular account)",
     "找不到這個帳號（只能升降啟用中的人類帳號）": "Account not found (only active human accounts can be made or unmade platform admins)",

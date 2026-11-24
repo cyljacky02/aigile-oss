@@ -2972,12 +2972,12 @@ ${ending}`;
   // 他名下的 AI 停用、Token 失效。歷史紀錄與名字保留；帳號不受影響（不是停用，登入資料留著），但登入、驗證時擋（平台管理員除外：隱含權）。
   // 不能移出自己（SELF）、最後一位工作區管理員（LAST_WORKSPACE_ADMIN）；移出平台管理員要是平台管理員（CANNOT_MANAGE_ADMIN）
   route('POST', '/api/participants/:id/remove', async ({ ctx, me, params }) => {
-    const v = await access.check(ctx, me, 'remove_member', 'workspace', { what: '把成員移出工作區' });
+    await access.check(ctx, me, 'remove_member', 'workspace', { what: '把成員移出工作區' });
     const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human'", params.id);
     if (!t || t.status === 'deleted') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員');
     if (t.id === me.id) throw new ApiError(400, 'SELF', '不能把自己移出工作區。');
     if (t.workspace_status === 'removed') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyRemoved: true };
-    if (membership.isPlatformAdmin(t) && v.roleIn(me, 'platform') !== ACCESS_ROLE.PLATFORM_ADMIN) throw new ApiError(403, 'CANNOT_MANAGE_ADMIN', `${t.name} 是平台管理員，只有平台管理員能把他移出工作區。`);
+    await access.check(ctx, me, 'remove_member', { target: t }); // 不能動上層管理權：移出平台管理員要是平台管理員
     await assertNotLastAdmin(ctx, t);
     const at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
     await db.batch([

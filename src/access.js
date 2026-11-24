@@ -47,6 +47,8 @@ const platformAdmin = (v, me) => v.roleIn(me, 'platform') === R.PLATFORM_ADMIN;
 const workspaceAdmin = (v, me) => v.roleIn(me, 'workspace') === R.WORKSPACE_ADMIN;
 // 改程式庫、私訊、AI 職務、職稱、專案成員：工作區管理員，或未封存專案的專案管理員
 const activeProjectAdmin = (v, me, s) => workspaceAdmin(v, me) || (v.active(s.project) && v.roleIn(me, s) === R.PROJECT_ADMIN);
+// 不能動對方的上層管理權：對象是平台管理員時，要是平台管理員才行（沒帶對象＝不看）
+const notAboveMe = (v, me, { target }) => !target || v.roleIn(target, 'platform') !== R.PLATFORM_ADMIN || platformAdmin(v, me);
 const ACTIONS = {
   // 平台
   manage_platform: { admin: true, rule: platformAdmin }, // 備份與還原、示範資料、更新檢查
@@ -55,10 +57,10 @@ const ACTIONS = {
   // 工作區
   manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區（群組）設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
   assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
-  remove_member: { admin: true, rule: workspaceAdmin }, // 把人移出工作區（帳號不受影響）
+  remove_member: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s) }, // 把人移出工作區（帳號不受影響）；target 是平台管理員時只有平台管理員能
   see_removed_members: { admin: true, rule: workspaceAdmin }, // 成員名冊：已移出工作區的人（待接受的邀請是 GET /api/invites?status=pending，invite）
   invite: { admin: true, rule: workspaceAdmin },
-  reset_login: { admin: true, rule: workspaceAdmin },
+  reset_login: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s) }, // target 是平台管理員時只有平台管理員能
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
   create_project: { admin: true, fresh: true, rule: (v, me) => workspaceAdmin(v, me) || (v.membersCreateProjects() && v.roleIn(me, 'workspace') === R.MEMBER) }, // fresh：check 時重讀工作區設定
   // 專案（只有工作區管理員）
@@ -183,6 +185,10 @@ export function createAccess(deps) {
     if (deny) return deny();
     const adminName = () => v.admin()?.name || '未設定';
     if (s.kind === 'platform' && ACTIONS[action]?.rule === platformAdmin) return new ApiError(403, 'NOT_ADMIN', `只有平台管理員能${what || '管理平台'}。`);
+    if ((action === 'remove_member' || action === 'reset_login') && v.can(me, action, 'workspace')) { // 工作區管理員，但對象是平台管理員
+      const n = s.target?.name || '';
+      return new ApiError(403, 'CANNOT_MANAGE_ADMIN', action === 'reset_login' ? `${n} 是平台管理員，只有平台管理員能重設他的登入。` : `${n} 是平台管理員，只有平台管理員能把他移出工作區。`);
+    }
     switch (action) {
       case 'write': return readOnlyError(me, s.project || readOnlyList(me)[0]);
       case 'manage_project': case 'configure_project': case 'manage_project_members': case 'set_visibility':
