@@ -533,6 +533,7 @@
 
   // ---------- 右上頭像選單（每個畫面都有）：我的 AI、成員與權限（管理員）、個人設定、API 資訊與登入碼、登出 ----------
   const isAdmin = () => !!state.projMeta.adminId && state.projMeta.adminId === state.me?.participantId;
+  const canNewProj = () => !!state.projMeta.canCreateProject; // 工作區設定「誰可以建立專案」：管理員永遠可以，設成所有成員時一般成員也可以（後端判斷）
   // 專案 leader（每個專案可多位、只能人類）
   const leadersOf = pj => state.projMeta.leaders?.[pj] || [];
   // 唯讀：人類看名單；AI 跟著主人。所在是跨專案頻道時，只要在任何專案唯讀就算
@@ -1659,7 +1660,7 @@
   async function loadProjectList() {
     const d = await api('/api/projects');
     state.projectList = d.items;
-    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', crossRoleIds: d.crossRoleIds || [], leaders: d.leaders || {}, archivedLeaders: d.archivedLeaders || {}, readOnly: d.readOnly || {}, join: d.join || {}}; // join // 、
+    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', crossRoleIds: d.crossRoleIds || [], leaders: d.leaders || {}, archivedLeaders: d.archivedLeaders || {}, readOnly: d.readOnly || {}, join: d.join || {}, canCreateProject: !!d.canCreateProject}; // join // 、
     document.querySelectorAll('[data-admin-only]').forEach(b => { b.hidden = !d.adminId || d.adminId !== state.me?.participantId; });
     if (typeof drawAvatarMenu === 'function') drawAvatarMenu();
     if (state.me) drawMe(); // 知道誰是管理員後重畫名片
@@ -1756,7 +1757,7 @@
           ${myProjects().map(p => `<button type="button" class="hs-item" data-proj="${esc(p)}" title="${esc(projName(p))}">${projIcon(p, 22)}<span class="hs-name">${esc(projName(p))}</span>${n(p)}</button>`).join('') || '<p class="muted small hs-empty">還沒有加入任何專案</p>'}
           <button type="button" class="hs-item hs-muted" data-proj="cross">${projIcon('cross', 22)}<span class="hs-name">跨專案頻道</span>${n('cross')}</button>
           <button type="button" class="hs-item hs-add" data-join-open><span class="hs-ico" aria-hidden="true">＋</span><span class="hs-name">申請加入專案</span></button>
-          ${isAdmin() ? '<button type="button" class="hs-item hs-add" data-hub-newproj><span class="hs-ico" aria-hidden="true">＋</span><span class="hs-name">新增專案</span></button>' : ''}
+          ${canNewProj() ? '<button type="button" class="hs-item hs-add" data-hub-newproj><span class="hs-ico" aria-hidden="true">＋</span><span class="hs-name">新增專案</span></button>' : ''}
         </nav>`;
         return;
       }
@@ -1766,7 +1767,7 @@
         <div class="ph-card">${projIcon(v)}<span class="ph-name">${hasHub() ? '<button type="button" class="ph-back in-card" data-proj="hub">‹ 總覽</button>' : ''}<b>${esc(viewLabel(v))}</b>${hasHub() ? '' : `<span class="small">${esc(sub)}</span>`}</span>
           ${canSetProj(v) ? `<button type="button" class="ph-gear" data-pset="${esc(v)}" aria-haspopup="menu" aria-expanded="false" aria-label="${esc(viewLabel(v))} 專案設定" title="專案設定">⚙</button>` : ''}
           ${hasHub() ? `<button type="button" class="ps-btn ph-swap" aria-haspopup="listbox" aria-expanded="false" aria-controls="ps-list-${i}" aria-label="切換專案" title="切換專案">⇅</button>
-          <ul class="ps-list" id="ps-list-${i}" role="listbox" aria-label="切換專案" hidden>${opts.map(k => `<li role="option" tabindex="-1" data-proj="${esc(k)}" aria-selected="${k === v}"><span>${esc(viewLabel(k))}</span>${k === 'hub' ? '' : badge(k)}</li>`).join('')}${isAdmin() ? '<li class="ps-sep" role="separator"></li><li role="option" tabindex="-1" class="ps-act" data-ps-act="newproj">＋ 新增專案</li><li role="option" tabindex="-1" class="ps-act" data-ps-act="manage">管理專案…</li>' : ''}</ul>` : ''}</div>`;
+          <ul class="ps-list" id="ps-list-${i}" role="listbox" aria-label="切換專案" hidden>${opts.map(k => `<li role="option" tabindex="-1" data-proj="${esc(k)}" aria-selected="${k === v}"><span>${esc(viewLabel(k))}</span>${k === 'hub' ? '' : badge(k)}</li>`).join('')}${canNewProj() || isAdmin() ? '<li class="ps-sep" role="separator"></li>' : ''}${canNewProj() ? '<li role="option" tabindex="-1" class="ps-act" data-ps-act="newproj">＋ 新增專案</li>' : ''}${isAdmin() ? '<li role="option" tabindex="-1" class="ps-act" data-ps-act="manage">管理專案…</li>' : ''}</ul>` : ''}</div>`;
     });
     drawChrome();
   }
@@ -1802,7 +1803,7 @@
     const counts = todoByView(), here = counts[v] || 0; // 收件匣徽章＝所在專案的件數，切專案就跟著變
     document.querySelectorAll('.inbox-badge').forEach(b => { b.hidden = !here; b.textContent = here > 99 ? '99+' : here; });
     const todo = $('#m-todo'), n = counts.hub, nb = todo.querySelector('.m-todo-n');
-    const mnp = $('#m-newproj'); if (mnp) mnp.hidden = !isAdmin(); // 手機選單也能新增專案
+    const mnp = $('#m-newproj'); if (mnp) mnp.hidden = !canNewProj(); // 手機選單也能新增專案
     todo.hidden = !hasHub(); // 在手機選單裡，每頁都有（各專案彙總）
     nb.hidden = !n; nb.textContent = n > 99 ? '99+' : n;
     const mn = $('#menu-btn .menu-n'), mc = hasHub() ? n : here; // 選單鈕帶「要你處理」件數（按鈕收進選單後還看得到）
@@ -3759,7 +3760,7 @@
         <div class="work-head"><div class="work-title"><h2>${esc(greeting())}，<span data-nt>${esc(shownName(state.me?.name || ''))}</span></h2><span class="muted small"><span>${esc(new Date().toLocaleDateString(window.aigileI18n?.lang === 'en' ? 'en-US' : 'zh-TW', { month: 'numeric', day: 'numeric', weekday: 'short' }))}</span>${counts.hub ? ` · ${counts.hub} 件要你處理` : ' · 沒有要你處理的事'}</span></div></div>
         ${onboardHtml()}${hubNewAiHtml()}${nextStepsHtml()}<div class="hub-grid">${cards || hubJoinHtml()}</div>
         <button type="button" class="link hub-join" data-join-open>＋ 申請加入專案</button>
-        ${isAdmin() ? '<button type="button" class="link hub-join" data-hub-newproj>＋ 新增專案</button>' : ''}
+        ${canNewProj() ? '<button type="button" class="link hub-join" data-hub-newproj>＋ 新增專案</button>' : ''}
         <button type="button" class="hub-card hub-cross" data-proj="cross" aria-label="進入跨專案頻道">${projIcon('cross', 44)}<span class="hc-name"><b>跨專案頻道</b><span class="small">規則公告、跨團隊協調。${cm ? `最新：${esc(cm.author.name)} ${whenText(cm.createdAt)}「${esc(oneLine(cm.text, 40))}」` : '最近 12 小時沒有新訊息'}</span></span><span class="hc-go">進入 ›</span></button>
       </section>
       <aside class="hub-todo" aria-label="要你處理">${hubTodoHtml()}</aside></div>`;
@@ -3820,7 +3821,7 @@
     if (k === 'close') { store.del(NEXT_KEY()); return renderWork(); }
     if (k === 'wizard') { store.del(NEXT_KEY()); return openSetupWizard(); }
     if (k === 'projects') perm.gs = null;
-    openAdmin(k === 'projects' ? 'group' : k); // 群組名稱在「群組設定」；邀請、匯入備份各有區塊
+    openAdmin(k === 'projects' ? 'group' : k); // 工作區名稱在「工作區設定」；邀請、匯入備份各有區塊
   });
   // 自己建好、還沒接入的 AI：總覽寫出來並帶到我的 AI（剛建好時總覽原本完全看不到它）
   // 管理員：匯入備份後還進不來的人也寫出來
@@ -8923,7 +8924,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   // 電腦：左側小目錄＋右邊內容；手機：一頁清單，點進去才看內容。後端權限不變，非管理員打 API 照樣擋
   const ADM_SECS = [
     ['todo', '📋', '待處理', '加入申請、技能核准、邀請到期'],
-    ['group', '🏷️', '群組設定', '群組名稱、開放註冊、群組密碼'],
+    ['group', '🏷️', '工作區設定', '名稱、建立專案、AI 工具、開放註冊、附件保存'],
     ['projects', '📁', L('專案', 'Projects'), '新增、改名、程式庫、封存、永久刪除'], // 字典的「專案」是單數，目錄要複數
     ['invites', '✉️', '邀請', '邀請新的人、重發、作廢'],
     ['accounts', '🔑', '帳號與救援', '跨專案角色、重設登入、停用、救援指令'],
@@ -9365,12 +9366,12 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     });
     for (const id of pick) permAdd(state.participants.get(id), pj);
   }
-  // 加入設定（開放註冊、群組密碼）與群組異動紀錄：存資料庫、立刻生效；群組密碼只顯示有沒有設
+  // 工作區設定（誰可以建立專案、開放註冊、群組密碼）與工作區異動紀錄：存資料庫、立刻生效；群組密碼只顯示有沒有設
   async function loadGroupSettings() {
     perm.gsLoading = true;
     try {
-      const [s, ev, tools] = await Promise.all([api('/api/group/settings'), api('/api/group/events?limit=30').catch(() => ({ items: [] })), api('/api/ai-tools').catch(() => null)]);
-      perm.gs = s; perm.gsEvents = ev.items; perm.aiTools = tools;
+      const [s, ev, tools, ttl] = await Promise.all([api('/api/workspace/settings'), api('/api/group/events?limit=30').catch(() => ({ items: [] })), api('/api/ai-tools').catch(() => null), api('/api/file-ttl').catch(() => null)]);
+      perm.gs = s; perm.gsEvents = ev.items; perm.aiTools = tools; perm.gsTtl = ttl;
     } catch (err) { perm.gs = { error: err.message }; }
     perm.gsLoading = false;
     if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'group') drawPerm();
@@ -9386,30 +9387,41 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" class="switch" role="switch" aria-checked="${gs.openJoin}" aria-labelledby="pm-oj-t" data-pp="openjoin"><span></span></button></div>
         <div class="pm-gs-row pm-gs-code"><div class="pm-gs-t"><b><label for="pm-room-code">群組密碼</label></b><span class="pm-sub">${gs.roomCodeSet ? '<b>已設定</b>：註冊時要輸入；設好後看不到原文，忘了就重設' : '未設定：註冊不用密碼。公開部署建議設一組'}</span>${env('roomCode')}</div>
           <div class="pm-gs-ctl"><input id="pm-room-code" type="password" maxlength="64" autocomplete="new-password" placeholder="${gs.roomCodeSet ? '輸入新密碼' : '4～64 字'}"><button type="button" class="btn small primary" data-pp="roomcode">${gs.roomCodeSet ? '更換' : '設定'}</button>${gs.roomCodeSet ? '<button type="button" class="btn small" data-pp="roomclear">清除</button>' : ''}</div></div>
-        <details class="audit pm-gs-log"${perm.gsLogOpen ? ' open' : ''}><summary>群組異動紀錄</summary><ul class="pa-log">${log}</ul></details>
+        <details class="audit pm-gs-log"${perm.gsLogOpen ? ' open' : ''}><summary>工作區異動紀錄</summary><ul class="pa-log">${log}</ul></details>
       </div>`;
   }
   async function saveGroupSettings(body, done) {
-    try { perm.gs = await api('/api/group/settings', { method: 'PUT', body }); toast(done); }
+    try { perm.gs = await api('/api/workspace/settings', { method: 'PUT', body }); toast(done); }
     catch (err) { toast(err.message); }
     perm.gsLogOpen = !!$('.pm-gs-log')?.open;
     await loadGroupSettings();
   }
-  // 群組分頁＝群組名稱＋怎麼加入（開放註冊、群組密碼）＋群組異動紀錄（原本放在「專案」分頁，想改群組密碼的人找不到）
+  // 工作區設定＝工作區名稱＋誰可以建立專案＋可連線的 AI 工具＋怎麼加入（開放註冊、群組密碼）＋工作區異動紀錄＋附件保存期限
+  // （附件保存期限「稽核與儲存」也有一份，同一個設定；#9 分成平台預設與工作區覆寫）
   function permGroupHtml() {
     return `<div class="pm-projs">
-      <div class="pm-card pm-setrow pm-group-name"><label for="pm-group-name">群組名稱</label><input id="pm-group-name" maxlength="30" value="${esc(BASE_TITLE)}" aria-describedby="pm-gn-hint"><button type="button" class="btn small primary" data-pp="groupname">儲存</button><span class="muted small" id="pm-gn-hint">顯示在登入頁、左上角、分頁標題與 AI 接入設定。</span></div>
+      <div class="pm-card pm-setrow pm-group-name"><label for="pm-group-name">工作區名稱</label><input id="pm-group-name" maxlength="30" value="${esc(BASE_TITLE)}" aria-describedby="pm-gn-hint"><button type="button" class="btn small primary" data-pp="groupname">儲存</button><span class="muted small" id="pm-gn-hint">顯示在登入頁、左上角、分頁標題與 AI 接入設定。</span></div>
+      ${createProjectsHtml()}
       ${groupToolsHtml()}
-      ${groupJoinHtml()}</div>`;
+      ${groupJoinHtml()}
+      ${perm.gs && !perm.gs.error ? admTtlHtml(perm.gsTtl) : ''}</div>`;
   }
-  // 可以用的 AI 工具（全站一份）：取消勾選的只擋新接入，至少留一個開著；改的紀錄在「群組異動紀錄」
+  // 誰可以建立專案：所有成員／只有管理員（點了就存）
+  function createProjectsHtml() {
+    const gs = perm.gs;
+    if (!gs || gs.error || !gs.createProjects) return '';
+    const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-cp" value="${v}" data-pp="createprojects"${gs.createProjects === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
+    return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
+      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('admins', '只有管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+  }
+  // 可連線的 AI 工具（全站一份）：取消勾選的只擋新接入，至少留一個開著；改的紀錄在「工作區異動紀錄」
   function groupToolsHtml() {
     const d = perm.aiTools;
     if (!d?.tools?.length) return '';
     const nOn = d.tools.filter(t => t.on).length;
-    return `<div class="pm-card pm-tools"><div class="pm-card-head"><strong>可以用的 AI 工具</strong><span class="grow"></span><button type="button" class="btn small primary" data-pp="aitools">儲存</button></div>
-      <p class="muted small pm-tools-hint">取消勾選的工具不會出現在「我的 AI › 接入」，也拿不到接入文字與一行啟動。已經用它接好的 AI 照常運作。全站一份，不分專案；至少要留一個開著。改的紀錄在下面的「群組異動紀錄」。</p>
-      <div class="pm-tools-list" role="group" aria-label="可以用的 AI 工具">${d.tools.map(t => `<label class="chk"><input type="checkbox" data-pm-tool="${esc(t.key)}"${t.on ? ' checked' : ''}> ${esc(toolName(t.key) || t.name)}${t.key === 'other' ? '<span class="muted small">opencode、Gemini CLI、Cursor 等</span>' : ''}</label>`).join('')}</div>
+    return `<div class="pm-card pm-tools"><div class="pm-card-head"><strong>可連線的 AI 工具</strong><span class="grow"></span><button type="button" class="btn small primary" data-pp="aitools">儲存</button></div>
+      <p class="muted small pm-tools-hint">取消勾選的工具不會出現在「我的 AI › 接入」，也拿不到接入文字與一行啟動。已經用它接好的 AI 照常運作。全站一份，不分專案；至少要留一個開著。改的紀錄在下面的「工作區異動紀錄」。</p>
+      <div class="pm-tools-list" role="group" aria-label="可連線的 AI 工具">${d.tools.map(t => `<label class="chk"><input type="checkbox" data-pm-tool="${esc(t.key)}"${t.on ? ' checked' : ''}> ${esc(toolName(t.key) || t.name)}${t.key === 'other' ? '<span class="muted small">opencode、Gemini CLI、Cursor 等</span>' : ''}</label>`).join('')}</div>
       ${nOn <= 1 ? '<p class="muted small pm-tools-hint">只剩一個開著：要關它，先打開另一個。</p>' : ''}</div>`;
   }
   // 專案分頁＝專案表格；改名／程式庫／異動紀錄／封存收進「⋯」
@@ -10089,6 +10101,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       try {
         const t = await api('/api/file-ttl', { method: 'PUT', body: { hours } });
         if (perm.admAudit) perm.admAudit.t = t;
+        if (perm.gsTtl) perm.gsTtl = t;
         applyFileTtl(t.hours);
         toast(L(`已儲存：之後上傳的訊息附件保存 ${ttlZh(t.hours)}；已上傳的照原本的到期時間`, `Saved: attachments uploaded from now on are kept for ${ttlEn(t.hours)}; files already uploaded keep their original expiry`));
         perm.ttlLogOpen = !!$('.adm-ttl-log')?.open;
@@ -10108,10 +10121,14 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (a === 'statuses') { drawPerm(); return openStatusEditor(id); }
     if (a === 'groupname') {
       const name = $('#pm-group-name').value.trim();
-      if (!name) return toast('請輸入群組名稱');
-      try { const d = await api('/api/group', { method: 'PUT', body: { name } }); applyGroupName(d.name); toast(`群組名稱已改成「${d.name}」`); } catch (err) { toast(err.message); }
+      if (!name) return toast('請輸入工作區名稱');
+      try { const d = await api('/api/group', { method: 'PUT', body: { name } }); applyGroupName(d.name); toast(`工作區名稱已改成「${d.name}」`); } catch (err) { toast(err.message); }
       perm.gsLogOpen = !!$('.pm-gs-log')?.open;
       return loadGroupSettings(); // 異動紀錄多一筆
+    }
+    if (a === 'createprojects') {
+      if (pp.value === perm.gs?.createProjects) return;
+      return saveGroupSettings({ createProjects: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能建立專案' : '已儲存：只有管理員能建立專案');
     }
     if (a === 'openjoin') { const on = pp.getAttribute('aria-checked') !== 'true'; return saveGroupSettings({ openJoin: on }, on ? '已開放自己註冊' : '已關閉開放註冊，只能用邀請連結加入'); }
     if (a === 'roomcode') {

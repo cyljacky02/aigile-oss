@@ -134,7 +134,7 @@ try {
   assert.match(js, /\$\{groupToolsHtml\(\)\}/, '設定卡放在群組分頁（只有管理員有這個分頁）');
   assert.match(js, /至少要留一個工具開著/, '網頁也先擋全關');
   const en = fs.readFileSync(fileURLToPath(new URL('../public/i18n/en.js', import.meta.url)), 'utf8');
-  for (const k of ['可以用的 AI 工具', '這個工具（{0}）已被管理員關閉，重新接入請改用其他工具。已經接好的照常運作，不用動。', '{0} 已被管理員關閉，請改用其他工具接入。', '至少要留一個工具開著，不然新的 AI 都接不進來。']) assert.ok(en.includes(JSON.stringify(k)), `英文字典有「${k}」`);
+  for (const k of ['可連線的 AI 工具', '這個工具（{0}）已被管理員關閉，重新接入請改用其他工具。已經接好的照常運作，不用動。', '{0} 已被管理員關閉，請改用其他工具接入。', '至少要留一個工具開著，不然新的 AI 都接不進來。']) assert.ok(en.includes(JSON.stringify(k)), `英文字典有「${k}」`);
   console.log('ai-tools-off-test 通過');
 } finally {
   try { db.close?.(); } catch {}
