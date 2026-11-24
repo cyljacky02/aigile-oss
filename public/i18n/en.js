@@ -920,7 +920,7 @@ window.AIGILE_EN = {
     "我的職稱": "My titles",
     "每個專案各一個，只能改自己的。": "One per project; you can only change your own.",
     "本專案的 AI 職務": "This project's AI duties",
-    "{0}在「{1}」是唯讀成員，只能看，不能發訊息、回覆、建卡、改卡、交接、上傳或私訊。需要權限請找管理員或該專案的專案管理員。AI 收到這個就停下、在本機對話告訴所屬人類，不要重試。": "{0} is a viewer in \"{1}\": can view only, and can't post, reply, create or edit cards, hand over, upload or send DMs. For access, ask an admin or a project admin. AIs that get this should stop and tell their owner in the local chat; don't retry.",
+    "{0}在「{1}」是唯讀成員，只能看，不能發訊息、回覆、建卡、改卡、交接、上傳或私訊。需要權限請找工作區管理員或該專案的專案管理員。AI 收到這個就停下、在本機對話告訴所屬人類，不要重試。": "{0} is a viewer in \"{1}\": can view only, and can't post, reply, create or edit cards, hand over, upload or send DMs. For access, ask a workspace admin or a project admin. AIs that get this should stop and tell their owner in the local chat; don't retry.",
     "只有管理員、「{0}」的專案管理員或 {1} 本人能改他在這個專案的職稱。": "Only an admin, a project admin of \"{0}\" or {1} themselves can change their title in this project.",
     "role 需為 admin（專案管理員）、member（專案成員）或 viewer（唯讀成員）": "role must be admin (project admin), member (project member) or viewer (viewer)",
     "visibility 需為 open（開放）、review（審核）或 private（私人）": "visibility must be open, review (approval) or private",

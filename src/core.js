@@ -351,8 +351,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 成員資格（誰在哪些專案、專案角色）的讀寫都走 src/membership.js；這裡沿用原本的名字
   // projectsOf＝目前所屬（未封存）專案；listOf＝含封存專案的原始清單
   const membership = createMembership({ db, PROJECTS, nowIso, onChange: () => invalidatePeople() });
-  // 「能不能」的判斷（唯讀、leader、管理員…）不在這裡，走權限模組 access（見「專案與成員管理」）
-  const { allProjectsOf: listOf, setProjectsStmts, loadLeaders, leadersOf, loadReadOnly, readOnlyOf } = membership;
+  // 「能不能」的判斷（唯讀成員、專案管理員、工作區管理員…）不在這裡，走權限模組 access（見「專案與成員管理」）
+  const { allProjectsOf: listOf, setProjectsStmts, loadProjectAdmins, projectAdminsOf, loadReadOnly, readOnlyOf } = membership;
   // 隱含權限：工作區管理員看得到、進得去所有（未封存）專案，但不算成員資格（名單過濾見 access implicitOnlyIn；改成員資格一律用 listOf）
   // 實際的工作區管理權：工作區管理員，或平台管理員（隱含）。跟 access.adminInWorkspace 同一個規則
   const adminInWorkspace = p => isWorkspaceAdmin(p) || membership.isPlatformAdmin(p);
@@ -1570,7 +1570,7 @@ ${ending}`;
     loadWorkspace: force => workspace.load(force), membersCreateProjects: () => workspace.membersCreateProjects(),
     ApiError, requireHuman, nameOf: id => nameOf(id), people: ctx => peopleMap(ctx), projects: () => PROJECTS, projectsOf, isolatedFrom,
     titles: () => projRoles, memberProjectsOf: p => membership.projectsOf(p), visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
-    loadLeaders: force => membership.loadLeaders(force), leadersOf: pj => membership.leadersOf(pj),
+    loadProjectAdmins: force => membership.loadProjectAdmins(force), projectAdminsOf: pj => membership.projectAdminsOf(pj),
     loadReadOnly: force => membership.loadReadOnly(force), isReadOnly: (p, pj) => membership.isReadOnly(p, pj),
     isPlatformAdmin: p => membership.isPlatformAdmin(p),
   });
@@ -1739,17 +1739,17 @@ ${ending}`;
       openCards: counts.get(r.id) || 0, statuses: book.list(r.id) })); // 看板狀態（順序＝看板欄順序）
   }
   async function projectsResponse(ctx, extra = {}) {
-    await loadLeaders();
+    await loadProjectAdmins();
     const people = await peopleMap(ctx);
     const admin = adminOf(people);
-    const leaders = Object.fromEntries(PROJECTS.map(pj => [pj, leadersOf(pj).filter(id => people.get(id)?.status === 'active')]));
+    const leaders = Object.fromEntries(PROJECTS.map(pj => [pj, projectAdminsOf(pj).filter(id => people.get(id)?.status === 'active')]));
     await loadReadOnly();
     const readOnly = Object.fromEntries(PROJECTS.map(pj => [pj, readOnlyOf(pj).filter(id => people.get(id)?.status === 'active')]));
     // 開放申請設定與待審數（一列設定＋只讀待審的列）
     const js = await joinApi.joinSettings(), pend = await db.all("SELECT project, COUNT(*) AS n FROM join_requests WHERE status = 'pending' GROUP BY project").catch(() => []);
     const join = Object.fromEntries(PROJECTS.map(pj => [pj, { open: joinOpen(js, pj), note: js[pj]?.note || '', pending: pend.find(x => x.project === pj)?.n || 0 }]));
     const items = await projectViews(ctx);
-    const archivedLeaders = Object.fromEntries(items.filter(p => p.archived).map(p => [p.id, leadersOf(p.id).filter(id => people.get(id)?.status === 'active')])); // PLAT-381：leader 要能還原自己封存的專案
+    const archivedLeaders = Object.fromEntries(items.filter(p => p.archived).map(p => [p.id, projectAdminsOf(p.id).filter(id => people.get(id)?.status === 'active')])); // 專案管理員要能還原自己封存的專案
     // 專案管理員 projectAdmins／archivedProjectAdmins、唯讀成員 viewers；leaders／archivedLeaders／readOnly 是舊名（同內容，保留一版）
     return { items, adminId: admin?.id || null, adminName: admin?.name || null, projectAdmins: leaders, archivedProjectAdmins: archivedLeaders, viewers: readOnly, leaders, archivedLeaders, readOnly, join, ...extra };
   }
@@ -1845,7 +1845,7 @@ ${ending}`;
     const people = await peopleMap(ctx, [params.id]);
     return { ...identity(people.get(params.id), people), impact };
   });
-  // 改某位人類在各專案的角色。管理員全部、該專案 leader、本人只改自己
+  // 改某位人類在各專案的職稱。工作區管理員全部、該專案的專案管理員、本人只改自己
   route('PUT', '/api/participants/:id/project-roles', async ({ ctx, me, req, params }) => {
     requireHuman(me);
     await loadProjects(true); await loadProjectRoles(true);
@@ -1858,7 +1858,7 @@ ${ending}`;
     for (const [pj, v] of Object.entries(body.roles)) {
       if (!PROJECTS.includes(pj) || !discovers(me, pj)) throw invalid('roles 裡有找不到的專案（只能設未封存的專案）'); // 看不到的私人專案跟沒有這個專案一樣，不回專案代號
       if (!inP.includes(pj)) throw invalid(`${target.name} 不在「${nameOf(pj)}」，不能設那個專案的角色`);
-      await access.check(ctx, me, 'set_title', { project: pj, target }); // 管理員、該專案 leader、本人
+      await access.check(ctx, me, 'set_title', { project: pj, target }); // 工作區管理員、該專案的專案管理員、本人
       const role = readRole(v);
       if ((next[target.id][pj] || '') === role) continue;
       if (role) next[target.id][pj] = role; else delete next[target.id][pj];
@@ -2173,7 +2173,7 @@ ${ending}`;
     }
     return projectsSeenBy(ctx, me);
   });
-  // 程式庫連結與分支（選填）；管理員與該專案 leader 能改
+  // 程式庫連結與分支（選填）；工作區管理員與該專案的專案管理員能改
   route('PUT', '/api/projects/:id/repo', async ({ ctx, me, req, params }) => {
     requireHuman(me);
     await loadProjects(true);
@@ -2204,7 +2204,7 @@ ${ending}`;
     }
     return projectsSeenBy(ctx, me);
   });
-  // 私訊開關；管理員與該專案 leader 能改。關掉後舊私訊雙方仍看得到、不能再送
+  // 私訊開關；工作區管理員與該專案的專案管理員能改。關掉後舊私訊雙方仍看得到、不能再送
   // 網址用的英文名（/p/main/messages）；只改網址，API 的 project 代號照舊。預設專案→main，其他預設用代號
   const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
   const SLUG_RESERVED = ['cross', 'p', 'api', 'hub'];
@@ -2416,7 +2416,7 @@ ${ending}`;
     const m = await roleDefsMap();
     return pjs.flatMap(pj => (m[pj] || []).filter(d => d.status !== 'disabled').map(d => d.key));
   }
-  // 誰能建立／管理某專案的角色（AI 職務）：群組管理員、該（未封存）專案 leader
+  // 誰能建立／管理某專案的 AI 職務：工作區管理員、該（未封存）專案的專案管理員
   async function roleManagerOf(ctx, me) {
     const v = await access.load(ctx);
     return pj => v.can(me, 'configure_project', { project: pj });
@@ -2480,7 +2480,7 @@ ${ending}`;
     if (p.humanId !== me.id) throw new ApiError(403, 'FORBIDDEN', 'AI 只能提案，不能自己建立角色。');
     return p;
   }
-  // 建立角色：只有該專案 leader／管理員；可以帶改過的字
+  // 建立 AI 職務：只有該專案的專案管理員（含工作區管理員）；可以帶改過的字
   route('POST', '/api/role-proposals/:id/create', async ({ ctx, me, req, params }) => {
     const p = await rpOfHuman(me, params.id);
     if (rpStatus(p) !== 'pending') throw new ApiError(409, 'PROPOSAL_CLOSED', '這個角色提案已處理或超過 24 小時。');
@@ -2657,7 +2657,7 @@ ${ending}`;
     }
     return projectsSeenBy(ctx, me);
   });
-  // 永久刪除已封存的專案：只有群組管理員、要先封存、要輸入專案名稱；刪掉就救不回來
+  // 永久刪除已封存的專案：只有工作區管理員、要先封存、要輸入專案名稱；刪掉就救不回來
   // 刪：卡片與紀錄、訊息與通知、決策、上傳檔與文件（含檔案本體）、技能、加入申請、私訊、專案事件與設定；人和 AI 帳號留著，只是不再屬於這個專案
   // 只屬於這個專案的 AI（AI 至少要一個專案）一起刪除：跟「刪除 AI」一樣，狀態改 deleted、Token 失效
   // 跨專案頻道（project=all）的訊息不動。D1：每張表一句（沒有索引的表只掃一次），不逐筆刪
@@ -2739,7 +2739,7 @@ ${ending}`;
       const next = Object.fromEntries(Object.entries(roles).map(([pid, m]) => [pid, Object.fromEntries(Object.entries(m || {}).filter(([pj]) => pj !== id))]));
       settings.push([upsert, ['project_roles', JSON.stringify(next)]]);
     }
-    // 人（含停用的、只在這個專案的 AI）的專案歸屬、leader、唯讀拿掉這個專案；還沒用的邀請連結也從專案清單拿掉
+    // 人（含停用的、只在這個專案的 AI）的專案成員資格與專案角色拿掉這個專案；還沒用的邀請連結也從專案清單拿掉
     settings.push(...await membership.removeProjectStmts(id, people, at));
     for (const ai of onlyHere) settings.push( // 跟 POST /api/my-ais/:id/delete 一樣；它在別的專案負責的未結案卡改成未指派
       ["UPDATE participants SET status = 'deleted', token = ?, token_expires_at = 0, updated_at = ? WHERE id = ?", ['deleted_' + ai.id, at, ai.id]],
@@ -3794,8 +3794,8 @@ ${ending}`;
     }
   }
   registerRoster({ route, db, access, peopleMap, membership, PROJECTS, nameOf, loadTitles: () => loadProjectRoles(), isWorkspaceAdmin, isOnline, iso });
-  const joinApi = registerJoin({ liveTo: (ids, type, data) => live?.toPeople(ids, type, data), route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf, loadProjects, projectRows: () => projectRows, loadLeaders, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles: () => projRoles, readRole, addReadOnly: membership.addReadOnly, addMemberStmts: membership.addMemberStmts, loadMembers: force => membership.loadMembers(force), invalidatePeople, projEvent });
-  // 知識庫管理（補建索引、整理 AI 設定）：群組管理員或這個專案的 leader（人類）
+  const joinApi = registerJoin({ liveTo: (ids, type, data) => live?.toPeople(ids, type, data), route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf, loadProjects, projectRows: () => projectRows, loadProjectAdmins, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, projRoles: () => projRoles, readRole, addReadOnly: membership.addReadOnly, addMemberStmts: membership.addMemberStmts, loadMembers: force => membership.loadMembers(force), invalidatePeople, projEvent });
+  // 知識庫管理（補建索引、整理 AI 設定）：工作區管理員或這個專案的專案管理員（人類）
   const kbHooks = {}; // 文件區抽字、上傳、刪除時通知知識頁模組（卡片模組建好後才填）
   const kbManager = (ctx, me, pj) => access.can(ctx, me, 'manage_project', { project: pj });
   registerDocs({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, sha256, peopleMap, identity, projectsOf, PROJECTS, assertWritable, loadReadOnly, roIn: access.readOnlyIn, audit, docStorage,
@@ -3848,12 +3848,12 @@ ${ending}`;
       for (const r of res) closed.add(r.message_id);
       for (const r of reps) if (closesAsk(r, people)) closed.add(r.reply_to);
     }
-    // [需確認] 只進被問的人：有指定人類 → 那幾位；沒指定 → 專案 leader，沒有 leader 就給管理員（AI 看的是所屬人類的清單）
-    await loadLeaders();
+    // [需確認] 只進被問的人：有指定人類 → 那幾位；沒指定 → 專案管理員，沒有就給工作區管理員（AI 看的是所屬人類的清單）
+    await loadProjectAdmins();
     const admin = adminOf(people), viewer = me.kind === 'ai' ? me.owner_id : me.id;
     const askedMe = x => {
       if (x._ask?.length) return x._ask.includes(viewer);
-      const leads = leadersOf(x.project).filter(id => people.get(id)?.status === 'active');
+      const leads = projectAdminsOf(x.project).filter(id => people.get(id)?.status === 'active');
       return leads.length ? leads.includes(viewer) : admin?.id === viewer;
     };
     // 只屬部分專案的成員，「等你決定」只留看得到的（訊息依隔離規則、決策卡依卡片專案）

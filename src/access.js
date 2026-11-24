@@ -55,7 +55,7 @@ export const adminOf = people => {
 };
 
 // 動作表。admin：管理動作（AI 一律不行）；human：check 時先擋 AI（回「僅限人類」）；light：只看唯讀名單，不必讀成員；
-// leads：看專案管理員名單，check 時重讀（別份程式剛改過也算數）
+// fresh：check 時重讀專案管理員名單與工作區設定（別份程式剛改過也算數）
 // rule(v, me, s)：v 是 load() 的判斷視圖，s 是整理過的範圍 { kind, project, target }
 const platformAdmin = (v, me) => v.roleIn(me, 'platform') === R.PLATFORM_ADMIN;
 const workspaceAdmin = (v, me) => v.roleIn(me, 'workspace') === R.WORKSPACE_ADMIN;
@@ -69,7 +69,7 @@ const ACTIONS = {
   manage_accounts: { admin: true, rule: platformAdmin }, // 停用／恢復帳號、已停用清單
   assign_platform_admin: { admin: true, rule: platformAdmin }, // 任免平台管理員
   // 工作區
-  manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區（群組）設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
+  manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
   assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
   remove_member: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s) }, // 把人移出工作區（帳號不受影響）；target 是平台管理員時只有平台管理員能
   see_removed_members: { admin: true, rule: workspaceAdmin }, // 成員名冊：已移出工作區的人（待接受的邀請是 GET /api/invites?status=pending，invite）
@@ -82,12 +82,12 @@ const ACTIONS = {
   set_project_code: { admin: true, rule: workspaceAdmin },
   set_project_slug: { admin: true, rule: workspaceAdmin },
   // 專案（專案管理員）
-  manage_project: { admin: true, human: true, leads: true, rule: (v, me, s) => v.roleIn(me, s) === R.PROJECT_ADMIN }, // 改名、封存、還原、看板狀態、知識庫、技能審核、加入申請（封存的專案也算）
-  configure_project: { admin: true, leads: true, rule: activeProjectAdmin }, // 程式庫、私訊開關、AI 職務
-  manage_project_members: { admin: true, leads: true, rule: activeProjectAdmin }, // 專案成員：從工作區成員挑人加入、移出、設專案成員／唯讀成員
-  assign_project_admin: { admin: true, leads: true, rule: activeProjectAdmin }, // 任免專案管理員：工作區管理員，以及該專案的專案管理員
-  set_title: { admin: true, leads: true, rule: (v, me, s) => activeProjectAdmin(v, me, s) || (!!s.target && s.target.id === me.id) },
-  set_visibility: { admin: true, leads: true, rule: activeProjectAdmin }, // 專案可見度：開放／審核／私人
+  manage_project: { admin: true, human: true, fresh: true, rule: (v, me, s) => v.roleIn(me, s) === R.PROJECT_ADMIN }, // 改名、封存、還原、看板狀態、知識庫、技能審核、加入申請（封存的專案也算）
+  configure_project: { admin: true, fresh: true, rule: activeProjectAdmin }, // 程式庫、私訊開關、AI 職務
+  manage_project_members: { admin: true, fresh: true, rule: activeProjectAdmin }, // 專案成員：從工作區成員挑人加入、移出、設專案成員／唯讀成員
+  assign_project_admin: { admin: true, fresh: true, rule: activeProjectAdmin }, // 任免專案管理員：工作區管理員，以及該專案的專案管理員
+  set_title: { admin: true, fresh: true, rule: (v, me, s) => activeProjectAdmin(v, me, s) || (!!s.target && s.target.id === me.id) },
+  set_visibility: { admin: true, fresh: true, rule: activeProjectAdmin }, // 專案可見度：開放／審核／私人
   // 專案可見度
   discover_project: { rule: (v, me, s) => v.discovers(me, s.project) }, // 知道這個專案存在（專案清單、卡片代號、搜尋、訊息、MCP、名冊）；看內容另外看 see_project
   join_project: { human: true, rule: (v, me, s) => !!v.roleIn(me, 'workspace') && v.visibilityOf(s.project) === VIS.OPEN }, // 自己直接加入：開放專案
@@ -113,7 +113,7 @@ const scopeOf = scope => {
 //   projects()               → 未封存的專案 id
 //   projectsOf(p)            → 他所在、未封存的專案
 //   isolatedFrom(p)          → 不在所有專案（看不到別專案的東西）
-//   loadLeaders(force)       → 讀專案管理員名單（10 秒快取；force 重讀）；leadersOf(pj) → 目前快取裡該專案的專案管理員 id（含封存專案）
+//   loadProjectAdmins(force)       → 讀專案管理員名單（10 秒快取；force 重讀）；projectAdminsOf(pj) → 目前快取裡該專案的專案管理員 id（含封存專案）
 //   loadReadOnly(force)      → 讀唯讀成員名單；isReadOnly(p, pj) → 目前快取裡 p 在 pj 是唯讀成員（AI 跟著所屬人類）
 //   titles()                 → { 成員id: { 專案id: 職稱 } }（目前快取）
 //   memberProjectsOf(p)      → 他明確加入的（未封存）專案（不含隱含權限；沒給就用 projectsOf）
@@ -121,7 +121,7 @@ const scopeOf = scope => {
 //   isPlatformAdmin(p)       → 他的帳號是平台管理員（沒注入＝沒有平台管理員）
 //   visibilityOf(pj)         → 專案可見度（PROJECT_VISIBILITY；沒注入或不認得的值＝審核）
 export function createAccess(deps) {
-  const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, leadersOf, isReadOnly, titles } = deps;
+  const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, projectAdminsOf, isReadOnly, titles } = deps;
   const memberProjectsOf = deps.memberProjectsOf || projectsOf;
   // 平台管理員（啟用中的人類）；實際的工作區管理權＝工作區管理員或平台管理員（隱含）
   const isPlatformAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && !!deps.isPlatformAdmin?.(p);
@@ -131,7 +131,7 @@ export function createAccess(deps) {
 
   const readOnlyIn = (p, pj) => !!p && !!pj && isReadOnly(p, pj);
   const readOnlyList = p => projects().filter(pj => readOnlyIn(p, pj));
-  const readOnlyError = (p, pj) => new ApiError(403, 'READ_ONLY', `${p?.kind === 'ai' ? '你的所屬人類' : '你'}在「${nameOf(pj)}」是唯讀成員，只能看，不能發訊息、回覆、建卡、改卡、交接、上傳或私訊。需要權限請找管理員或該專案的專案管理員。AI 收到這個就停下、在本機對話告訴所屬人類，不要重試。`);
+  const readOnlyError = (p, pj) => new ApiError(403, 'READ_ONLY', `${p?.kind === 'ai' ? '你的所屬人類' : '你'}在「${nameOf(pj)}」是唯讀成員，只能看，不能發訊息、回覆、建卡、改卡、交接、上傳或私訊。需要權限請找工作區管理員或該專案的專案管理員。AI 收到這個就停下、在本機對話告訴所屬人類，不要重試。`);
 
   // 判斷視圖：綁定一份成員資料，判斷都是同步的（可以放在 filter 裡）；專案管理員、唯讀成員看目前快取（load() 會先讀好）
   function view({ people = null } = {}) {
@@ -160,14 +160,14 @@ export function createAccess(deps) {
       discovers: (p, pj) => !!p && (p.kind === 'system' || v.visibilityOf(pj) !== VIS.PRIVATE || projectsOf(p).includes(pj) || v.roleIn(p, { project: pj }) !== null),
       // 看得到存在的專案（未封存）；錯誤訊息列可選的專案也用這個，不洩漏私人專案
       visibleProjects: p => projects().filter(pj => v.discovers(p, pj)),
-      leads: (p, pj) => !!p && leadersOf(pj).includes(p.id),
+      isProjectAdmin: (p, pj) => !!p && projectAdminsOf(pj).includes(p.id),
       readOnlyAt: (p, pj) => (pj ? readOnlyIn(p, pj) : readOnlyList(p).length > 0),
       roleIn(p, scope) {
         if (!p) return null;
         const s = scopeOf(scope);
         if (s.kind === 'platform') return isPlatformAdmin(p) ? R.PLATFORM_ADMIN : null;
         if (s.kind === 'workspace') return isAdmin(p) ? R.WORKSPACE_ADMIN : p.status === 'active' && (p.workspace_status ?? 'active') === 'active' && (p.kind === 'human' || p.kind === 'ai') ? R.MEMBER : null;
-        if (isAdmin(p) || v.leads(p, s.project)) return R.PROJECT_ADMIN; // 隱含權限、專案管理員
+        if (isAdmin(p) || v.isProjectAdmin(p, s.project)) return R.PROJECT_ADMIN; // 隱含權限、專案管理員
         if (!projectsOf(p).includes(s.project)) return null;
         return readOnlyIn(p, s.project) ? R.VIEWER : R.PROJECT_MEMBER;
       },
@@ -186,7 +186,7 @@ export function createAccess(deps) {
     await deps.loadReadOnly();
     if (light) return view();
     const people = await deps.people(ctx);
-    await deps.loadLeaders(fresh);
+    await deps.loadProjectAdmins(fresh);
     await deps.loadWorkspace?.(fresh);
     return view({ people });
   }
@@ -226,7 +226,7 @@ export function createAccess(deps) {
     const def = ACTIONS[action];
     if (!def) throw new Error(`沒有這個權限動作：${action}`);
     if (def.human) requireHuman(me);
-    const v = await load(ctx, { fresh: !!(def.leads || def.fresh), light: def.light });
+    const v = await load(ctx, { fresh: !!def.fresh, light: def.light });
     if (!v.can(me, action, scope)) throw denial(v, me, action, scopeOf(scope), opts);
     return v;
   }

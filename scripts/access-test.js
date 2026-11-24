@@ -32,7 +32,7 @@ const access = createAccess({
   ApiError, requireHuman, nameOf: id => ({ main: '主專案', side: '副專案', old: '舊專案' })[id] || id,
   people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
   isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)),
-  loadLeaders: async () => leaders, leadersOf: pj => leaders[pj] || [],
+  loadProjectAdmins: async () => leaders, projectAdminsOf: pj => leaders[pj] || [],
   loadReadOnly: async () => readOnly, isReadOnly: (p, pj) => (readOnly[pj] || []).includes(p.kind === 'ai' ? p.owner_id : p.id),
   titles: () => titles, memberProjectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
   isPlatformAdmin: p => p.platform_role === 'admin',
@@ -176,7 +176,7 @@ try {
   let wsRead = 0;
   const open = createAccess({
     ApiError, requireHuman, nameOf: id => id, people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
-    isolatedFrom: () => false, isCrossRole: () => false, loadLeaders: async () => leaders, leadersOf: pj => leaders[pj] || [],
+    isolatedFrom: () => false, isCrossRole: () => false, loadProjectAdmins: async () => leaders, projectAdminsOf: pj => leaders[pj] || [],
     loadReadOnly: async () => readOnly, isReadOnly: () => false, titles: () => titles,
     loadWorkspace: async force => { if (force) wsRead++; }, membersCreateProjects: () => true,
   });
@@ -194,7 +194,7 @@ try {
   const vis = { main: 'open', side: 'private' };
   const va = await createAccess({
     ApiError, requireHuman, nameOf: id => id, people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
-    isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)), loadLeaders: async () => leaders, leadersOf: pj => leaders[pj] || [],
+    isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)), loadProjectAdmins: async () => leaders, projectAdminsOf: pj => leaders[pj] || [],
     loadReadOnly: async () => readOnly, isReadOnly: () => false, titles: () => titles, visibilityOf: pj => vis[pj],
   }).load(ctx);
   assert.ok(va.can(loner, 'discover_project', { project: 'main' }), '開放專案人人看得到');

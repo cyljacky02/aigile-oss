@@ -550,20 +550,20 @@
   const wsAdminNames = () => [...(state.participants?.values() || [])].filter(p => p.memberType === 'human' && p.workspaceRole === 'admin').map(p => p.name).join('、') || state.projMeta.adminName || '';
   const canNewProj = () => !!state.projMeta.canCreateProject; // 工作區設定「誰可以建立專案」：管理員永遠可以，設成所有成員時一般成員也可以（後端判斷）
   // 專案管理員（每個專案可多位、只能人類）
-  const leadersOf = pj => state.projMeta.leaders?.[pj] || [];
+  const projectAdminsOf = pj => state.projMeta.leaders?.[pj] || [];
   // 唯讀：人類看名單；AI 跟著主人。所在是跨專案頻道時，只要在任何專案唯讀就算
   const roOf = (id, pj) => { const p = state.participants?.get(id); const hid = p?.memberType === 'ai' ? p.ownerParticipantId : id; return !!pj && (state.projMeta.readOnly?.[pj] || []).includes(hid); };
   const meRO = (pj = projectView()) => (PROJECTS.includes(pj) ? roOf(meId(), pj) : pj === 'cross' && PROJECTS.some(x => roOf(meId(), x)));
-  const myLeadProjects = () => (state.me ? PROJECTS.filter(pj => leadersOf(pj).includes(state.me.participantId)) : []);
+  const myLeadProjects = () => (state.me ? PROJECTS.filter(pj => projectAdminsOf(pj).includes(state.me.participantId)) : []);
   // PLAT-381：我當 leader 的專案（含已封存的，leader 能還原）
-  const myLeadRows = () => (state.me ? state.projectList.filter(p => (p.archived ? state.projMeta.archivedLeaders?.[p.id] || [] : leadersOf(p.id)).includes(state.me.participantId)) : []);
+  const myLeadRows = () => (state.me ? state.projectList.filter(p => (p.archived ? state.projMeta.archivedLeaders?.[p.id] || [] : projectAdminsOf(p.id)).includes(state.me.participantId)) : []);
   // 加入申請、技能核准交給 leader；管理員只在「專案沒有別的 leader」或「leader 超過 1 天沒處理」時才算自己的待處理
   const LEAD_GRACE = 24 * 3600 * 1000;
-  const otherLeads = pj => leadersOf(pj).filter(id => id !== state.me?.participantId);
-  const dueForMe = (pj, at) => !state.me ? false : leadersOf(pj).includes(state.me.participantId) || (isAdmin() && (!otherLeads(pj).length || Date.now() - Date.parse(at || 0) > LEAD_GRACE));
-  const leadLate = (pj, at) => !leadersOf(pj).includes(state.me?.participantId) && otherLeads(pj).length > 0 && Date.now() - Date.parse(at || 0) > LEAD_GRACE; // 管理員看到的：leader 超過 1 天沒處理
+  const otherLeads = pj => projectAdminsOf(pj).filter(id => id !== state.me?.participantId);
+  const dueForMe = (pj, at) => !state.me ? false : projectAdminsOf(pj).includes(state.me.participantId) || (isAdmin() && (!otherLeads(pj).length || Date.now() - Date.parse(at || 0) > LEAD_GRACE));
+  const leadLate = (pj, at) => !projectAdminsOf(pj).includes(state.me?.participantId) && otherLeads(pj).length > 0 && Date.now() - Date.parse(at || 0) > LEAD_GRACE; // 管理員看到的：leader 超過 1 天沒處理
   const leadNames = pj => otherLeads(pj).map(id => state.participants.get(id)?.name).filter(Boolean).join('、');
-  const leaderTag = (id, pj) => (leadersOf(pj).includes(id) ? '<span class="lead-tag" title="專案管理員">★ 專案管理員</span>' : '');
+  const projectAdminTag = (id, pj) => (projectAdminsOf(pj).includes(id) ? '<span class="lead-tag" title="專案管理員">★ 專案管理員</span>' : '');
   state.myAiCount = null;
   function drawAvatarMenu() {
     if (!state.me) return;
@@ -1544,8 +1544,8 @@
   // 不分專案的地方（名片、搜尋、沒有專案的訊息），管理員顯示「管理員」，不露出舊的跨專案角色
   const roleNoPj = p => (p?.memberType === 'human' && isAdmId(p.participantId) ? '管理員' : p?.role || '');
   // 工作區管理員看得到、管得了所有專案（隱含權限），但沒加入、也沒有職稱的專案不算成員（名單、人數、交接、@ 選人都不列）
-  const ghostAdmin = (p, pj) => { if (!p || p.memberType !== 'human' || !isAdmId(p.participantId) || !PROJECTS.includes(pj)) return false; const q = state.participants.get(p.participantId) || p; return !(q.memberProjects || []).includes(pj) && !q.projectRoles?.[pj]; };
-  const memberIn = (p, pj) => (p?.projects || []).includes(pj) && !ghostAdmin(p, pj);
+  const implicitOnlyAdmin = (p, pj) => { if (!p || p.memberType !== 'human' || !isAdmId(p.participantId) || !PROJECTS.includes(pj)) return false; const q = state.participants.get(p.participantId) || p; return !(q.memberProjects || []).includes(pj) && !q.projectRoles?.[pj]; };
+  const memberIn = (p, pj) => (p?.projects || []).includes(pj) && !implicitOnlyAdmin(p, pj);
   // ---------- 找人：成員與權限、@ 選人、我的 AI 共用 ----------
   // 比對名字、代號（AB12）、角色名稱與代碼（PG），不分大小寫；篩選在網頁做，不加讀取
   const findQ = q => (q || '').trim().toLowerCase();
@@ -1748,7 +1748,7 @@
   }
   const PAGE_NAME = { messages: '訊息', inbox: '要你處理', work: '工作', team: '團隊', files: '文件', myai: '我的 AI', perm: '成員管理', dm: '私訊', releases: '版本紀錄', help: L('說明', 'Help') }; // 私訊整頁；「說明」在字典是交接的「Notes」，說明頁自己給英文
   const pageNameOf = p => (p === 'perm' ? (state.permTab === 'admin' ? '管理員設定' : state.permTab === 'leadproj' ? '專案管理' : state.permTab === 'roster' ? '成員名冊' : '成員管理') : PAGE_NAME[p]); // 成員管理、管理員設定兩頁；成員名冊
-  const canSetProj = pj => PROJECTS.includes(pj) && (isAdmin() || leadersOf(pj).includes(meId())); // 專案卡 ⚙
+  const canSetProj = pj => PROJECTS.includes(pj) && (isAdmin() || projectAdminsOf(pj).includes(meId())); // 專案卡 ⚙
   const TOP_PAGES = { myai: '/my-ai', perm: '/members', releases: '/releases', help: '/help' }; // 第一層頁面（不分專案）：版本紀錄、說明等
   const isTop = p => p === 'myai' || p === 'releases' || p === 'help' || p === 'perm'; // perm：成員名冊所有人都能進（管理的分頁在 drawPerm 擋）
   const PROJ_COLORS = ['#0b6e8a', '#92400e', '#6d28d9', '#047857', '#be185d', '#1d4ed8'];
@@ -3769,7 +3769,7 @@
       const n = projStats(p), m = lastMsgOf(p);
       const st = (label, v, cls) => `<span class="hs${v && cls ? ' ' + cls : ''}${v ? '' : ' zero'}">${label}<b>${v}</b></span>`;
       return `<button type="button" class="hub-card" style="--pc:${projColor(p)}" data-proj="${esc(p)}" aria-label="進入 ${esc(projName(p))}">
-        <span class="hc-head">${projIcon(p, 44)}<span class="hc-name"><b>${esc(projName(p))}</b><span class="small">成員 ${projMembers(p)} · 最後動態 ${m ? whenText(m.createdAt) : '—'}${leadersOf(p).length ? ` · ★ leader：${esc(leadersOf(p).map(id => state.participants.get(id)?.name).filter(Boolean).join('、'))}` : ''}</span></span>${counts[p] ? `<span class="hc-todo">要你處理 ${counts[p]}</span>` : ''}</span>
+        <span class="hc-head">${projIcon(p, 44)}<span class="hc-name"><b>${esc(projName(p))}</b><span class="small">成員 ${projMembers(p)} · 最後動態 ${m ? whenText(m.createdAt) : '—'}${projectAdminsOf(p).length ? ` · ★ leader：${esc(projectAdminsOf(p).map(id => state.participants.get(id)?.name).filter(Boolean).join('、'))}` : ''}</span></span>${counts[p] ? `<span class="hc-todo">要你處理 ${counts[p]}</span>` : ''}</span>
         <span class="hc-stats">${st('今日完成', n.done)}${st('進行中', n.doing)}${st('受阻', n.blocked, 'bad')}${st('待驗收', n.verify, 'warn')}</span>
         <span class="hc-last">${m ? `最新：${esc(m.author.name)}「${esc(oneLine(m.text, 50))}」` : '最近 12 小時沒有新訊息'}</span>
         <span class="hc-go">進入 ›</span></button>`;
@@ -3965,8 +3965,8 @@
           return `<div class="sugg-row dm-note" id="fyi-${esc(n.notificationId)}" data-fyi="${ids}"><div class="sugg-main"><b>${n.sender.system ? '平台通知' : `${esc(n.sender.name)} 回你了`}${k > 1 ? ` <span class="pill-tag">${k} 則</span>` : ''}</b><span class="muted small">${esc(oneLine(n.sender.system ? dmGist(n.preview, true) : String(n.preview).replace(/^\[頭像提案 [^\]]+\]\s*/, '🖼 頭像提案：'), 80))} · ${k > 1 ? '最後一則 ' : ''}${agoText(n.createdAt)}</span></div>
           <div class="sugg-actions"><button type="button" class="btn small primary" data-dm-open="${esc(n.sender.participantId)}" data-dm-pj="${esc(n.project || '')}">打開私訊</button><button type="button" class="link small" data-dm-read="${ids}" title="不打開對話，直接從這裡清掉">${k > 1 ? `全部已讀（${k}）` : '已讀'}</button></div></div>`; }).join('')}</section>` : '';
     // PLAT-381「👑 你負責的專案」：自己專案的加入申請、技能核准；管理員看到的是沒有 leader 或 leader 超過 1 天沒處理的
-    const leadPjs = [...new Set([...joins.map(j => j.project), ...skRev.map(k => k.project)])].filter(pj => leadersOf(pj).includes(meId()));
-    const late = pj => !leadersOf(pj).includes(meId()) && otherLeads(pj).length ? `<span class="pill-tag yellow">專案管理員 ${esc(leadNames(pj))} 還沒處理</span> ` : ''; // 管理員看到的（已超過 1 天）
+    const leadPjs = [...new Set([...joins.map(j => j.project), ...skRev.map(k => k.project)])].filter(pj => projectAdminsOf(pj).includes(meId()));
+    const late = pj => !projectAdminsOf(pj).includes(meId()) && otherLeads(pj).length ? `<span class="pill-tag yellow">專案管理員 ${esc(leadNames(pj))} 還沒處理</span> ` : ''; // 管理員看到的（已超過 1 天）
     const joinSection = joins.length || skRev.length ? `
       <section class="wsugg wlead"><div class="wsugg-head"><span class="wdot"></span><h3>${leadPjs.length ? '👑 你管理的專案' : '🛡 專案待處理'}</h3><span class="wcount ora">${joins.length + skRev.length}</span></div>
         <p class="muted small wlead-note">${leadPjs.length ? `你是「${esc(leadPjs.map(projName).join('、'))}」的專案管理員，這些由你處理；超過 1 天沒處理，會提醒工作區管理員。` : '專案沒有專案管理員，或專案管理員超過 1 天沒處理的，會出現在這裡；你也可以直接處理。'}</p>
@@ -5276,7 +5276,7 @@
   async function dmEnable() {
     const pv = projectView(), can = isAdmin() || myLeadProjects().includes(pv);
     if (!can) {
-      const who = leadersOf(pv).map(id => state.participants.get(id)?.name).filter(Boolean);
+      const who = projectAdminsOf(pv).map(id => state.participants.get(id)?.name).filter(Boolean);
       return confirmDialog({ title: '私訊還沒開放', confirmText: '知道了', cancelText: '關閉', message: `「<b>${esc(projName(pv))}</b>」還沒開放私訊自己的 AI。請專案管理員${who.length ? ` <b>${esc(who.join('、'))}</b>` : ''}或工作區管理員 <b>${esc(state.projMeta.adminName || '')}</b> 打開。` });
     }
     const ok = await confirmDialog({ title: '打開私訊？', confirmText: '打開私訊', message: `打開後，「<b>${esc(projName(pv))}</b>」的成員可以在網頁、手機直接跟自己名下的 AI 講話。內容只有雙方看得到，你也看不到內容和數量。<br><span class="muted small">定案的事仍要寫回卡片。私訊存在平台資料庫，系統維護者技術上仍讀得到。之後可以在「管理員設定 › 專案 → ⋯」關掉。</span>` });
@@ -5721,7 +5721,7 @@
       return `<div class="mem-row">
         ${avatarDot(p)}
         <div class="mem-main">
-          <div class="mem-name"><b title="代號（AI 用來找你）：${esc(p.shortCode)}">${esc(p.name)}</b>${myProjects().includes(projectView()) ? leaderTag(p.participantId, projectView()) : ''}<span class="muted small">${esc(roleIn(p, projectView()))}</span></div>
+          <div class="mem-name"><b title="代號（AI 用來找你）：${esc(p.shortCode)}">${esc(p.name)}</b>${myProjects().includes(projectView()) ? projectAdminTag(p.participantId, projectView()) : ''}<span class="muted small">${esc(roleIn(p, projectView()))}</span></div>
           <div class="muted small">${esc(line2)}</div>
           ${p.duties ? `<div class="mem-duty muted small">${esc(p.duties)}</div>` : ''}
         </div>
@@ -6055,7 +6055,7 @@
   const HELP_TOURS = { 1: '讓你的 AI 加入', 2: '跟著走一遍', 6: '知識庫' }; // 章 → 說明框上的章名
   const HELP_TOUR_STEPS = { 1: 4, 2: 4, 6: 5 };
   // 第 6 章導覽只給 leader／管理員（一般成員不顯示入口）。用說明頁回去的那個專案，不是 leader 就找第一個是的
-  const kbTourOk = pj => PROJECTS.includes(pj) && myProjects().includes(pj) && (isAdmin() || leadersOf(pj).includes(meId()));
+  const kbTourOk = pj => PROJECTS.includes(pj) && myProjects().includes(pj) && (isAdmin() || projectAdminsOf(pj).includes(meId()));
   const kbTourProj = () => { const b = state.page === 'help' ? help.back : { view: state.view }; return b && kbTourOk(b.view) ? b.view : myProjects().find(kbTourOk); };
   // 說明目錄選「不會帶 AI」時，第 1 章入口變灰、寫「不帶 AI 可跳過」（還是可以按）
   const tourEntryHtml = n => {
@@ -9011,7 +9011,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   // 專案卡的 ⚙：管理員有改名、程式庫、成員；該專案 leader 只有成員與本專案角色；封存只在管理員設定 › 專案
   // PLAT-381：該專案 leader 也能改名、改程式庫，跟管理員一樣；封存不放 ⚙，只在專案管理頁的 ⋯（昱志 11/20、11/21 #6483 都選維持）
   function psetItems(pj) {
-    const admin = isAdmin(), lead = leadersOf(pj).includes(meId()), it = [];
+    const admin = isAdmin(), lead = projectAdminsOf(pj).includes(meId()), it = [];
     if (admin || lead) it.push(['rename', '✏️', '改名'], ['repo', '🔗', '程式庫與分支'], ['visibility', '👁', '專案可見度', esc(visName(projVisibility(pj)))]);
     it.push(['members', '👥', '成員與專案角色']);
     if (admin || lead) it.push(['kbai', '📚', '知識庫整理 AI', esc(kbAiNames[pj] || '')]); 
@@ -9145,7 +9145,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   // 專案角色（GLOSSARY）：專案管理員／專案成員／唯讀成員。人類可改就下拉（改了直接存）；工作區管理員有隱含權限，不用設；
   // AI 跟著所屬人類；剛加入、還沒存的人照加入方式顯示
   const PROJ_ROLE = { admin: '專案管理員', member: '專案成員', viewer: '唯讀成員' };
-  const projRoleOf = (id, pj) => (leadersOf(pj).includes(id) ? 'admin' : roOf(id, pj) ? 'viewer' : 'member');
+  const projRoleOf = (id, pj) => (projectAdminsOf(pj).includes(id) ? 'admin' : roOf(id, pj) ? 'viewer' : 'member');
   function pmProjRoleCell(p, pj, isNew) {
     if (isAdmId(p.participantId)) return '<span class="muted small" title="工作區管理員本來就能管所有專案">工作區管理員</span>';
     if (p.memberType !== 'human') return roOf(p.participantId, pj) ? '<span class="pill-tag ro-tag" title="主人在這個專案是唯讀成員，AI 跟著唯讀">👁 唯讀成員</span>' : '<span class="muted small">專案成員</span>';
