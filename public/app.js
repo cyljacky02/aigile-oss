@@ -3842,9 +3842,9 @@
         .finally(() => { hubJoin.at = Date.now(); hubJoin.loading = false; if (state.page === 'hub') renderWork(); });
     }
     const list = hubJoin.items;
-    const row = p => `<div class="hub-join-row">${joinIcon(p)}<div class="jl-main"><b>${esc(p.name)}</b><div class="muted small">${joinMeta(p)}</div></div>${p.status === 'pending' ? '<span class="join-wait"><span class="pill-tag yellow">審核中</span><span class="muted small">核准後會自動更新</span></span>' : `<button type="button" class="btn primary small" data-join-open="${esc(p.id)}">申請加入</button>`}</div>`;
-    const rows = !list ? '<p class="muted small">載入可以申請的專案…</p>' : list.length ? list.map(row).join('') : '<p class="muted small">目前沒有開放申請的專案，請群組管理員把你加入專案。</p>';
-    return `<section class="hub-empty hub-joinable" aria-label="可以申請的專案"><p>你還沒有加入任何專案。下面是開放申請的專案，送出申請後由 leader 或管理員核准；核准後這裡就會出現專案。</p>${rows}</section>`;
+    const row = p => `<div class="hub-join-row">${joinIcon(p)}<div class="jl-main"><b>${esc(p.name)}</b><div class="muted small">${joinMeta(p)}</div></div>${p.status === 'pending' ? '<span class="join-wait"><span class="pill-tag yellow">審核中</span><span class="muted small">核准後會自動更新</span></span>' : p.visibility === 'open' ? joinNowBtn(p) : `<button type="button" class="btn primary small" data-join-open="${esc(p.id)}">申請加入</button>`}</div>`; // 開放專案直接加入
+    const rows = !list ? '<p class="muted small">載入可以申請的專案…</p>' : list.length ? list.map(row).join('') : '<p class="muted small">目前沒有可以加入的專案，請專案管理員或工作區管理員把你加入專案。</p>';
+    return `<section class="hub-empty hub-joinable" aria-label="可以申請的專案"><p>你還沒有加入任何專案。下面是你可以加入的專案：開放的專案按「加入」就好；審核的專案送出申請，由專案管理員核准。加入後這裡就會出現專案。</p>${rows}</section>`;
   }
   const hubTodoItems = () => todoItems(); // 跟數字同一個來源
   function hubTodoHtml(inModal = false) {
@@ -7396,6 +7396,32 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       } catch (err) { body.querySelector('#repo-err').textContent = err.message; }
     });
   }
+  // 專案可見度（開放／審核／私人）：專案管理員與工作區管理員能改（PUT /api/projects/:id/visibility）
+  const VISIBILITY = [['open', '開放專案', '工作區成員都看得到，可以直接加入成為專案成員'], ['review', '審核專案', '工作區成員看得到，送出加入申請、由專案管理員核准'],
+    ['private', '私人專案', '只有專案成員看得到；其他人在專案清單、搜尋都找不到它，只能由專案管理員加人']];
+  const visName = v => (VISIBILITY.find(x => x[0] === v) || VISIBILITY[1])[1];
+  const projVisibility = pj => state.projectList.find(x => x.id === pj)?.visibility || 'review';
+  function openVisibilityEditor(pj) {
+    const p = state.projectList.find(x => x.id === pj);
+    if (!p) return;
+    const cur = p.visibility || 'review';
+    const body = openModal(`專案可見度 · ${p.name}`, `<form id="vis-form" class="stack">
+        <div class="vis-list" role="radiogroup" aria-label="專案可見度">${VISIBILITY.map(([v, t, sub]) => `<label class="vis-opt"><input type="radio" name="visibility" value="${v}"${v === cur ? ' checked' : ''}><span><b>${t}</b><span class="muted small">${sub}</span></span></label>`).join('')}</div>
+        <p class="muted small">已經在專案裡的人不受影響；工作區管理員一定看得到。</p>
+        <p class="error" id="vis-err" role="alert"></p>
+      </form>`, { size: 'narrow', foot: '<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="vis-form">儲存</button>' });
+    body.querySelector('#vis-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const visibility = e.target.visibility.value;
+      try {
+        await api(`/api/projects/${encodeURIComponent(pj)}/visibility`, { method: 'PUT', body: { visibility } });
+        closeModal();
+        await loadProjectList().catch(() => {});
+        drawPerm();
+        toast(`「${p.name}」的可見度改成${visName(visibility)}`);
+      } catch (err) { body.querySelector('#vis-err').textContent = err.message; }
+    });
+  }
 
   // 角色範本：常用的排前面，其餘收進「其他角色」群組（只是選單分組，角色定義不變；既有成員的角色照常顯示已選）
   const COMMON_ROLES = ['PO', 'SM', 'BA', 'UX', 'PG', 'QA', 'TRY', 'custom'];
@@ -8950,7 +8976,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   // PLAT-381：該專案 leader 也能改名、改程式庫，跟管理員一樣；封存不放 ⚙，只在專案管理頁的 ⋯（昱志 11/20、11/21 #6483 都選維持）
   function psetItems(pj) {
     const admin = isAdmin(), lead = leadersOf(pj).includes(meId()), it = [];
-    if (admin || lead) it.push(['rename', '✏️', '改名'], ['repo', '🔗', '程式庫與分支']);
+    if (admin || lead) it.push(['rename', '✏️', '改名'], ['repo', '🔗', '程式庫與分支'], ['visibility', '👁', '專案可見度', esc(visName(projVisibility(pj)))]);
     it.push(['members', '👥', '成員與專案角色']);
     if (admin || lead) it.push(['kbai', '📚', '知識庫整理 AI', esc(kbAiNames[pj] || '')]); 
     return it;
@@ -8978,6 +9004,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (k === 'kbai') return kbAiSetting(pj);
       if (k === 'members') return openPermTab('members', { tab: 'members', memView: 'byProject', selProj: pj, mobileDetail: true, pq: '' });
       if (k === 'repo') return openRepoEditor(pj);
+      if (k === 'visibility') return openVisibilityEditor(pj);
       if (k === 'rename') {
         const name = await promptName('改專案名稱', projName(pj));
         if (!name || name === projName(pj)) return;
@@ -9305,6 +9332,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="code">專案代號…<span class="pm-sub">${esc(p.code || '')}-1、${esc(p.code || '')}-2…</span></button>
           <button type="button" role="menuitem" data-pm-repo="${esc(p.id)}">程式庫設定</button>
           <button type="button" role="menuitem" data-pp="statuses">看板狀態…<span class="pm-sub">${(p.statuses || []).length} 個</span></button>
+          <button type="button" role="menuitem" data-pp="visibility">專案可見度…<span class="pm-sub">${esc(visName(p.visibility))}</span></button>
           <button type="button" role="menuitem" data-pp="dm">${p.dm?.on ? '關閉私訊…' : '開放成員私訊自己的 AI…'}<span class="pm-sub">${p.dm?.on ? `已開放${p.dm.at ? ' · ' + esc(mmdd(p.dm.at)) : ''}${p.dm.byName ? ' ' + esc(p.dm.byName) + ' 打開' : ''}` : '預設關'}</span></button>
           <button type="button" role="menuitem" data-pp="log">異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>封存…${blocked ? `<span class="pm-sub">${esc(why)}</span>` : ''}</button></div>` : '';
@@ -9328,6 +9356,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const menu = perm.moreOpen === p.id ? `<div class="pm-more-menu" role="menu" aria-label="${esc(p.name)} 的動作" data-pj="${esc(p.id)}">
           <button type="button" role="menuitem" data-pp="rename">✏️ 改名</button>
           <button type="button" role="menuitem" data-pm-repo="${esc(p.id)}">🔗 程式庫與分支</button>
+          <button type="button" role="menuitem" data-pp="visibility">👁 專案可見度<span class="pm-sub">${esc(visName(p.visibility))}</span></button>
           <button type="button" role="menuitem" data-pp="members">👥 成員與專案角色</button>
           <button type="button" role="menuitem" data-pp="statuses">🗂 看板狀態<span class="pm-sub">${(p.statuses || []).length} 個</span></button>
           <button type="button" role="menuitem" data-pp="log">🕘 異動紀錄</button>
@@ -9640,22 +9669,34 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   const approverOf = p => (p.leaders.length ? L('leader：', 'Lead: ') + esc(p.leaders.map(shownName).join(L('、', ', '))) : p.admin ? L('核准：', 'Lead: ') + esc(shownName(p.admin)) : ''); // 英文：Lead: Admin
   const joinMeta = p => [p.note ? esc(p.note) : '', approverOf(p), `${p.members} 人`].filter(Boolean).map(x => `<span>${x}</span>`).join(' · ');
   const joinIcon = p => `<span class="pico" style="--pc:#0f766e;--psz:34px" aria-hidden="true">${esc(firstChar(p.name))}</span>`;
+  // 開放專案（專案可見度）：「加入」直接成為專案成員；審核專案是「申請加入」
+  const joinNowBtn = p => `<button type="button" class="btn primary small" data-join-now="${esc(p.id)}">加入</button>`;
+  async function joinNow(pj, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      await api(`/api/projects/${encodeURIComponent(pj)}/join`, { method: 'POST' });
+      const name = (hubJoin.items || []).find(x => x.id === pj)?.name || btn?.closest('.jl-row, .hub-join-row')?.querySelector('b')?.textContent || '';
+      if (btn?.closest('#modal-root .modal')) closeModal();
+      await onJoinDecided({ name, status: 'approved' });
+    } catch (err) { if (btn) btn.disabled = false; toast(err.message); }
+  }
+  document.addEventListener('click', e => { const b = e.target.closest?.('[data-join-now]'); if (b) joinNow(b.dataset.joinNow, b); });
   // 同仁：可以申請的專案
   async function openJoinList(only = null) {
-    const body = openModal('申請加入專案', '<div id="jl" class="jl"><p class="muted small">載入中…</p></div>', { size: 'narrow', sub: '只列開放申請的專案。' }); // 核准的說明在送出按鈕下面，不重複
+    const body = openModal('申請加入專案', '<div id="jl" class="jl"><p class="muted small">載入中…</p></div>', { size: 'narrow', sub: '開放的專案可以直接加入；審核的專案送出申請，由專案管理員核准。' }); // 核准的說明在送出按鈕下面，不重複
     let items = [], formFor = only;
     const draw = () => {
       const box = body.querySelector('#jl');
       if (!box) return;
       box.innerHTML = items.length ? items.map(p => `<div class="jl-row">${joinIcon(p)}<div class="jl-main"><b>${esc(p.name)}</b>
           <div class="muted small">${joinMeta(p)}</div></div>
-          ${p.status === 'pending' ? '<span class="join-wait"><span class="pill-tag yellow">審核中</span><span class="muted small">核准後會自動更新</span></span>' : formFor === p.id ? '' : `<button type="button" class="btn primary small" data-jl-apply="${esc(p.id)}">申請</button>`}</div>
+          ${p.status === 'pending' ? '<span class="join-wait"><span class="pill-tag yellow">審核中</span><span class="muted small">核准後會自動更新</span></span>' : p.visibility === 'open' ? joinNowBtn(p) : formFor === p.id ? '' : `<button type="button" class="btn primary small" data-jl-apply="${esc(p.id)}">申請加入</button>`}</div>
         ${formFor === p.id ? `<form class="jl-form" data-jl-form="${esc(p.id)}"><b>申請加入${esc(p.name)}</b>
           ${p.lastRejected ? `<div class="jl-last">上次被拒：${esc(p.lastRejected.reason)}</div>` : ''}
           <textarea id="jl-note" maxlength="200" rows="2" placeholder="想做什麼（選填）：例：我想幫忙做手機畫面" aria-label="想做什麼（選填）"></textarea>
           <div class="jl-acts"><button type="button" class="btn" data-jl-cancel>取消</button><button type="submit" class="btn primary">送出申請</button></div>
           <span class="muted small">送出後要 leader 或管理員核准，結果會通知你。</span></form>` : ''}`).join('')
-        : '<p class="muted">目前沒有開放申請的專案。要加入某個專案，請找那個專案的 leader 或群組管理員。</p>';
+        : '<p class="muted">目前沒有可以加入的專案。要加入某個專案，請找那個專案的專案管理員或工作區管理員。</p>';
       body.querySelector('#jl-note')?.focus();
     };
     body.addEventListener('click', e => {
@@ -9993,6 +10034,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (a === 'noop') { drawPerm(); return toast('只有管理員能永久刪除專案'); } // PLAT-381
     if (a === 'members') return psetAct('members', id);
     if (a === 'statuses') { drawPerm(); return openStatusEditor(id); }
+    if (a === 'visibility') { drawPerm(); return openVisibilityEditor(id); }
     if (a === 'groupname') {
       const name = $('#pm-group-name').value.trim();
       if (!name) return toast('請輸入工作區名稱');
