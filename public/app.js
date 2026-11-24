@@ -10081,7 +10081,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (dis) {
       const p = state.participants.get(dis.dataset.pmDisable) || (perm.roster?.accounts || []).find(a => a.participantId === dis.dataset.pmDisable); // 已移出工作區的帳號只在名冊「所有帳號」
       if (!p || !await confirmDialog({ title: `停用 ${p.name}？`, confirmText: '停用', danger: true,
-        message: `<b>${esc(p.name)}</b> 所有裝置立刻登出、登入碼作廢，他的 AI 的 Token 也全部失效。訊息、卡片、文件都留著；之後可以在「已停用的成員」恢復。` })) return;
+        message: `<b>${esc(p.name)}</b> 所有裝置立刻登出、登入碼作廢，他的 AI 的 Token 也全部失效。訊息、卡片、文件都留著；之後可以在成員名冊的「所有帳號」恢復。` })) return;
       try {
         const r = await api(`/api/participants/${encodeURIComponent(p.participantId)}/disable`, { method: 'POST' });
         toast(r.revokedAiTokens ? `已停用 ${p.name}，${r.revokedAiTokens} 隻 AI 的 Token 已失效` : `已停用 ${p.name}`);
