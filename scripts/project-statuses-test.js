@@ -17,14 +17,16 @@ const db = await openTestDb(path.join(dataDir, 'switch.db'));
 // 模擬同時有人改卡：beforeStatusDelete 在刪除狀態的交易開始前執行一次
 // beforeCardWrite 在下一次寫卡片（UPDATE／INSERT cards）之前執行一次（模擬讀完狀態清單、還沒寫進去時狀態被刪）
 // beforeStatusInit 在下一次補預設狀態組之前執行一次（模擬初始化慢了一步）
-let failStatusDelete = false, beforeStatusDelete = null, beforeCardWrite = null, beforeStatusInit = null;
+// beforeStatusAdd 在下一次新增狀態（INSERT INTO project_statuses）之前執行一次（模擬讀完狀態清單、還沒寫進去時有人也新增了一個）
+let failStatusDelete = false, beforeStatusDelete = null, beforeCardWrite = null, beforeStatusInit = null, beforeStatusAdd = null;
 const STATUS_DELETE = /^DELETE FROM project_statuses WHERE id\b/, CARD_WRITE = /^\s*(UPDATE cards SET|INSERT INTO cards)\b/;
 const isStatusDelete = sql => failStatusDelete && STATUS_DELETE.test(sql);
 const cardWriteHook = async sqls => { if (beforeCardWrite && sqls.some(q => CARD_WRITE.test(q))) { const f = beforeCardWrite; beforeCardWrite = null; await f(); } };
+const statusAddHook = async sqls => { if (beforeStatusAdd && sqls.some(q => /^INSERT INTO project_statuses\b/.test(q))) { const f = beforeStatusAdd; beforeStatusAdd = null; await f(); } };
 const appDb = { ...db,
-  run: async (sql, ...args) => { await cardWriteHook([sql]); if (isStatusDelete(sql)) throw new Error('模擬寫入失敗'); return db.run(sql, ...args); },
+  run: async (sql, ...args) => { await cardWriteHook([sql]); await statusAddHook([sql]); if (isStatusDelete(sql)) throw new Error('模擬寫入失敗'); return db.run(sql, ...args); },
   batch: async stmts => {
-    await cardWriteHook(stmts.map(([sql]) => sql));
+    await cardWriteHook(stmts.map(([sql]) => sql)); await statusAddHook(stmts.map(([sql]) => sql));
     if (beforeStatusInit && stmts.some(([sql]) => /^INSERT OR IGNORE INTO project_statuses\b/.test(sql))) { const f = beforeStatusInit; beforeStatusInit = null; await f(); }
     if (beforeStatusDelete && stmts.some(([sql]) => STATUS_DELETE.test(sql))) { const f = beforeStatusDelete; beforeStatusDelete = null; await f(); }
     return db.batch(stmts.map(([sql, args]) => (isStatusDelete(sql) ? ['SELECT x FROM no_such_table', []] : [sql, args])));
@@ -395,6 +397,18 @@ try {
     const c = ok(await mkCard(boss.token, { status: '開發中' }), '卡');
     beforeCardWrite = async () => { throw Object.assign(new Error('deadlock detected'), { code: '40P01' }); };
     assert.equal(fail(await patchCard(c.cardId, { status: '已完成' }), 409, 'deadlock').error.code, 'CONFLICT');
+  }
+
+  // 23) 已有 11 個狀態時兩個人同時新增：各自讀到的清單都只有 11 個，但後做完的那個要 409，不能超過 12 個
+  {
+    const eleven = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(name => ({ name, category: '進行中' })).concat([{ name: '待', category: '待處理' }, { name: '完', category: '已完成' }, { name: '卡住', category: '受阻' }]);
+    const r = ok(await call(boss.token, '/api/projects', 'POST', { name: '同時新增', statuses: eleven }), '建專案');
+    const PJ = encodeURIComponent(r.id);
+    beforeStatusAdd = async () => ok(await add({ name: '第十二', category: '進行中' }, boss.token, PJ), '另一個人先新增');
+    assert.equal(fail(await add({ name: '第十三', category: '進行中' }, boss.token, PJ), 409, '後做完的新增').error.code, 'CONFLICT');
+    assert.equal(beforeStatusAdd, null, '真的有同時新增');
+    const names = (await statuses(PJ)).map(s => s.name);
+    assert.equal(names.length, 12, '最多 12 個狀態'); assert.ok(names.includes('第十二') && !names.includes('第十三'));
   }
 
   console.log('project-statuses-test：全部通過');

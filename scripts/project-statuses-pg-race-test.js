@@ -65,7 +65,7 @@ try {
   const del = (id, body = {}) => () => call(boss.token, `/api/projects/${P}/statuses/${id}`, 'DELETE', body);
   const getCard = async id => ok(await call(boss.token, `/api/cards/${id}`), '讀卡');
   const fresh = async name => { const r = ok(await call(boss.token, '/api/projects', 'POST', { name }), '建專案'); pj = r.id; P = encodeURIComponent(pj); await items(); };
-  const DELETE_DONE = /^INSERT INTO project_events\b/; // 刪除／改類別交易的最後一句（檢查完、還沒提交）
+  const DELETE_DONE = /^INSERT INTO project_events\b/; // 新增／刪除／改類別交易的最後一句（檢查完、還沒提交）
 
   // 1) 先刪狀態（停在提交前），同時有人把卡改到那個狀態：改卡片要等刪除做完，然後回 409 STATUS_DELETED
   {
@@ -161,6 +161,18 @@ try {
     assert.ok(blocked, '第二個刪除要等第一個做完');
     assert.equal(r2.status, 409, '第二個刪除：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'CONFLICT');
     assert.deepEqual((await items()).filter(s => s.category === '待處理').map(s => s.name), ['待處理二'], '待處理類別還有狀態');
+  }
+
+  // 8) 已有 11 個狀態時兩個人同時新增（第一個停在提交前）：第二個要等第一個做完，然後回 409，最多 12 個狀態
+  {
+    await fresh('競態八');
+    for (let i = (await items()).length; i < 11; i++) await add('狀態' + i, '進行中');
+    const addCall = name => () => call(boss.token, `/api/projects/${P}/statuses`, 'POST', { name, category: '進行中' });
+    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: addCall('第十二'), second: addCall('第十三'), secondSql: '%UPDATE projects%' });
+    assert.equal(r1.status, 201, '第一個新增：' + JSON.stringify(r1.body).slice(0, 200));
+    assert.ok(blocked, '第二個新增要等第一個做完');
+    assert.equal(r2.status, 409, '第二個新增：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'CONFLICT');
+    assert.equal((await items()).length, 12, '最多 12 個狀態');
   }
 
   console.log('project-statuses-pg-race-test：全部通過');

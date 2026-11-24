@@ -157,10 +157,10 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
   const cardsIn = sid => db.all(`SELECT * FROM cards WHERE status_id = ? AND status != '${ARCHIVED}' ORDER BY seq`, sid);
   const event = (pj, me, text) => (projEvent ? db.batch([projEvent(pj, me.id, `${me.name} ${text}`, nowIso())]) : null);
   const keys = rows => rows.slice(0, 20).map(c => cardKey(c)).filter(Boolean);
-  // 刪除、改類別的交易第一句：鎖住專案那一列，同一個專案的這類修改一次一個（Postgres；SQLite／D1 本來就一次一個交易）
+  // 新增、刪除、改類別的交易第一句：鎖住專案那一列，同一個專案的這類修改一次一個（Postgres；SQLite／D1 本來就一次一個交易）
   const lockProject = pj => ['UPDATE projects SET name = name WHERE id = ?', [pj]];
   // 交易的最後一句：寫專案異動紀錄兼檢查。條件 ok（p.id 是專案）不成立時 project_id 是 NULL、違反 NOT NULL，整個交易回復。
-  // 這一句看的是最新的資料：寫卡片時對狀態拿著列鎖（LOCK_STATUS），刪除、改類別會等它們做完；同專案的刪除、改類別又被 lockProject 排隊
+  // 這一句看的是最新的資料：寫卡片時對狀態拿著列鎖（LOCK_STATUS），刪除、改類別會等它們做完；同專案的新增、刪除、改類別又被 lockProject 排隊
   const eventIf = (pj, me, text, at, ok, args) => [`INSERT INTO project_events (project_id, at, actor_id, text) VALUES ((SELECT p.id FROM projects p WHERE p.id = ? AND ${ok}),?,?,?)`,
     [pj, ...args, at, me.id, `${me.name} ${text}`]];
   const catHas = 'EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.project = p.id AND ps.category = ?)'; // 這個專案的類別 ? 還有狀態
@@ -179,8 +179,10 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
     const list = book.list(pj);
     checkStatusList([...list, { name, category }], invalid);
     const position = list.reduce((m, s) => Math.max(m, s.position), -1) + 1;
-    await db.run('INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', pj, name, category, position, color);
-    await event(pj, me, `新增看板狀態「${name}」（${category}）`);
+    // 新增跟異動紀錄同一個交易，最後一句兼檢查加完還沒超過上限（上面讀到的清單可能已經過時：同時有人也在新增）
+    const ok = `(SELECT COUNT(*) FROM project_statuses ps WHERE ps.project = p.id) <= ${STATUS_LIMITS.max}`;
+    try { await db.batch([lockProject(pj), ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [pj, name, category, position, color]], eventIf(pj, me, `新增看板狀態「${name}」（${category}）`, nowIso(), ok, [])]); }
+    catch (e) { throw raced(e) ? conflict() : e; }
     return { __status: 201, ...(await reply(ctx, pj)) };
   });
 
