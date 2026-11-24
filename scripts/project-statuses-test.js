@@ -229,6 +229,7 @@ try {
   {
     const three = [{ name: 'Todo', category: '待處理' }, { name: 'Doing', category: '進行中' }, { name: 'Done', category: '已完成', color: 'blue' }];
     fail(await call(boss.token, '/api/projects', 'POST', { name: '缺完成', statuses: three.slice(0, 2).concat({ name: 'X', category: '待處理' }) }), 400, '缺必要類別');
+    ok(await call(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' }), '工作區設定：只有管理員能建立專案');
     fail(await call(member.token, '/api/projects', 'POST', { name: '非管理員', statuses: three }), 403, '只有管理員建專案');
     const r = ok(await call(boss.token, '/api/projects', 'POST', { name: '精簡專案', statuses: three }), '建專案');
     const pj = r.items.find(p => p.id === r.id);

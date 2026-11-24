@@ -84,6 +84,8 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     [`INSERT OR IGNORE INTO project_members (project_id, participant_id, role) SELECT json_extract(value, '$.p'), json_extract(value, '$.id'), '${role}' FROM json_each(?)`, [rowsOf(map)]],
   ];
   const setLeadersStmts = map => setRoleStmts(map, PR.ADMIN);
+  // 某人在某專案設成專案管理員（不在專案就以專案管理員加入）：建立專案的人用
+  const makeProjectAdminStmts = (id, pj) => [[`INSERT INTO project_members (project_id, participant_id, role) VALUES (?, ?, '${PR.ADMIN}') ON CONFLICT(project_id, participant_id) DO UPDATE SET role = excluded.role`, [pj, id]]];
 
   // ---------- 單一成員的專案角色（專案成員端點） ----------
   // roleOf：快照裡 id 在 pj 的專案角色（不在專案回 null；AI 一律 member，唯讀跟著所屬人類看 isReadOnly）
@@ -235,6 +237,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
 
   return { projectsOf, allProjectsOf, setProjectsStmts,
     loadLeaders, leadersOf, leaderProjectsOf, setLeadersStmts, roleOf, addMemberStmts, setMemberRoleStmts,
+    makeProjectAdminStmts,
     loadReadOnly, isReadOnlyHuman, isReadOnly, readOnlyProjectsOf, readOnlyOf, setReadOnlyStmts, addReadOnly,
     fetchProjectsOf, fetchMembersOf, removeProjectStmts,
     enterWorkspaceStmts, syncAdminStmts, accountStatusStmts, forgetStmts, migrateLegacy,

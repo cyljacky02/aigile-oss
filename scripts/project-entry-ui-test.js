@@ -125,6 +125,12 @@ try {
   await until(() => js("!!document.querySelector('.proj-switch .ph-card')"), 8000, '第二專案');
   assert.ok(!(await js("!!document.querySelector('.proj-switch [data-pset]')")), '不是 leader 的專案沒有齒輪');
   await click('.proj-switch .ps-btn'); await sleep(100);
+  // 工作區設定「所有成員」（新安裝預設）：清單有新增專案，但沒有管理專案（只有管理員）
+  assert.equal(await js("[...document.querySelectorAll('.proj-switch:not(.sheet-proj) .ps-list [data-ps-act]')].map(b => b.textContent.trim()).join('|')"), '＋ 新增專案', '所有成員能建專案：leader 清單只有新增專案');
+  assert.equal((await kit.call(liu.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' })).status, 200, '工作區設定改成只有管理員能建立專案');
+  await login(wang.token, '/p/second/messages');
+  await until(() => js("!!document.querySelector('.proj-switch .ph-card')"), 8000, '第二專案（只有管理員能建專案）');
+  await click('.proj-switch .ps-btn'); await sleep(100);
   assert.ok(!(await js("!!document.querySelector('.proj-switch [data-ps-act]')")), 'leader 的清單沒有新增專案');
   // 一般成員：沒有齒輪、手機選單沒有新增專案
   await login(chen.token, '/p/main/messages');
@@ -146,7 +152,7 @@ try {
   assert.match(av, /perm=👥Member managementmembers, roles, skills/, '英文頭像選單：' + av);
   await click('#av-menu [data-av="pm-projects"]');
   await until(() => js("!!document.querySelector('.adm-main .pm-ptable')"), 8000, '英文管理員設定 › 專案');
-  assert.match(await text('.adm-nav'), /To do[\s\S]*Group settings[\s\S]*Accounts & recovery[\s\S]*Audit & storage[\s\S]*System & backup/, '英文左側目錄：' + await text('.adm-nav'));
+  assert.match(await text('.adm-nav'), /To do[\s\S]*Workspace settings[\s\S]*Accounts & recovery[\s\S]*Audit & storage[\s\S]*System & backup/, '英文左側目錄：' + await text('.adm-nav'));
   assert.match(await crumbs(), /Admin settings/, '英文麵包屑：' + await crumbs());
   console.log('project-entry-ui-test：全部通過');
 } catch (e) {
