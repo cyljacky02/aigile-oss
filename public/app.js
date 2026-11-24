@@ -9673,7 +9673,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (admin && perm.tab === 'leadproj') Object.assign(perm, { tab: 'admin', adm: 'projects' }); // 管理員的專案管理在管理員設定
     const lead = myLeadProjects().length > 0, manager = admin || lead; // 一般成員只有成員名冊
     if (!manager && perm.tab !== 'roster') perm.tab = 'roster';
-    else if (!admin && !['roster', 'roles', 'skills', ...(myLeadRows().length ? ['leadproj'] : [])].includes(perm.tab)) perm.tab = 'members'; // leader 有名冊、成員、AI 職務、技能分頁；PLAT-381 加專案管理
+    else if (!admin && !['roster', 'roles', 'skills', ...(myLeadRows().length ? ['leadproj'] : [])].includes(perm.tab)) perm.tab = 'members'; // 專案管理員有名冊、成員、AI 職務、技能分頁，再加專案管理
     const onAdm = perm.tab === 'admin', onLead = perm.tab === 'leadproj', onRoster = perm.tab === 'roster';
     if (!onAdm && !onLead) perm.lastMemTab = perm.tab;
     if (state.permTab !== perm.tab) { state.permTab = perm.tab; drawChrome(); }
