@@ -236,7 +236,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   archived INTEGER NOT NULL DEFAULT 0,
   workspace_id TEXT,                   -- 所屬工作區（migrations/008）
-  visibility TEXT NOT NULL DEFAULT 'review', -- 專案可見度：open | review | private（第一階段一律 review，尚未生效）
+  visibility TEXT NOT NULL DEFAULT 'review', -- 專案可見度：open（開放，工作區成員直接加入）| review（審核，申請後核准；預設）| private（私人，只有專案成員與有隱含權限的人看得到）
   created_by TEXT,
   created_at TEXT NOT NULL
 );
