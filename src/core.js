@@ -1850,7 +1850,8 @@ ${ending}`;
 
   // 單人：人人可看自己的專案；只有管理員能改（起一般成員不能自己加入）
   route('PUT', '/api/participants/:id/projects', async ({ ctx, me, req, params }) => {
-    await access.check(ctx, me, 'assign_members', 'workspace');
+    const v = await access.check(ctx, me, 'assign_members', 'workspace');
+    memberTarget(v, params.id); // 跟專案成員端點一樣：只有工作區成員（已移出、停用的不行）
     const body = await readJson(req);
     const impact = await applyMembership(ctx, me, [{ id: params.id, projects: body.projects }], { dryRun: body.dryRun === true });
     if (body.dryRun === true) return { dryRun: true, impact };
@@ -3023,6 +3024,7 @@ ${ending}`;
       ["UPDATE participants SET workspace_status = 'removed', updated_at = ?, version = version + 1 WHERE id = ? AND workspace_role = 'member'", [at, t.id]],
       ...await Promise.all(ais.map(async a => ["UPDATE participants SET status = 'disabled', workspace_status = 'removed', token = ?, token_expires_at = 1, updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')",
         [await tokenKey(newToken()), at, a.id, t.id]])),
+      ["DELETE FROM join_requests WHERE participant_id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')", [t.id, t.id]], // 還在審核的加入申請一併清掉
     ]);
     invalidatePeople();
     const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);

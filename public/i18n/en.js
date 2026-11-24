@@ -3171,6 +3171,7 @@ window.AIGILE_EN = {
     "預設專案（專案角色、職稱）": "Preset projects (project role, title)",
     "已邀請回來": "Invited back",
     "請確認專案角色": "Check project role",
+    "{0} 已經不是工作區成員，不能加入專案；請拒絕這個申請。": "{0} is no longer a workspace member and can't join the project. Please reject this request.",
     "升級前在「{0}」同時是專案管理員又是唯讀，先設為唯讀成員；要讓他管理專案，請在專案成員把他升為專案管理員": "Before the upgrade they were both project admin and read-only in {0}, so they were kept as a viewer. To let them manage the project, make them a project admin in Project members",
     "已移出工作區的人進不來，歷史紀錄與名字保留；要他回來，在「管理員設定 › 邀請」用同一個名字邀請他（用原本的帳號回來）。": "People removed from the workspace can't get in. Their history and name are kept. To bring someone back, invite them under the same name in Admin settings › Invites (they return with their old account).",
     "成員名冊": "Member directory",
