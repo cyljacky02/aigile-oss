@@ -49,7 +49,7 @@ try {
   const av = await avItems();
   assert.match(av, /admin=⚙️管理員設定2/, 'A 管理員設定帶待處理 2：' + av);
   assert.match(av, /pm-projects=📁專案管理新增、改名、封存/, 'A 有專案管理：' + av);
-  assert.match(av, /perm=👥成員管理成員、角色、技能/, 'A 有成員管理：' + av);
+  assert.match(av, /perm=👥成員管理成員、AI 職務、技能/, 'A 有成員管理：' + av);
   await shot('1-電腦-頭像選單');
   await click('#av-menu [data-av="pm-projects"]');
   await until(() => js("!!document.querySelector('.adm-nav') && location.pathname === '/admin/projects'"), 8000, '專案管理開管理員設定 › 專案');
@@ -92,7 +92,7 @@ try {
   assert.ok(await js("!!document.querySelector('[data-pm-newproj]') && !!document.querySelector('[data-pm-more]')"), '專案：新增、⋯ 都在');
   assert.ok(await js("[...document.querySelectorAll('.pm-ptable .c-pname b')].every(b => b.getBoundingClientRect().height < 24)"), '專案名稱不換行');
   await shot('4-電腦-專案');
-  await sec('accounts', '.adm-acc [data-pm-cross]');
+  await sec('accounts', '.adm-acc [data-pm-reset]');
   const acc = await J("({ reset: document.querySelectorAll('.adm-acc [data-pm-reset]').length, dis: document.querySelectorAll('.adm-acc [data-pm-disable]').length, adm: document.querySelectorAll('.adm-acc [data-pm-admin]').length, rescue: document.querySelector('#adm-rescue')?.innerText || '' })");
   assert.deepEqual([acc.reset, acc.dis, acc.adm], [2, 2, 2], '帳號與救援：自己以外的人類有重設登入、停用、交接管理員');
   assert.match(acc.rescue, /APP_URL=https:\/\/你的網址 npm run admin-rescue[\s\S]*npm run admin-rescue -- --local[\s\S]*DATABASE_URL/, '救援指令：Cloudflare、本機／Docker、Postgres');
@@ -108,11 +108,7 @@ try {
   await shot('7-電腦-系統與備份');
   await login(liu.token, '/admin/accounts');
   await until(() => js("!!document.querySelector('.adm-nav [data-adm=\"accounts\"].sel')"), 8000, '重新整理停在帳號與救援');
-  // 跨專案角色：跟其他變更一起儲存（下面變更列）
-  await click(`.adm-acc [data-pm-cross="${id(chen)}"]`);
-  await until(() => js("!document.querySelector('#pm-bar').hidden"), 5000, '變更列出現');
-  assert.match(await js("document.querySelector('#pm-bar').innerText"), /陳大文[\s\S]*檢查並儲存/, '下方出現「檢查並儲存」');
-  await click('[data-pm-act="undo"]');
+  assert.ok(await js("!document.querySelector('.adm-acc [data-pm-cross]') && !/跨專案角色/.test(document.querySelector('.adm-main').innerText)"), '帳號與救援沒有跨專案角色（#11 已取消）');
   // 停用 → 已停用的成員出現在帳號與救援
   assert.equal((await call(liu.token, `/api/participants/${id(chen)}/disable`, 'POST', {})).status < 300, true, '停用陳大文');
   await login(liu.token, '/admin/accounts');
@@ -121,7 +117,7 @@ try {
   // ---------- C 原處改連結 ----------
   await login(liu.token, '/members');
   await until(() => js("!!document.querySelector('.pm-tabs')"), 10000, '成員管理');
-  assert.equal(await js("[...document.querySelectorAll('.pm-tabs [data-pm-tab]')].map(b => b.dataset.pmTab).join(',')"), 'members,roles,skills', 'C 成員管理只留成員、角色、技能');
+  assert.equal(await js("[...document.querySelectorAll('.pm-tabs [data-pm-tab]')].map(b => b.dataset.pmTab).join(',')"), 'members,roles,skills', 'C 成員管理只留成員、AI 職務、技能');
   assert.ok(await js("!document.querySelector('[data-pm-invite]')"), 'C 成員管理裡沒有直接邀請');
   assert.ok(await js("!document.querySelector('.pm-disabled')"), 'C 已停用的成員不再放成員管理');
   await click('.pm-detail [data-adm="invites"]');

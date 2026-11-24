@@ -77,7 +77,7 @@ try {
   const appJs = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.ok(appJs.includes('<h2 id="modal-title">${esc(title)}</h2>'), '視窗標題一律跳脫');
   assert.ok(!/title: `[^`]*\$\{esc\(/.test(appJs), '標題不再自己跳脫（避免兩次）');
-  for (const k of ['dry.crossChanges || []).map(c => `${esc(c.name)}', 'dry.roleChanges || []).map(c => `${esc(c.name)}', 'dry.impact.map(x => `${esc(x.name)}']) assert.ok(appJs.includes(k), '權限確認清單跳脫：' + k);
+  for (const k of ['Object.entries(t.roles).map(([pj, v]) => `${esc(t.name)}', "ids.map(id => `${esc(P2(id)?.name || '')}", "rmInfo.map(x => `${esc(P2(x.id)?.name || '')}"]) assert.ok(appJs.includes(k), '權限確認清單跳脫：' + k);
   const curSrc = /const curSeq = (c => \{[^\n]*\});/.exec(appJs)[1];
   const curSeq = new Function('atob', `return ${curSrc}`)(s => Buffer.from(s, 'base64').toString('binary'));
   assert.equal(curSeq(evil), null, '游標不是整數就不顯示');
