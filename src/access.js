@@ -98,7 +98,8 @@ const ACTIONS = {
   manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
   assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
   remove_member: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能把他移出工作區。`) }, // 把人移出工作區（帳號不受影響）；target 是平台管理員時只有平台管理員能
-  see_removed_members: { admin: true, rule: workspaceAdmin }, // 成員名冊：已移出工作區的人（待接受的邀請是 GET /api/invites?status=pending，invite）
+  see_removed_members: { admin: true, rule: workspaceAdmin },
+  review_upgrade: { admin: true, rule: workspaceAdmin }, // 成員名冊：升級時同時是 leader 又是唯讀、先當唯讀成員的人（upgradeReview），略過標記 // 成員名冊：已移出工作區的人（待接受的邀請是 GET /api/invites?status=pending，invite）
   invite: { admin: true, rule: workspaceAdmin },
   reset_login: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能重設他的登入。`) }, // target 是平台管理員時只有平台管理員能
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）

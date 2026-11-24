@@ -1978,6 +1978,7 @@ ${ending}`;
     }
     await db.batch(stmts);
     invalidatePeople(); await membership.loadMembers(true);
+    if (cur === PROJECT_ROLE.VIEWER) await membership.clearUpgradeReview(p.id, row.id); // 升級時要確認的專案角色：管理員已經決定了
     return { ...out, dryRun };
   });
   // 移出：他在這個專案負責的未結案卡退回待處理、職稱清掉（dryRun 先看）；封存專案的成員資格不動

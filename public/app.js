@@ -9625,7 +9625,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     }
     return out.join('');
   }
-  const rsTags = p => [p.workspaceRole === 'admin' ? '<span class="pill-tag blue">工作區管理員</span>' : '', p.platformRole === 'admin' ? '<span class="pill-tag">平台管理員</span>' : '', p.participantId === meId() ? '<span class="muted small">· 你</span>' : ''].join('');
+  // 升級時同時是專案管理員又是唯讀、先設成唯讀成員的人（只有工作區管理員看得到）：請確認專案角色，或略過
+  const rsReview = p => (p.upgradeReview?.length ? ` <span class="pill-tag yellow rs-review" title="${esc(`升級前在「${p.upgradeReview.map(x => x.projectName).join('、')}」同時是專案管理員又是唯讀，先設為唯讀成員；要讓他管理專案，請在專案成員把他升為專案管理員`)}">請確認專案角色</span> <button type="button" class="btn small" data-rs-review-ok="${esc(p.participantId)}">略過</button>` : '');
+  const rsTags = p => [p.workspaceRole === 'admin' ? '<span class="pill-tag blue">工作區管理員</span>' : '', p.platformRole === 'admin' ? '<span class="pill-tag">平台管理員</span>' : '', p.participantId === meId() ? '<span class="muted small">· 你</span>' : '', rsReview(p)].join('');
   const rsProjects = (p, none = '還沒有專案') => (p.memberships || []).map(m => `<span class="rs-pj"><b>${esc(m.projectName || projName(m.project))}</b>${m.role !== 'member' ? ` <span class="muted small">${PROJ_ROLE[m.role] || ''}</span>` : ''}${m.title ? ` <span class="muted small">· ${esc(m.title)}</span>` : ''}</span>`).join('') || `<span class="muted small">${none}</span>`;
   function rosterHtml() {
     if (perm.roster === undefined) loadRoster();
@@ -10036,6 +10038,11 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const pg = t.closest('[data-pm-page]'); // 專案管理 ⇄ 成員管理
     if (pg) return openPermTab(pg.dataset.pmPage);
     if (t.closest('[data-rs-open]')) return openRoster(); // 帳號與救援、依成員 → 成員名冊
+    const rvOk = t.closest('[data-rs-review-ok]');
+    if (rvOk) { // 略過升級時的專案角色確認：專案角色不變
+      try { await api(`/api/roster/${encodeURIComponent(rvOk.dataset.rsReviewOk)}/upgrade-review`, { method: 'DELETE' }); perm.roster = undefined; } catch (err) { toast(err.message); }
+      return drawPerm();
+    }
     const rsf = t.closest('button[data-rs-filter]');
     if (rsf) { perm.rsFilter = rsf.dataset.rsFilter; return drawPerm(); }
     const tab = t.closest('[data-pm-tab]');
