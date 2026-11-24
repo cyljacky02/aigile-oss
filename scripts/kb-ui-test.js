@@ -55,7 +55,7 @@ try {
     assert.equal(await text('#files-list .warn-box'), '⚠ 請勿上傳程式碼或客戶個資。上傳的文件會抽出文字，專案成員和 AI 都搜得到。', 'A 黃框提醒');
     assert.equal(await js("document.querySelector('#kb-q').placeholder"), '搜尋知識頁和知識庫文件原文，例如：年假、WFH、住宿', 'A 搜尋框提示');
     await until(() => js("!!document.querySelector('.kb-doc-row')"), 8000, '知識庫文件清單');
-    assert.equal(await text('#files-list > p.muted.small'), '要把文件放進知識庫，請 leader 上傳，或請 leader 從專案文件加入。', 'A 一般成員：沒有上傳按鈕，改一行說明');
+    assert.equal(await text('#files-list > p.muted.small'), '要把文件放進知識庫，請專案管理員上傳，或請專案管理員從專案文件加入。', 'A 一般成員：沒有上傳按鈕，改一行說明');
     assert.equal(await text('.kb-h'), '知識庫文件（4 份） 只有這裡的文件會被整理、被搜尋。', 'A 知識庫文件清單標題');
     const kbRows = await J("Object.fromEntries([...document.querySelectorAll('.kb-doc-row')].map(r => [r.querySelector('.file-name').textContent, r.querySelector('.kb-badges').textContent.trim()]))");
     assert.deepEqual(kbRows, { '雲杉員工手冊（測試假資料）.docx': '只能搜原文 · 還沒指定整理 AI', '組織圖.pdf': '只存原檔，AI 讀不到內容', '部署筆記.txt': '含密碼或金鑰，不抽字也不整理', '壞掉的簡報.pptx': '抽字失敗' }, 'A 狀態字（一般成員沒有重試、指定整理 AI）：' + JSON.stringify(kbRows));

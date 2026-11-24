@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS participants (
   token TEXT NOT NULL UNIQUE,              -- 登入碼／AI Token 的雜湊（h: 開頭）；原文只在產生當下給一次
   token_expires_at INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'active',   -- active | disabled（停用，可恢復）| deleted
-  is_admin INTEGER NOT NULL DEFAULT 0,     -- 群組管理員（同時只有一位人類；可以交給別人）
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -29,8 +28,7 @@ CREATE TABLE IF NOT EXISTS participants (
   account_id TEXT,                         -- 人類的帳號（accounts.id）；AI 沒有（migrations/008）
   workspace_id TEXT,                       -- 所屬工作區；空的＝舊資料還沒轉換（啟動時補）
   workspace_role TEXT NOT NULL DEFAULT 'member', -- admin（工作區管理員）| member
-  workspace_status TEXT NOT NULL DEFAULT 'active', -- active | removed（已移出工作區）
-  projects TEXT NOT NULL DEFAULT ''  -- 所屬專案（逗號分隔，至少一個）
+  workspace_status TEXT NOT NULL DEFAULT 'active' -- active | removed（已移出工作區）
 );
 CREATE TABLE IF NOT EXISTS messages (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -478,7 +476,14 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
--- 專案成員：誰在哪個專案、專案角色（取代 participants.projects 與 project_leaders／read_only 設定）
+-- 升級用的暫存（migrations/009）：從第一階段之前升級、還沒轉到新表的成員，舊的 is_admin 與逗號字串專案歸屬（projects；NULL＝所有未封存專案）。
+-- 匯入舊版備份時也寫在這裡。程式啟動後轉進新表就刪掉，平常是空的
+CREATE TABLE IF NOT EXISTS legacy_members (
+  participant_id TEXT PRIMARY KEY,
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  projects TEXT
+);
+-- 專案成員：誰在哪個專案、專案角色（取代舊的 participants.projects 與 project_leaders／read_only 設定）
 CREATE TABLE IF NOT EXISTS project_members (
   project_id TEXT NOT NULL,
   participant_id TEXT NOT NULL,

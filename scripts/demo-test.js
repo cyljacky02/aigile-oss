@@ -64,8 +64,9 @@ try {
   assert.equal(demoPeople.length, 3);
   assert.ok(demoPeople.every(p => p.name.startsWith('示範')), '名字都是示範…');
   for (const p of demoPeople.filter(p => p.kind === 'ai')) assert.equal((await call(p.token, '/api/me')).status, 401, '示範 AI 的 Token 已過期');
-  assert.ok(!(await db.get('SELECT 1 AS x FROM devices WHERE participant_id IN (SELECT id FROM participants WHERE projects = ?)', pj)), '示範成員沒有裝置登入');
-  assert.ok(!(await db.get('SELECT 1 AS x FROM credentials WHERE participant_id IN (SELECT id FROM participants WHERE projects = ?)', pj)), '示範成員沒有密碼');
+  const demoIds = JSON.stringify(demoPeople.map(p => p.id));
+  assert.ok(!(await db.get('SELECT 1 AS x FROM devices WHERE participant_id IN (SELECT value FROM json_each(?))', demoIds)), '示範成員沒有裝置登入');
+  assert.ok(!(await db.get('SELECT 1 AS x FROM credentials WHERE participant_id IN (SELECT value FROM json_each(?))', demoIds)), '示範成員沒有密碼');
 
   // 2. 清除：回到原樣
   const c1 = await call(boss.token, '/api/admin/demo', 'DELETE');

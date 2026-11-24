@@ -46,7 +46,7 @@ try {
   await m.load(true);
   assert.deepEqual(m.allProjectsOf(await row(chen)), [], '可以回到沒有專案');
   // onlyIf：條件不符就不寫（同一批剛建的人用）
-  await run(m.setProjectsStmts(chen, [A, B], null, { onlyIf: 'is_admin = 1' }));
+  await run(m.setProjectsStmts(chen, [A, B], null, { onlyIf: "workspace_role = 'admin'" }));
   await m.load(true);
   assert.deepEqual(m.allProjectsOf(await row(chen)), [], '不是管理員就不寫');
   console.log('✓ 專案歸屬');

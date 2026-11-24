@@ -130,7 +130,7 @@ try {
   assert.equal((await call(aiOnlyTok, '/api/me')).status, 401, '那隻 AI 的 Token 失效');
   assert.ok(!(await call(liu.token, '/api/my-ais')).body.items.some(a => a.participantId === aiOnly.participantId), '我的 AI 清單沒有它');
   assert.deepEqual(r.body.deleted.aisDeleted, ['只在這裡的AI'], '紀錄寫了一起刪的 AI');
-  for (const key of ['project_leaders', 'read_only', 'project_roles', 'join_settings']) {
+  for (const key of ['project_roles', 'join_settings']) {
     const v = (await db.get('SELECT value FROM app_settings WHERE key = ?', key))?.value || '';
     assert.ok(!v.includes(pid), `${key} 沒有殘留：${v}`);
   }

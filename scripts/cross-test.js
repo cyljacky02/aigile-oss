@@ -11,6 +11,7 @@ import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
 import { testToken } from './test-token.js';
 import { removeFromProject } from './test-members.js';
+import { toPrePhase1 } from './legacy-db.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-cross-'));
 const A = '預設專案', B = '第二專案', C = 'p_third', OLD = 'p_old';
@@ -28,11 +29,7 @@ const crossSetting = async db => (await db.get("SELECT value FROM app_settings W
 async function oldDb(file, { cross, people }) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const old = await openTestDb(file);
-  for (const sql of ['DROP TABLE project_members', 'DROP TABLE accounts', 'DROP TABLE workspaces',
-    'ALTER TABLE participants DROP COLUMN account_id', 'ALTER TABLE participants DROP COLUMN workspace_id',
-    'ALTER TABLE participants DROP COLUMN workspace_role', 'ALTER TABLE participants DROP COLUMN workspace_status',
-    'ALTER TABLE projects DROP COLUMN workspace_id', 'ALTER TABLE projects DROP COLUMN visibility',
-    "DELETE FROM schema_migrations WHERE name = '008_members_access.sql'"]) await old.run(sql);
+  await toPrePhase1(old);
   await old.run('INSERT INTO projects (id, name, archived, created_at) VALUES (?, ?, 0, ?)', C, '第三專案', '2026-01-01T00:00:01.000Z');
   await old.run('INSERT INTO projects (id, name, archived, created_at) VALUES (?, ?, 1, ?)', OLD, '舊專案', '2026-01-01T00:00:02.000Z');
   let i = 0;

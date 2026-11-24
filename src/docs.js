@@ -96,7 +96,7 @@ export function registerDocs({ route, db, ApiError, invalid, readJson, readBody,
     await setKb(d.id, KB_TEXT_EXTS.includes(d.ext) ? 'pending' : 'original');
     background(KB_TEXT_EXTS.includes(d.ext) ? indexDoc(d, bytes, by) : kbHooks.afterIndex?.(d.id, by)); // PDF、圖片不抽字，也可以整理（AI 讀原檔）
   }
-  const kbOnly = async (ctx, me, pj, what) => { if (!(await kbManager(ctx, me, pj))) throw new ApiError(403, 'FORBIDDEN', `只有專案 leader 或群組管理員能${what}`); };
+  const kbOnly = async (ctx, me, pj, what) => { if (!(await kbManager(ctx, me, pj))) throw new ApiError(403, 'FORBIDDEN', `只有專案管理員能${what}`); };
   const folderView = f => ({ folderId: f.id, name: f.name, parentId: f.parent_id || null, createdAt: f.created_at, createdBy: f.created_by });
 
   // 清單：整個專案的資料夾與文件一次給（前端自己組樹）
@@ -126,7 +126,7 @@ export function registerDocs({ route, db, ApiError, invalid, readJson, readBody,
     requireStore();
     const q = url.searchParams;
     const toKb = ['true', '1', 'yes'].includes(String(q.get('kb')).toLowerCase());
-    if (toKb) await kbOnly(ctx, me, pj, '把文件放進知識庫（不帶 kb 會上傳成一般專案文件，再請 leader 加入）');
+    if (toKb) await kbOnly(ctx, me, pj, '把文件放進知識庫（不帶 kb 會上傳成一般專案文件，再請專案管理員加入）');
     const noCurate = toKb && ['false', '0', 'no'].includes(String(q.get('curate')).toLowerCase());
     const name = cleanFileName(q.get('name'));
     const declared = ['true', '1', 'yes'].includes(String(q.get('declared')).toLowerCase());
@@ -306,8 +306,8 @@ export function registerDocs({ route, db, ApiError, invalid, readJson, readBody,
   // 分段讀抽出的文字：from（段落序號，預設 0）、limit（預設 5，最多 20）。沒抽字的回原因（只有原檔＝給下載網址，AI 自己讀原檔）
   const KB_NOTE = {
     pending: '還在抽字，請稍後再讀', original: '這份只有原檔（PDF、圖片不抽字）：請下載原檔用你自己的讀檔工具打開；讀不了就照實寫「無法讀取」',
-    secret: '含疑似密鑰，未建立索引：不提供文字', failed: '抽字失敗：請專案 leader／管理員按「補建索引」重試', full: '全站知識庫字數已滿，這份沒有抽字',
-    none: '舊文件還沒建索引：請專案 leader／管理員按「補建索引」',
+    secret: '含疑似密鑰，未建立索引：不提供文字', failed: '抽字失敗：請專案管理員按「補建索引」重試', full: '全站知識庫字數已滿，這份沒有抽字',
+    none: '舊文件還沒建索引：請專案管理員按「補建索引」',
     off: '這份是一般專案文件，不在知識庫、沒有抽字：本機轉接腳本會把原檔下載下來（localPath），請用你自己的讀檔工具讀全文；讀不了就照實寫「無法讀取」',
   };
   route('GET', '/api/projects/:id/docs/:docId/text', async ({ me, url, params }) => {

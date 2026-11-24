@@ -15,8 +15,8 @@ export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'pro
   'skills', 'skill_allows', 'skill_installs', 'skill_syncs', 'join_requests', 'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages']; // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
 // 不匯出：登入用的（Token、密碼雜湊、裝置、登入碼、邀請、救援連結、登入通知、失敗次數）
-// schema_migrations：每個站自己套過哪些資料庫升級，不跟著備份搬
-export const SKIP_TABLES = ['devices', 'invites', 'pair_codes', 'credentials', 'login_fails', 'rescue_links', 'account_notices', 'schema_migrations'];
+// schema_migrations：每個站自己套過哪些資料庫升級，不跟著備份搬；legacy_members：升級用的暫存，轉完就是空的
+export const SKIP_TABLES = ['devices', 'invites', 'pair_codes', 'credentials', 'login_fails', 'rescue_links', 'account_notices', 'schema_migrations', 'legacy_members'];
 const FILE_TABLES = ['docs', 'files', 'kb_chunks']; // 不含附件時整張不帶（kb_chunks 是文件內容，沒文件就不帶）
 const BLOB_COLS = { avatars: ['data'], avatar_proposals: ['data'], file_chunks: ['data'] };
 const DROP_COLS = { participants: ['token', 'token_expires_at'] }; // 匯入時換新：Token 隨機、已過期
@@ -111,7 +111,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     if (String(body.appVersion).split('.')[0] !== APP_VERSION.split('.')[0]) throw new ApiError(400, 'BACKUP_MAJOR', `備份是 ${body.appVersion} 版，跟這個站（${APP_VERSION}）的主版本不同，不能直接匯入`);
     if (!state && !(await isEmpty(me))) throw new ApiError(409, 'NOT_EMPTY', '只有空站能匯入：這個站已經有其他成員、訊息、卡片、技能或文件。請在新架的站匯入。');
     if (state && state.by !== me.id) throw new ApiError(409, 'RESTORE_BY_OTHER', '別的管理員正在匯入');
-    const stmts = EXPORT_TABLES.filter(t => !['participants', 'accounts'].includes(t)).map(t => [`DELETE FROM ${t}`, []]);
+    const stmts = [...EXPORT_TABLES.filter(t => !['participants', 'accounts'].includes(t)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []]);
     stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
     stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${me.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
@@ -121,7 +121,9 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     await afterRestore?.();
     return { ok: true };
   });
-  // 一批資料列：只收可匯入的表、只寫這個站有的欄位（舊版備份少的欄位用預設值）
+  // 一批資料列：只收可匯入的表、只寫這個站有的欄位（舊版備份少的欄位用預設值）。
+  // 第一階段之前的備份（成員沒有 workspace_id）：舊的 is_admin、projects 這版沒有欄位了，抄到 legacy_members，
+  // 匯入完由成員資格的升級轉換（membership.migrateLegacy）轉成新表；原本的管理員先標成工作區管理員，結束匯入時才找得到他
   route('POST', '/api/admin/restore/rows', async ({ ctx, me, req }) => {
     await restorer(me);
     const body = await readJson(req, 6 * 1024 * 1024); // file_chunks 一列 512 KB，base64 後約 700 KB
@@ -130,6 +132,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     if (!Array.isArray(body.rows) || body.rows.length > 1000) throw invalid('rows 要是陣列，一次最多 1000 列');
     const have = new Set(await columnsOf(t)), drop = DROP_COLS[t] || [], blobs = BLOB_COLS[t] || [];
     const stmts = [];
+    let inserted = 0;
     for (const r of body.rows) {
       if (!r || typeof r !== 'object') throw invalid('rows 每一列要是物件');
       if (t === 'participants' && r.id === me.id) continue; // 你自己（同一個站匯回自己）：保留現在的
@@ -141,12 +144,18 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
         row[k] = blobs.includes(k) && v && typeof v === 'object' ? unb64(String(v.$b64 || '')) : v;
       }
       if (t === 'participants') Object.assign(row, { token: 'h:rs_' + randId('t') + randId('t'), token_expires_at: 1 }); // 登入一律重發：AI 顯示「Token 已過期」請主人重發；人類的登入碼是沒人拿得到的亂數
+      if (t === 'participants' && (r.workspace_id === undefined || r.workspace_id === null) && typeof r.id === 'string') {
+        const admin = Number(r.is_admin) === 1 && r.kind === 'human';
+        if (admin && have.has('workspace_role')) row.workspace_role = 'admin';
+        stmts.push(['INSERT OR IGNORE INTO legacy_members (participant_id, is_admin, projects) VALUES (?, ?, ?)', [r.id, admin ? 1 : 0, r.projects === undefined ? '' : r.projects]]);
+      }
       const cols = Object.keys(row);
       if (!cols.length) continue;
+      inserted++;
       stmts.push([`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})${t === 'app_settings' ? ' ON CONFLICT(key) DO UPDATE SET value = excluded.value' : ''}`, cols.map(c => row[c])]);
     }
     for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100));
-    return { table: t, inserted: stmts.length };
+    return { table: t, inserted };
   });
   // 專案文件本體：資料表的 docs 列先匯入，才收它的檔案
   route('POST', '/api/admin/restore/doc', async ({ ctx, me, req, url }) => {
@@ -168,7 +177,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       for (const t of ['credentials', 'devices', 'account_notices']) stmts.push([`UPDATE ${t} SET participant_id = ? WHERE participant_id = ?`, [target.id, me.id]]);
       stmts.push(...membership.forgetStmts([me.id]), ['DELETE FROM participants WHERE id = ?', [me.id]]);
       stmts.push(['UPDATE participants SET token = ?, token_expires_at = ? WHERE id = ?', [me.token, me.token_expires_at || 0, target.id]]); // 你現在的登入碼也跟著過去（不是備份裡的）
-      stmts.push(['UPDATE participants SET is_admin = 1 WHERE id = ?', [target.id]], ...membership.setWorkspaceRoleStmts(target.id, 'admin', nowIso()),
+      stmts.push(...membership.setWorkspaceRoleStmts(target.id, 'admin', nowIso()),
         ...membership.setPlatformRoleStmts(target.id, 'admin', nowIso())); // 你＝備份裡的管理員，一定是工作區管理員與平台管理員（備份還原只有平台管理員能做）；備份裡其他管理員照舊
       // 其他人類的登入不在備份裡：標「要重設登入」，成員頁與總覽寫出來（他用重設連結登入、或你發了重設連結就清掉）
       stmts.push(['UPDATE participants SET last_seen_at = 0, standby_at = 0 WHERE id != ?', [target.id]]); // 在線、待命是舊站的狀態：這個站還沒人見過他們（不然進不來的人會顯示在線、AI 顯示待命）

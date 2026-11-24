@@ -1,4 +1,5 @@
-// 驗收測試：升級到「成員與權限」新資料模型（migrations/008_members_access.sql，docs/adr/0002 第一階段）
+// 驗收測試：第一階段之前的舊站一路升級到這一版（migrations/008_members_access.sql 建新表、009_drop_legacy_members.sql 拿掉舊結構，
+// docs/adr/0002 第一階段）
 // 舊站：單一管理員（is_admin）、逗號字串的專案歸屬、app_settings 的 leader／唯讀／跨專案角色／專案角色標籤、
 // 隱形管理員（在專案裡但沒有角色標籤）、已停用、已刪除。用新版打開後，透過 API 看到的成員、專案、權限跟升級前一樣；
 // 隱形管理員只在「沒有職稱也不是 leader」的專案移除成員資格，改靠隱含權限（#8）；
@@ -12,6 +13,7 @@ import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb, tableNames } from './test-db.js';
 import { testToken } from './test-token.js';
+import { toPrePhase1, PHASE1_MIGRATIONS } from './legacy-db.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-mmig-'));
 const file = path.join(dir, 'switch.db');
@@ -26,14 +28,11 @@ const mkApp = (db, config = {}) => {
 const sorted = l => [...l].sort();
 const n = async (db, sql, ...a) => Number((await db.get(sql, ...a)).n);
 
-// 1) 做出升級前的資料庫：沒有新表與新欄位、008 還沒套；舊資料直接寫進去
-{
+// 1) 做出升級前的資料庫：沒有新表與新欄位、008／009 還沒套；舊資料直接寫進去
+async function makeOld(file) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const old = await openTestDb(file);
-  for (const sql of ['DROP TABLE project_members', 'DROP TABLE accounts', 'DROP TABLE workspaces',
-    'ALTER TABLE participants DROP COLUMN account_id', 'ALTER TABLE participants DROP COLUMN workspace_id',
-    'ALTER TABLE participants DROP COLUMN workspace_role', 'ALTER TABLE participants DROP COLUMN workspace_status',
-    'ALTER TABLE projects DROP COLUMN workspace_id', 'ALTER TABLE projects DROP COLUMN visibility',
-    "DELETE FROM schema_migrations WHERE name = '008_members_access.sql'"]) await old.run(sql);
+  await toPrePhase1(old);
   await old.run('INSERT INTO projects (id, name, archived, created_at) VALUES (?, ?, 1, ?)', OLD, '舊專案', '2026-01-01T00:00:02.000Z');
   await old.run('INSERT INTO projects (id, name, archived, created_at) VALUES (?, ?, 0, ?)', C, C, '2026-01-01T00:00:03.000Z');
   const person = (id, kind, name, at, projects, extra = {}) => {
@@ -57,8 +56,9 @@ const n = async (db, sql, ...a) => Number((await db.get(sql, ...a)).n);
   // 專案角色標籤；管理員只在預設專案有標籤 → 在第二專案是「隱形」的（第三專案是 leader，不算隱形）
   await set('project_roles', { p_boss: { [A]: 'PO' }, p_lead: { [A]: 'PG', [OLD]: 'PG' }, p_ro: { [A]: 'QA', [B]: 'QA' }, p_cross: { [A]: 'SM', [B]: 'SM' } });
   await old.run("INSERT INTO app_settings (key, value) VALUES ('group_name', '舊群組')");
-  await old.close();
+  return old;
 }
+await (await makeOld(file)).close();
 
 // 升級後透過 API 看到的：跟升級前的畫面一樣
 async function seesSameAsBefore(db, call, label) {
@@ -114,10 +114,13 @@ async function seesSameAsBefore(db, call, label) {
 
 let db = await openTestDb(file);
 try {
-  // 2) 升級只建表與欄位（資料轉換在程式第一個請求時做）
-  assert.ok((await db.all("SELECT name FROM schema_migrations WHERE name = '008_members_access.sql'")).length, '008 套上了');
+  // 2) 升級只建表與欄位、拿掉舊欄位（舊資料先抄到 legacy_members；資料轉換在程式第一個請求時做）
+  for (const m of PHASE1_MIGRATIONS) assert.ok((await db.all('SELECT name FROM schema_migrations WHERE name = ?', m)).length, `${m} 套上了`);
   for (const t of ['workspaces', 'accounts', 'project_members']) assert.ok((await tableNames(db)).includes(t), `建了 ${t}`);
   assert.equal(await n(db, 'SELECT COUNT(*) AS n FROM project_members'), 0, '升級本身不轉資料');
+  const cols = (await db.all('PRAGMA table_info(participants)')).map(c => c.name);
+  assert.ok(!cols.includes('is_admin') && !cols.includes('projects'), '舊欄位 is_admin、projects 拿掉了：' + cols.join(','));
+  assert.equal(await n(db, 'SELECT COUNT(*) AS n FROM legacy_members'), 8, '還沒轉的人的舊資料先抄起來（每人一列）');
 
   // 3) 第一個請求：轉換舊資料，API 看到的跟升級前一樣
   await seesSameAsBefore(db, mkApp(db), '第一次啟動');
@@ -145,7 +148,10 @@ try {
   assert.equal(await role(C, 'p_boss'), 'admin', '是 leader 的專案保留（專案管理員）');
   assert.equal(await role(OLD, 'p_boss'), undefined, '封存的專案也一樣');
   assert.ok((await db.all('SELECT workspace_id, visibility FROM projects')).every(r => r.workspace_id === 'default' && r.visibility === 'review'), '專案都在預設工作區、可見度先存審核');
-  console.log('✓ 新表的內容');
+  assert.equal(await n(db, 'SELECT COUNT(*) AS n FROM legacy_members'), 0, '轉完就清掉抄起來的舊資料');
+  assert.deepEqual((await db.all("SELECT key FROM app_settings WHERE key IN ('project_leaders', 'read_only', 'cross_roles')")).map(r => r.key), [], '設定裡不再有負責人、唯讀、跨專案角色');
+  assert.ok(await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'project_roles'"), '職稱照舊留著');
+  console.log('✓ 新表的內容；舊結構拿掉了');
 
   // 4) 重複啟動：不重複轉換（另一份程式、重開資料庫都一樣）
   const before = [await n(db, 'SELECT COUNT(*) AS n FROM project_members'), await n(db, 'SELECT COUNT(*) AS n FROM accounts')];
@@ -157,6 +163,26 @@ try {
   console.log('✓ 重複啟動不重複轉換');
 } finally {
   await db.close();
+}
+
+// 6) 先換程式、後跑 009（例：Cloudflare 部署時程式先上線）：舊欄位還在時照舊讀得到；之後 009 照樣拿掉舊欄位，結果不變
+{
+  const early = path.join(dir, 'early', 'switch.db');
+  const old = await makeOld(early);
+  await old.run("INSERT INTO schema_migrations (name, applied_at) VALUES ('009_drop_legacy_members.sql', 'x')"); // 先當 009 套過了
+  await old.close();
+  let edb = await openTestDb(early);
+  try {
+    assert.ok((await edb.all('PRAGMA table_info(participants)')).some(c => c.name === 'projects'), '009 還沒套：舊欄位還在');
+    await seesSameAsBefore(edb, mkApp(edb), '舊欄位還在');
+    await edb.run("DELETE FROM schema_migrations WHERE name = '009_drop_legacy_members.sql'");
+    await edb.close();
+    edb = await openTestDb(early);
+    assert.ok(!(await edb.all('PRAGMA table_info(participants)')).some(c => ['projects', 'is_admin'].includes(c.name)), '009 套上後舊欄位拿掉');
+    assert.equal(await n(edb, 'SELECT COUNT(*) AS n FROM legacy_members'), 0, '都轉過了，不用抄舊資料');
+    await seesSameAsBefore(edb, mkApp(edb), '之後才套 009');
+    console.log('✓ 先換程式、後拿掉舊欄位');
+  } finally { await edb.close(); }
 }
 
 // 5) 新站：預設工作區；第一位管理員是平台管理員兼工作區管理員

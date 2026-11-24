@@ -11,6 +11,7 @@ import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
 import { testToken } from './test-token.js';
+import { toPrePhase1 } from './legacy-db.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-wset-'));
 const mkApp = db => {
@@ -91,11 +92,7 @@ const oldFile = path.join(dir, 'old', 'switch.db');
 fs.mkdirSync(path.dirname(oldFile));
 {
   const old = await openTestDb(oldFile);
-  for (const sql of ['DROP TABLE project_members', 'DROP TABLE accounts', 'DROP TABLE workspaces',
-    'ALTER TABLE participants DROP COLUMN account_id', 'ALTER TABLE participants DROP COLUMN workspace_id',
-    'ALTER TABLE participants DROP COLUMN workspace_role', 'ALTER TABLE participants DROP COLUMN workspace_status',
-    'ALTER TABLE projects DROP COLUMN workspace_id', 'ALTER TABLE projects DROP COLUMN visibility',
-    "DELETE FROM schema_migrations WHERE name = '008_members_access.sql'"]) await old.run(sql);
+  await toPrePhase1(old);
   const person = (id, name, at, projects, extra = {}) => {
     const row = { id, kind: 'human', name, role: '', code: id.slice(2, 6).toUpperCase(), token: 'h:old_' + id, created_at: at, updated_at: at, projects, ...extra };
     const cols = Object.keys(row);

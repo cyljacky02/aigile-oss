@@ -33,13 +33,11 @@ export const isWorkspaceAdmin = p => !!p && p.kind === 'human' && p.status === '
 const byJoined = (a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id));
 // 所有工作區管理員（照加入順序）
 export const adminsOf = people => [...people.values()].filter(isWorkspaceAdmin).sort(byJoined);
-// 顯示用的「管理員」（錯誤訊息的名字、通知對象）：最早加入的工作區管理員。
-// 都沒有（還沒轉換的舊資料、舊備份）才退回 is_admin 標記、最早加入的人類。「能不能」不看這個
+// 顯示用的「管理員」（錯誤訊息的名字、通知對象）：最早加入的工作區管理員；都沒有才退回最早加入的人類。「能不能」不看這個
 export const adminOf = people => {
   const admins = adminsOf(people);
   if (admins.length) return admins[0];
-  const hs = [...people.values()].filter(p => p.kind === 'human' && p.status === 'active');
-  return hs.find(p => Number(p.is_admin) === 1) || hs.sort(byJoined)[0] || null;
+  return [...people.values()].filter(p => p.kind === 'human' && p.status === 'active').sort(byJoined)[0] || null;
 };
 
 // 動作表。admin：管理動作（AI 一律不行）；human：check 時先擋 AI（回「僅限人類」）；light：只看唯讀名單，不必讀成員；
@@ -188,8 +186,8 @@ export function createAccess(deps) {
     switch (action) {
       case 'write': return readOnlyError(me, s.project || readOnlyList(me)[0]);
       case 'manage_project': case 'configure_project': case 'manage_project_members': case 'set_visibility':
-        return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）或這個專案的專案管理員能${what || '管理這個專案'}。`);
-      case 'set_title': return new ApiError(403, 'NOT_PROJECT_LEADER', `只有管理員、「${nameOf(s.project)}」的專案管理員或 ${s.target?.name || ''} 本人能改他在這個專案的職稱。`);
+        return new ApiError(403, 'NOT_ADMIN', `只有工作區管理員（${adminName()}）或這個專案的專案管理員能${what || '管理這個專案'}。`);
+      case 'set_title': return new ApiError(403, 'NOT_PROJECT_LEADER', `只有工作區管理員、「${nameOf(s.project)}」的專案管理員或 ${s.target?.name || ''} 本人能改他在這個專案的職稱。`);
       case 'see_project': return new ApiError(403, 'PROJECT_FORBIDDEN', '你不屬於這個專案。');
       case 'see_ai_state': return new ApiError(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。');
       case 'see_member': return new ApiError(404, 'NOT_FOUND', `找不到成員 ${s.target?.id || ''}`);
@@ -201,7 +199,7 @@ export function createAccess(deps) {
         if (vis === VIS.REVIEW && action === 'join_project') return new ApiError(403, 'JOIN_NEEDS_APPROVAL', `「${nameOf(s.project)}」要送加入申請、由專案管理員核准才能加入。`);
         return new ApiError(403, 'FORBIDDEN', '只有工作區成員能加入專案。');
       }
-      default: return new ApiError(403, 'NOT_ADMIN', `只有群組管理員（${adminName()}）能${what || '管理專案與成員所屬專案'}。`);
+      default: return new ApiError(403, 'NOT_ADMIN', `只有工作區管理員（${adminName()}）能${what || '管理專案與成員所屬專案'}。`);
     }
   }
   async function check(ctx, me, action, scope, opts = {}) {

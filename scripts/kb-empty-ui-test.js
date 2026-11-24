@@ -1,6 +1,6 @@
 // 畫面測試：知識庫還是空的
 // A. leader／管理員：「知識庫還是空的」＋說明＋「⬆ 上傳到知識庫」「從專案文件挑」＋教學連結；頁頂不重複放上傳按鈕
-// B. 一般成員：不放按鈕，寫「請 leader 把文件放進來。」
+// B. 一般成員：不放按鈕，寫「請專案管理員把文件放進來。」
 // C. 專案文件有檔但都不在知識庫：知識庫照樣是空的；「從專案文件挑」切到專案文件分頁
 // D. 1280、375 不橫向捲動
 // 本機暫存資料庫＋無頭 Chrome／Edge，不連正式站。設 KB_EMPTY_SHOTS=資料夾 會另外截圖。用法：node scripts/kb-empty-ui-test.js
@@ -42,7 +42,7 @@ try {
     await shot(`01-${tag}-知識庫還是空的-leader`);
     // ---------- B 一般成員 ----------
     await openKb(chen.token);
-    assert.equal(await text('.kb-empty'), `📚 ${intro} 請 leader 把文件放進來。 第一次用？看教學：知識庫怎麼設定 ›`, 'B 一般成員：' + await text('.kb-empty'));
+    assert.equal(await text('.kb-empty'), `📚 ${intro} 請專案管理員把文件放進來。 第一次用？看教學：知識庫怎麼設定 ›`, 'B 一般成員：' + await text('.kb-empty'));
     assert.equal(await js("document.querySelectorAll('[data-kb-up], [data-kb-go-docs]').length"), 0, 'B 一般成員沒有按鈕');
     await shot(`02-${tag}-知識庫還是空的-一般成員`);
   }

@@ -210,7 +210,7 @@ try {
   console.log('✓ 專案可見度');
 
   // check 的錯誤：預設訊息帶 what；可以換掉
-  await assert.rejects(access.check(ctx, member, 'manage_workspace', 'workspace', { what: '改群組名稱' }), e => e.code === 'NOT_ADMIN' && e.message === '只有群組管理員（admin）能改群組名稱。');
+  await assert.rejects(access.check(ctx, member, 'manage_workspace', 'workspace', { what: '改工作區名稱' }), e => e.code === 'NOT_ADMIN' && e.message === '只有工作區管理員（admin）能改工作區名稱。');
   await assert.rejects(access.check(ctx, member, 'manage_project', { project: 'main' }, { deny: () => new ApiError(403, 'NOT_REVIEWER', 'x') }), e => e.code === 'NOT_REVIEWER');
   assert.equal(await code(access.check(ctx, admin, 'manage_workspace', 'workspace')), null);
   assert.equal(await access.can(ctx, lead, 'manage_project', { project: 'main' }), true, 'access.can 不先 load 也能用');

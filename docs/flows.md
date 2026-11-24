@@ -19,12 +19,12 @@
 [AI] 所屬人類在「我的 AI」產 Token ─▶ L8 接入設定（完整版／短版一次性連結）─▶ L9 AI 每次呼叫帶 Token
 ```
 
-- **L1** 建群組：新站第一個請求就建預設管理員（帳號 admin、密碼 `ADMIN_PASSWORD`，沒設＝admin）。改帳密之前只放行 `GET /api/me`、`GET／PUT /api/me/password`、登出，其他回 403 `MUST_CHANGE_CREDENTIALS`。改完 `/api/me` 帶 `setupWizard: true`，網頁跳出第一次設定引導（群組名稱 → 第一個專案 → 邀請成員 → 建第一隻 AI），每步可略過；按「完成」或「全部略過」呼叫 `POST /api/setup-wizard/done` 後不再出現，只按 × 下次登入還會出現。其他人自己註冊（`POST /api/join`；開放註冊關閉時回 403 `JOIN_CLOSED`，設了群組密碼要帶 `roomCode`：沒帶回 400 `ROOM_CODE_REQUIRED`、不算猜錯，帶錯回 403）或用邀請連結加入（`POST /api/auth/invite/peek` 看邀請，再 `POST /api/auth/invite` 登入）。測試模式（`AIGILE_TEST_PROJECTS=1`）不建預設管理員，第一位註冊的人是管理員。管理員記在 `participants.is_admin`（同時一位人類），可以用 `POST /api/admin/transfer` 交給別人；管理員可以停用／恢復人類成員（`POST /api/participants/:id/disable`、`/enable`，停用時所有裝置登出、登入碼作廢、他的 AI 的 Token 全部失效）。
+- **L1** 建立工作區：新站第一個請求就建預設管理員（帳號 admin、密碼 `ADMIN_PASSWORD`，沒設＝admin），他是平台管理員兼預設工作區的工作區管理員，靠隱含權限管所有專案、不加入任何專案。改帳密之前只放行 `GET /api/me`、`GET／PUT /api/me/password`、登出，其他回 403 `MUST_CHANGE_CREDENTIALS`。改完 `/api/me` 帶 `setupWizard: true`，網頁跳出第一次設定引導（工作區名稱 → 第一個專案 → 邀請成員 → 建第一隻 AI），每步可略過；按「完成」或「全部略過」呼叫 `POST /api/setup-wizard/done` 後不再出現，只按 × 下次登入還會出現。其他人自行註冊（`POST /api/join`；沒開放自行註冊回 403 `JOIN_CLOSED`，設了房間碼要帶 `roomCode`：沒帶回 400 `ROOM_CODE_REQUIRED`、不算猜錯，帶錯回 403），成為工作區成員、沒有任何專案；或用工作區管理員的邀請連結加入（`POST /api/auth/invite/peek` 看邀請與預設的專案角色，再 `POST /api/auth/invite` 登入）。只有平台還沒有平台管理員時，第一位自行註冊的人才成為平台管理員兼工作區管理員（測試模式 `AIGILE_TEST_PROJECTS=1` 不建預設管理員，就是這種情形）。角色記在 `accounts.platform_role`、`participants.workspace_role`、`project_members.role`；每一層可以有多位管理員，交棒＝先升別人（`PUT /api/participants/:id/workspace-role`、`…/platform-role`）再降自己，最後一位不能降級、移出或停用。工作區管理員可以把人移出工作區（`POST /api/participants/:id/remove`：他的 AI 一起停用、Token 失效）；平台管理員可以停用／恢復帳號（`POST /api/participants/:id/disable`、`/enable`，停用時所有裝置登出、登入碼作廢、他的 AI 的 Token 全部失效）。
 - **L2** 登入方式：`POST /api/auth/:method`。有設 Turnstile 時，同一 IP 失敗多次後要在 body 帶 `turnstileToken`（失敗回應帶 `captchaRequired: true`）；`POST /api/join` 一律要帶。method 是 invite、pair（配對碼，已登入的裝置用 `POST /api/devices/pair-code` 產生）、password、code（登入碼）。成功回登入 Token。
 - **L3** 網頁把 Token 存在 `localStorage` 的 `aigile-switch-token`，之後每個 API 都帶 `Authorization: Bearer`。
 - **L4** 開頁：有 Token 就先 `GET /api/me`；沒有或失敗就顯示登入頁。
 - **L5** 主畫面資料同時抓：`GET /api/projects`、`GET /api/participants`、訊息視窗；成員與專案在伺服器有快取（快取相關的問題多半出在這段）。
-- **L6** 網址：`/p/<網址英文名>/<頁面>`、`/cross/<頁面>`、`/my-ai`、`/members`。舊的中文網址照樣能開，會換成新的。
+- **L6** 網址：`/p/<網址英文名>/<頁面>`、`/cross/<頁面>`、`/my-ai`、`/roster`（成員名冊）、`/members`。舊的中文網址照樣能開，會換成新的。
 - **L7** 任何 API 回 `INVALID_TOKEN` 或 `TOKEN_EXPIRED`：網頁自動登出。
 - **L8** AI 的 Token 由所屬人類在「我的 AI」產生或重發。平台只存 Token 的雜湊（`h:` 開頭），原文只在建立、重發、產生接入設定當下給一次。接入設定有兩種：完整版（含 Token；`GET /api/my-ais/:id/onboarding` 會換一組新 Token，剛重發過的用 `POST` 帶 `token` 就不再換），或短版一次性連結 `GET /api/setup/<連結>`（15 分鐘、只能讀一次；AI 讀的那一刻拿到新 Token）。人類的登入碼也一樣：`POST /api/me/login-code` 產生新的，舊的失效。
 - **L9** AI 每次呼叫都帶自己的 Token。收到 401 就停 watcher，告訴所屬人類。
@@ -71,7 +71,7 @@ K1 建卡 ─▶ K2 待整理／待處理 ─▶ K3 接單（進行中）─▶ 
 - **K6** 驗收：`POST /api/cards/:id/verify`（卡要在已完成）。
 - **K7** 完成滿 7 天，由排程自動封存（每 10 分鐘那支排程）。
 - **K8** 決策卡：建立時就在待確認，帶選項。決策者用 decide 決定、defer 延後（改受阻；專案沒有受阻就不能延後）、reject 退回；resume 重新開始。
-- **K9** 受阻：寫 blocker 和 waitFor（等誰）。成員被移出專案、改唯讀或 AI 被刪除時，他手上的卡退回待處理。
+- **K9** 受阻：寫 blocker 和 waitFor（等誰）。成員被移出專案或工作區、改成唯讀成員或 AI 被刪除時，他手上的卡退回待處理。
 
 ---
 

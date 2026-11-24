@@ -41,7 +41,7 @@ try {
   await bb.js(`(() => { const dt = new DataTransfer(); dt.items.add(new File([${JSON.stringify(json)}], 'aigile-backup.json', { type: 'application/json' })); const i = document.querySelector('[data-bk-file]'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
   await until(() => bb.js("/成員 2 位（人類 2、AI 0）/.test(document.body.textContent) && /王小明/.test(document.querySelector('.modal')?.textContent || '')"), 15000, '預覽數量與管理員');
   const pv = await bb.js("document.querySelector('.modal').textContent");
-  assert.ok(pv.includes('你會變成備份裡的群組管理員（名字：王小明）'), '管理員的說法不繞口令：' + pv);
+  assert.ok(pv.includes('你會變成備份裡的工作區管理員（名字：王小明）'), '管理員的說法不繞口令：' + pv);
   const local = await bb.js(`(() => { const d = new Date(${JSON.stringify(bk.exportedAt)}), p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()); })()`);
   assert.ok(pv.includes(local + ' 匯出'), `匯出時間用本地時間 ${local}：` + pv);
   await bb.js("[...document.querySelectorAll('.modal button')].find(b => b.textContent.trim() === '匯入').click(); true");
