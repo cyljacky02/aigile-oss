@@ -639,7 +639,7 @@ export function registerLogin(d) {
     const p = await prov.verify(body, ctx, req);
     if (!p) { failed(req); throw new ApiError(400, params.method === 'invite' ? 'INVITE_INVALID' : params.method === 'rescue' ? 'RESCUE_INVALID' : 'LOGIN_FAILED', FAIL_MSG[params.method], { captchaRequired: needCaptcha(req) }); }
     // 已移出工作區：帳號還在（沒停用），但進不了這個工作區（平台管理員除外）
-    if (p.workspace_status === 'removed' && !(await access.load(ctx)).roleIn(p, 'workspace')) throw new ApiError(403, 'NOT_WORKSPACE_MEMBER', '你已不是這個工作區的成員，要回來請找工作區管理員重新邀請你。');
+    if (access.shutOut(p)) throw new ApiError(403, 'NOT_WORKSPACE_MEMBER', '你已不是這個工作區的成員，要回來請找工作區管理員重新邀請你。');
     if (params.method === 'rescue') await signOutOthers(p.id, null); // 救援＝帳號可能被別人拿走：先把別人的登入全部收掉
     const label = prov.device ? deviceLabelAs(prov.device, req.headers.get('user-agent') || '') : undefined;
     const token = await issueDevice(p.id, req, label);

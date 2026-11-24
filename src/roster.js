@@ -7,13 +7,14 @@
 // 每個人的專案資訊（memberships）只列查詢者看得到的專案（私人專案不外洩，access discovers）；AI 查詢時看的是擁有者看得到的。
 // 欄位叫 memberships 而不是 projects：core 的 scrubProjects 會把別人的 projects 過濾成「自己在的專案」，名冊要照可見度過濾，不照共同專案。
 // 待接受的邀請不在這裡：畫面直接讀 GET /api/invites?status=pending（只有工作區管理員；邀請的存法歸 src/login.js 管）。
+import { inWorkspace, byJoined } from './access.js';
+
 export const ROSTER_STATUS = Object.freeze({ ACTIVE: 'active', REMOVED: 'removed' });
 
 // deps：route、db、access、peopleMap(ctx)、membership、PROJECTS（未封存專案 id）、nameOf(專案id)、loadTitles()（{ 成員id: { 專案id: 職稱 } }）、
 //       isWorkspaceAdmin(p)、isOnline(p, now)、iso(ms)
 export function registerRoster({ route, db, access, peopleMap, membership, PROJECTS, nameOf, loadTitles, isWorkspaceAdmin, isOnline, iso }) {
   const human = p => p.kind === 'human';
-  const inWorkspace = p => (p.workspace_status ?? 'active') === 'active';
 
   route('GET', '/api/roster', async ({ ctx, me }) => {
     const v = await access.load(ctx), people = v.people, now = Date.now();
@@ -37,7 +38,6 @@ export function registerRoster({ route, db, access, peopleMap, membership, PROJE
         memberships: status === ROSTER_STATUS.ACTIVE ? memberships(p) : [],
       };
     };
-    const byJoined = (a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id));
     const all = [...people.values()].sort(byJoined);
     const can = {
       assignWorkspaceAdmin: v.can(me, 'assign_workspace_admin', 'workspace'),

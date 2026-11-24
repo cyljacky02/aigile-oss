@@ -28,9 +28,9 @@ export const PROJECT_VISIBILITY = Object.freeze({ OPEN: 'open', REVIEW: 'review'
 export const PROJECT_VISIBILITIES = Object.freeze(Object.values(PROJECT_VISIBILITY));
 const VIS = PROJECT_VISIBILITY;
 
-// 一個人實際能進的（未封存）專案。有隐含權限的人＝所有專案；其他人＝自己的專案成員資格；
+// 一個人實際能進的（未封存）專案。有隱含權限的人＝所有專案；其他人＝自己的專案成員資格；
 // AI＝它的專案成員資格 ∩ 所屬人類能進的專案（所屬人類不論怎麼失去一個專案，AI 當下就進不去，不靠寫入時的連帶刪除）。
-// deps：projects()（未封存專案）、memberProjectsOf(p)（明確的成員資格）、implicitAll(p)（有隐含權限）、ownerOf(ai)（所屬人類的列）
+// deps：projects()（未封存專案）、memberProjectsOf(p)（明確的成員資格）、implicitAll(p)（有隱含權限）、ownerOf(ai)（所屬人類的列）
 export function effectiveProjects({ projects, memberProjectsOf, implicitAll, ownerOf }) {
   const of = p => {
     if (implicitAll(p)) return [...projects()];
@@ -44,7 +44,14 @@ export function effectiveProjects({ projects, memberProjectsOf, implicitAll, own
 
 // 這一列是不是工作區管理員（啟用中的人類、workspace_role＝admin）。只看這一列，不必讀成員資料
 export const isWorkspaceAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && p.workspace_role === 'admin';
-const byJoined = (a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id));
+// 實際的工作區管理權：工作區管理員，或平台管理員（隱含權限）。isPlatformAdmin(p)：他的帳號是平台管理員（成員資格模組）
+export const hasWorkspaceAdminRights = (p, isPlatformAdmin) => isWorkspaceAdmin(p) || (!!p && p.kind === 'human' && p.status === 'active' && !!isPlatformAdmin?.(p));
+// 還在工作區裡（沒被移出；沒有 workspace_status 的舊列＝在）
+export const inWorkspace = p => (p?.workspace_status ?? 'active') === 'active';
+// 進不了這個工作區（登入、每個請求都看）：已移出的人；AI 看所屬人類有沒有被移出（owner_ws_status）。平台管理員有隱含權，照樣進得來
+export const shutOutOfWorkspace = (p, isPlatformAdmin) => (!inWorkspace(p) && !hasWorkspaceAdminRights(p, isPlatformAdmin)) || p?.owner_ws_status === 'removed';
+// 照加入順序（名冊、管理員清單）
+export const byJoined = (a, b) => String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id));
 // 所有工作區管理員（照加入順序）
 export const adminsOf = people => [...people.values()].filter(isWorkspaceAdmin).sort(byJoined);
 // 顯示用的「管理員」（錯誤訊息的名字、通知對象）：最早加入的工作區管理員；都沒有才退回最早加入的人類。「能不能」不看這個
@@ -125,7 +132,7 @@ export function createAccess(deps) {
   const memberProjectsOf = deps.memberProjectsOf || projectsOf;
   // 平台管理員（啟用中的人類）；實際的工作區管理權＝工作區管理員或平台管理員（隱含）
   const isPlatformAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && !!deps.isPlatformAdmin?.(p);
-  const adminInWorkspace = p => isWorkspaceAdmin(p) || isPlatformAdmin(p);
+  const adminInWorkspace = p => hasWorkspaceAdminRights(p, deps.isPlatformAdmin);
   // 隱含權限不算成員：工作區管理員（含平台管理員）在沒加入、也沒有職稱的專案不列為成員（名單、人數、團隊狀態、@所有人都不算）
   const implicitOnly = (p, pj) => !!pj && adminInWorkspace(p) && !memberProjectsOf(p).includes(pj) && !titles()[p.id]?.[pj];
 
@@ -166,7 +173,7 @@ export function createAccess(deps) {
         if (!p) return null;
         const s = scopeOf(scope);
         if (s.kind === 'platform') return isPlatformAdmin(p) ? R.PLATFORM_ADMIN : null;
-        if (s.kind === 'workspace') return isAdmin(p) ? R.WORKSPACE_ADMIN : p.status === 'active' && (p.workspace_status ?? 'active') === 'active' && (p.kind === 'human' || p.kind === 'ai') ? R.MEMBER : null;
+        if (s.kind === 'workspace') return isAdmin(p) ? R.WORKSPACE_ADMIN : p.status === 'active' && inWorkspace(p) && (p.kind === 'human' || p.kind === 'ai') ? R.MEMBER : null;
         if (isAdmin(p) || v.isProjectAdmin(p, s.project)) return R.PROJECT_ADMIN; // 隱含權限、專案管理員
         if (!projectsOf(p).includes(s.project)) return null;
         return readOnlyIn(p, s.project) ? R.VIEWER : R.PROJECT_MEMBER;
@@ -232,7 +239,7 @@ export function createAccess(deps) {
   }
 
   return {
-    load, view, check, adminOf, adminsOf, isWorkspaceAdmin, isPlatformAdmin, adminInWorkspace, implicitOnly, readOnlyIn, readOnlyError, visibilityOf: pj => view().visibilityOf(pj),
+    load, view, check, adminOf, adminsOf, isWorkspaceAdmin, isPlatformAdmin, adminInWorkspace, implicitOnly, shutOut: p => shutOutOfWorkspace(p, deps.isPlatformAdmin), readOnlyIn, readOnlyError, visibilityOf: pj => view().visibilityOf(pj),
     roleIn: async (ctx, p, scope) => (await load(ctx)).roleIn(p, scope),
     can: async (ctx, me, action, scope) => (await load(ctx, { light: ACTIONS[action]?.light })).can(me, action, scope),
   };

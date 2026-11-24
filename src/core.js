@@ -17,7 +17,7 @@ import { registerBackup } from './backup.js'; // 備份匯出與匯入
 import { registerUpdateCheck } from './update.js'; // 管理頁「有新版本」
 import { registerDemo } from './demo.js'; // 示範資料
 import { registerRoster } from './roster.js'; // 成員名冊
-import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, effectiveProjects, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
+import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, hasWorkspaceAdminRights, inWorkspace, effectiveProjects, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
 import { createWorkspaceSettings, CREATE_PROJECTS } from './workspace-settings.js'; // 工作區設定（誰可以建立專案）
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
@@ -354,8 +354,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 「能不能」的判斷（唯讀成員、專案管理員、工作區管理員…）不在這裡，走權限模組 access（見「專案與成員管理」）
   const { allProjectsOf: listOf, setProjectsStmts, loadProjectAdmins, projectAdminsOf, loadReadOnly, readOnlyOf } = membership;
   // 隱含權限：工作區管理員看得到、進得去所有（未封存）專案，但不算成員資格（名單過濾見 access implicitOnlyIn；改成員資格一律用 listOf）
-  // 實際的工作區管理權：工作區管理員，或平台管理員（隱含）。跟 access.adminInWorkspace 同一個規則
-  const adminInWorkspace = p => isWorkspaceAdmin(p) || membership.isPlatformAdmin(p);
+  // 實際的工作區管理權（規則在權限模組）：工作區管理員，或平台管理員（隱含）
+  const adminInWorkspace = p => hasWorkspaceAdminRights(p, membership.isPlatformAdmin);
   // 實際能進的專案（規則在權限模組）：AI 不超出所屬人類能進的專案。所屬人類的列看成員快取（AI 發請求時一定先讀好，見 handleInner）；
   // 快取裡沒有就只看他明確加入的專案（寧可少給）
   const projectsOf = effectiveProjects({ projects: () => PROJECTS, memberProjectsOf: p => membership.projectsOf(p), implicitAll: adminInWorkspace,
@@ -562,7 +562,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (!p || p.status !== 'active') throw new ApiError(401, 'INVALID_TOKEN', 'Token 不存在、已重設或已撤銷');
     await membership.refreshOne(p.id); // 發請求的人：專案與角色看最新的（以前存在他那列，每次驗證都重讀）
     // 已移出工作區：進不來（平台管理員除外，他對工作區有隱含權）；AI 的所屬人類被移出也一樣
-    if ((p.workspace_status === 'removed' && !membership.isPlatformAdmin(p)) || p.owner_ws_status === 'removed') throw new ApiError(401, 'INVALID_TOKEN', '你已不是這個工作區的成員');
+    if (access.shutOut(p)) throw new ApiError(401, 'INVALID_TOKEN', '你已不是這個工作區的成員');
     delete p.owner_ws_status;
     p.authKind = dev ? 'device' : 'code';
     p.deviceId = dev?.id || null;
@@ -1886,7 +1886,7 @@ ${ending}`;
   function memberTarget(v, id) {
     const p = v.people.get(String(id));
     if (!p || p.kind === 'system') throw new ApiError(404, 'NOT_FOUND', `找不到成員 ${id}`);
-    if (p.status !== 'active' || (p.workspace_status && p.workspace_status !== 'active')) throw new ApiError(403, 'NOT_WORKSPACE_MEMBER', `${p.name} 不是工作區成員，不能加入專案；要先由工作區管理員邀請他加入工作區。`);
+    if (p.status !== 'active' || !inWorkspace(p)) throw new ApiError(403, 'NOT_WORKSPACE_MEMBER', `${p.name} 不是工作區成員，不能加入專案；要先由工作區管理員邀請他加入工作區。`);
     return p;
   }
   // 工作區管理員在專案裡的角色只有工作區管理員能動
