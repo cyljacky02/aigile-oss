@@ -282,6 +282,9 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 專案清單存在資料表；PROJECTS 是「未封存專案 id」的陣列，原地更新（cards.js 拿的是同一個陣列）
   const PROJECTS = [];
   const statuses = createStatuses({ db, invalid }); // 各專案的看板狀態（每個請求讀一次）
+  // 卡片退回待處理（成員移出、改唯讀、AI 刪除）：落在該專案第一個待處理類別的狀態；紀錄寫當時的狀態名稱（c 要有 project、status、status_id）
+  const todoName = (book, pj) => book.first(pj, '待處理')?.name || '待處理';
+  const backToTodo = (book, c) => `狀態 ${book.of(c)?.name || c.status} → ${todoName(book, c.project)}`;
   let projectRows = [], projectsAt = 0;
   async function loadProjects(force = false) {
     if (!force && Date.now() - projectsAt < 60_000 && projectRows.length) return; // 專案很少改，原 10 秒一天讀 8 千多次；改專案時會清除
@@ -1797,23 +1800,23 @@ ${ending}`;
         if (outside.length) throw new ApiError(400, 'OWNER_NOT_IN_PROJECT', `${target.name} 的所屬人類 ${owner?.name || ''} 不在「${outside.map(nameOf).join('、')}」，AI 的專案不能超出所屬人類。`);
       }
       const cards = removed.length ? await db.all(
-        `SELECT seq, project, proj_no FROM cards WHERE owner_id = ? AND status IN ('待整理','待處理','進行中','待確認','受阻') AND project IN (${removed.map(() => '?').join(',')}) ORDER BY seq`,
+        `SELECT seq, project, proj_no, status, status_id FROM cards WHERE owner_id = ? AND status IN ('待整理','待處理','進行中','待確認','受阻') AND project IN (${removed.map(() => '?').join(',')}) ORDER BY seq`,
         target.id, ...removed) : [];
       if (added.length || removed.length) plan.push({ target, next, added, removed, cards });
     }
     const impact = plan.map(x => ({ participantId: x.target.id, name: x.target.name, added: x.added, removed: x.removed, returnedCards: x.cards.map(pubNo) }));
     if (dryRun || !plan.length) return impact;
-    const at = nowIso(), stmts = [];
+    const at = nowIso(), stmts = [], book = await statuses.load(ctx);
     for (const x of plan) {
       stmts.push(['UPDATE participants SET projects = ?, updated_at = ? WHERE id = ?', [x.next.join(','), at, x.target.id]]);
       for (const c of x.cards) {
         stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE seq = ?`, [at, c.seq]]);
-        stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [c.seq, at, me.id, '網頁', `${x.target.name} 已移出「${nameOf(c.project)}」，改為未指派（狀態改為待處理）`]]);
+        stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [c.seq, at, me.id, '網頁', `${x.target.name} 已移出「${nameOf(c.project)}」，改為未指派（${backToTodo(book, c)}）`]]);
       }
       for (const pj of x.added) stmts.push(projEvent(pj, me.id, `${who(pj)} 加入 ${x.target.name}`, at));
       for (const pj of x.removed) {
         const n = x.cards.filter(c => c.project === pj).length;
-        stmts.push(projEvent(pj, me.id, `${who(pj)} 移除 ${x.target.name}${n ? `（${n} 張卡退回待處理）` : ''}`, at));
+        stmts.push(projEvent(pj, me.id, `${who(pj)} 移除 ${x.target.name}${n ? `（${n} 張卡退回${todoName(book, pj)}）` : ''}`, at));
       }
     }
     await db.batch(stmts);
@@ -1986,8 +1989,8 @@ ${ending}`;
         if (on && nextLeaders[pj].includes(p.id)) throw invalid(`${p.name} 是「${nameOf(pj)}」的 leader，先取消 leader 再設唯讀`);
         nextRo[pj] = on ? [...nextRo[pj], p.id] : nextRo[pj].filter(x => x !== p.id);
         const ids = [p.id, ...[...people.values()].filter(a => a.kind === 'ai' && a.owner_id === p.id).map(a => a.id)];
-        const cards = on ? await db.all("SELECT seq, project, proj_no FROM cards WHERE project = ? AND status IN ('待整理','待處理','進行中','待確認','受阻') AND owner_id IN (SELECT value FROM json_each(?)) ORDER BY seq", pj, JSON.stringify(ids)) : [];
-        roChanges.push({ participantId: p.id, name: p.name, project: pj, readOnly: on, returnedCards: cards.map(pubNo), seqs: cards.map(c => c.seq) });
+        const cards = on ? await db.all("SELECT seq, project, proj_no, status, status_id FROM cards WHERE project = ? AND status IN ('待整理','待處理','進行中','待確認','受阻') AND owner_id IN (SELECT value FROM json_each(?)) ORDER BY seq", pj, JSON.stringify(ids)) : [];
+        roChanges.push({ participantId: p.id, name: p.name, project: pj, readOnly: on, returnedCards: cards.map(pubNo), rows: cards });
       }
     }
     for (const pj of PROJECTS) if (nextLeaders[pj].some(id => nextRo[pj].includes(id))) throw invalid(`唯讀的人不能當 leader（${nameOf(pj)}）`);
@@ -1996,11 +1999,12 @@ ${ending}`;
     const impact = await applyMembership(ctx, me, memberChanges, { dryRun, ov, byLeader: !isAdmin });
     if (!dryRun && (roChanges.length || JSON.stringify(nextRo) !== JSON.stringify(Object.fromEntries(PROJECTS.map(pj => [pj, roMap[pj] || []]))))) {
       const at = nowIso(), stmts = [["INSERT INTO app_settings (key, value) VALUES ('read_only', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify(nextRo)]]];
+      const book = await statuses.load(ctx);
       for (const c of roChanges) {
-        stmts.push(projEvent(c.project, me.id, `${me.name} 把 ${c.name} 設為${c.readOnly ? '唯讀' : '一般成員'}${c.returnedCards.length ? `（${c.returnedCards.length} 張卡退回待處理）` : ''}`, at));
-        for (const seq of c.seqs) {
-          stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE seq = ?`, [at, seq]]);
-          stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [seq, at, me.id, '網頁', `${c.name} 在「${nameOf(c.project)}」改為唯讀，改為未指派（狀態改為待處理）`]]);
+        stmts.push(projEvent(c.project, me.id, `${me.name} 把 ${c.name} 設為${c.readOnly ? '唯讀' : '一般成員'}${c.returnedCards.length ? `（${c.returnedCards.length} 張卡退回${todoName(book, c.project)}）` : ''}`, at));
+        for (const r of c.rows) {
+          stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE seq = ?`, [at, r.seq]]);
+          stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [r.seq, at, me.id, '網頁', `${c.name} 在「${nameOf(c.project)}」改為唯讀，改為未指派（${backToTodo(book, r)}）`]]);
         }
       }
       await db.batch(stmts);
@@ -2028,14 +2032,15 @@ ${ending}`;
       await loadCrossRoles(true); await loadLeaders(true);
       // leader 改的成員：通知管理員（訊息發在該專案）
       if (!isAdmin && impact.length && admin) {
+        const book = await statuses.load(ctx);
         for (const pj of myLead) {
-          const lines = impact.flatMap(x => [...(x.added.includes(pj) ? [`把 ${x.name} 加入${nameOf(pj)}`] : []), ...(x.removed.includes(pj) ? [`把 ${x.name} 移出${nameOf(pj)}${x.returnedCards.length ? `（${x.returnedCards.length} 張卡退回待處理）` : ''}`] : [])]);
+          const lines = impact.flatMap(x => [...(x.added.includes(pj) ? [`把 ${x.name} 加入${nameOf(pj)}`] : []), ...(x.removed.includes(pj) ? [`把 ${x.name} 移出${nameOf(pj)}${x.returnedCards.length ? `（${x.returnedCards.length} 張卡退回${todoName(book, pj)}）` : ''}`] : [])]);
           if (!lines.length) continue;
           await createMessage(ctx, me, { text: `[通知] 【${nameOf(pj)}】${me.name}（${nameOf(pj)} leader）${lines.join('；')}`.slice(0, 1900), requestId: `leader_${me.id}_${pj}_${at}`.slice(0, 128), recipientIds: [admin.id], project: pj }).catch(() => {});
         }
       }
     }
-    return scopeProjects(await projectsResponse(ctx, { dryRun, impact, crossChanges, leaderChanges, roleChanges, roChanges: roChanges.map(({ seqs, ...c }) => c) }), me);
+    return scopeProjects(await projectsResponse(ctx, { dryRun, impact, crossChanges, leaderChanges, roleChanges, roChanges: roChanges.map(({ rows, ...c }) => c) }), me);
   });
   // UX ：不屬於全部專案的人，專案清單只回自己所屬的專案（不露出別專案名稱）
   // PLAT-381：被隔離的成員也列出自己所屬、已封存的專案（leader 才能還原）
@@ -3165,7 +3170,8 @@ ${ending}`;
     const ai = await myAi(me, params.id);
     if (String(body.confirmName ?? '').trim() !== ai.name) throw invalid('confirmName 必須和 AI 名稱完全相同');
     const at = nowIso();
-    const cards = await db.all("SELECT seq, title, project, proj_no FROM cards WHERE owner_id = ? AND status IN ('待整理','待處理','進行中','待確認','受阻') ORDER BY seq", ai.id);
+    const cards = await db.all("SELECT seq, title, project, proj_no, status, status_id FROM cards WHERE owner_id = ? AND status IN ('待整理','待處理','進行中','待確認','受阻') ORDER BY seq", ai.id);
+    const book = cards.length ? await statuses.load(ctx) : null;
     const stmts = [
       ["UPDATE participants SET status = 'deleted', token = ?, token_expires_at = 0, updated_at = ? WHERE id = ?", ['deleted_' + ai.id, at, ai.id]],
       ["UPDATE notifications SET status = 'acked', acked_at = ? WHERE recipient_id = ? AND status = 'pending'", [at, ai.id]],
@@ -3173,7 +3179,7 @@ ${ending}`;
     ];
     for (const c of cards) {
       stmts.push([`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, wait_for_id = CASE WHEN wait_for_id = ? THEN NULL ELSE wait_for_id END, updated_at = ?, version = version + 1 WHERE seq = ?`, [ai.id, at, c.seq]]);
-      stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [c.seq, at, me.id, '網頁', `負責 AI「${ai.name}」已刪除，改為未指派（狀態改為待處理）`]]);
+      stmts.push(['INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (?,?,?,?,?)', [c.seq, at, me.id, '網頁', `負責 AI「${ai.name}」已刪除，改為未指派（${backToTodo(book, c)}）`]]);
     }
     await db.batch(stmts);
     invalidatePeople();

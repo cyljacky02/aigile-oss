@@ -42,7 +42,7 @@ window.AIGILE_EN = {
       [/^• 下一步：([\s\S]*)$/, '• Next step: {1}'],
       [/^• 注意：([\s\S]*)$/, '• Caution: {1}'],
       [/^把 (.+) 加入(.+)$/, 'added {1} to {2}'],
-      [/^把 (.+) 移出(.+?)（(\d+) 張卡退回待處理）$/, 'removed {1} from {2} ({3} cards returned to To do)'],
+      [/^把 (.+) 移出(.+?)（(\d+) 張卡退回(.+)）$/, 'removed {1} from {2} ({3} cards returned to {4:t})'],
       [/^把 (.+) 移出(.+)$/, 'removed {1} from {2}'],
       [/^專案：(.+)$/, 'projects: {1:l}'],
       [/^還沒有專案$/, 'no projects yet'],

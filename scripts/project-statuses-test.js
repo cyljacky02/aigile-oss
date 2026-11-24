@@ -247,6 +247,30 @@ try {
     assert.ok(dev.length && dev.every(id => ids.includes(id)), '沒有叫「進行中」的狀態：照類別');
   }
 
+  // 14) 成員被移出專案、改唯讀、AI 被刪除：卡退回第一個待處理類別的狀態，卡片紀錄與專案異動寫狀態名稱
+  {
+    ok(await patchSt((await byName('待處理', P2)).id, { name: '排隊' }, boss.token, P2), '改名');
+    const h = (await call(null, '/api/join', 'POST', { name: '趙小華', role: 'PG' })).body, hid = h.participant.participantId;
+    const join = async () => ok(await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: hid, projects: ['預設專案', '第二專案'] }] }), '加入兩個專案');
+    const mk2 = async owner => ok(await mkCard(boss.token, { project: '第二專案', ownerId: owner, status: '進行中' }), '第二專案的卡');
+    const logged = async id => (await getCard(id)).log.map(l => l.text);
+    const events = async () => ok(await call(boss.token, `/api/projects/${P2}/events`), '異動紀錄').items.map(e => e.text);
+    await join();
+    const removed = await mk2(hid);
+    ok(await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: hid, projects: ['預設專案'] }] }), '移出第二專案');
+    assert.equal((await getCard(removed.cardId)).status, '排隊');
+    assert.ok((await logged(removed.cardId)).some(t => t.includes('狀態 進行中 → 排隊')), '移出：紀錄寫狀態名稱');
+    assert.ok((await events()).some(t => t.includes('1 張卡退回排隊')), '移出：專案異動寫狀態名稱');
+    await join();
+    const ro = await mk2(hid);
+    ok(await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: hid, readOnlyIn: ['第二專案'] }] }), '設唯讀');
+    assert.ok((await logged(ro.cardId)).some(t => t.includes('狀態 進行中 → 排隊')), '唯讀：紀錄寫狀態名稱');
+    assert.ok((await events()).some(t => /設為唯讀（1 張卡退回排隊）/.test(t)), '唯讀：專案異動寫狀態名稱');
+    const aiCard = await mk2(ai.id);
+    ok(await call(boss.token, `/api/my-ais/${ai.id}/delete`, 'POST', { confirmName: ai.name }), '刪除 AI');
+    assert.ok((await logged(aiCard.cardId)).some(t => t.includes('狀態 進行中 → 排隊')), 'AI 刪除：紀錄寫狀態名稱');
+  }
+
   console.log('project-statuses-test：全部通過');
 } finally {
   db.close?.();
