@@ -65,6 +65,7 @@ try {
   assert.deepEqual([...people.get('p_ro').projects].sort(), [A, B].sort());
   assert.deepEqual(people.get('p_ai').projects, [B]);
   assert.deepEqual([...people.values()].filter(p => p.isAdmin).map(p => p.participantId), ['p_boss'], '只有一位管理員');
+  assert.deepEqual([...people.values()].filter(p => p.platformRole === 'admin' || p.workspaceRole === 'admin').map(p => p.participantId), ['p_boss'], '平台、工作區角色照升級的對應：只有 is_admin 的人是平台管理員兼工作區管理員');
   const members = (await call(tok, `/api/projects/${B}/members`)).body.members;
   assert.equal(members.find(m => m.participantId === 'p_ai')?.role, 'viewer', 'AI 跟著所屬人類唯讀');
 

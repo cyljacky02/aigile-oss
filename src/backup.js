@@ -4,7 +4,7 @@
 //   - 不含任何登入用的東西：成員 Token、密碼雜湊、裝置登入、登入碼、邀請與救援連結、AI 接入連結
 //   - 匯出、匯入都分批（每次一小段），不超過 Workers 的時間與 D1 的單次限制；網頁負責組成一個檔、再分批送回
 //   - 匯入只在空站可用（只有你一位人類、沒有 AI、訊息、卡片、技能、文件）；先預覽數量再確認
-//   - 匯入後你的登入（密碼、這台裝置）改掛到備份裡的管理員身上；其他人要你在「邀請」發重設登入連結，AI 要主人重發 Token
+//   - 備份裡的平台管理員、工作區管理員原樣帶回來；匯入後你的登入（密碼、這台裝置）改掛到備份裡的平台管理員身上；其他人要你在「邀請」發重設登入連結，AI 要主人重發 Token
 import { APP_VERSION, cmpVersion } from './version.js';
 
 export const BACKUP_FORMAT = 'aigile-backup';
@@ -167,24 +167,29 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     await docStorage.put(`docs/${id}`, bytes);
     return { ok: true };
   });
-  // 結束：你的登入（密碼、裝置、登入碼、登入通知）改掛到備份裡的管理員身上，刪掉暫時的你；清快取
+  // 結束：備份裡的平台、工作區角色原樣帶回來（不幫任何人升級）。你的登入（密碼、裝置、登入碼、登入通知）改掛到備份裡的平台管理員身上
+  // （最早加入的那位；他本來就是平台管理員，沒多給權限），刪掉暫時的你；清快取。
+  // 第一階段之前的備份沒有平台角色：照升級的對應（is_admin，沒有就最早加入的啟用人類 → 平台管理員兼工作區管理員，由升級轉換寫入），登入掛到那位。
+  // 備份裡找不到平台管理員（沒有人類，或都停用了）：你照舊是你，名字改回來
   route('POST', '/api/admin/restore/finish', async ({ ctx, me }) => {
     const state = await restorer(me);
     const rows = await db.all("SELECT * FROM participants WHERE id != ? AND kind = 'human' AND status = 'active'", me.id);
-    const target = adminOf(new Map(rows.map(p => [p.id, p])));
+    const platform = await db.get("SELECT p.id FROM participants p JOIN accounts a ON a.id = p.account_id WHERE a.platform_role = 'admin' AND a.status = 'active' AND p.kind = 'human' AND p.status = 'active' AND p.id != ? ORDER BY p.created_at, p.id", me.id);
+    const legacy = rows.filter(p => p.workspace_id === null || p.workspace_id === undefined); // 還沒轉的舊成員（is_admin 已標成工作區管理員）
+    const target = platform ? rows.find(p => p.id === platform.id) : legacy.length ? adminOf(new Map(legacy.map(p => [p.id, p]))) : null;
     const stmts = [["DELETE FROM app_settings WHERE key = 'restore_state'", []]];
     if (target) {
       for (const t of ['credentials', 'devices', 'account_notices']) stmts.push([`UPDATE ${t} SET participant_id = ? WHERE participant_id = ?`, [target.id, me.id]]);
       stmts.push(...membership.forgetStmts([me.id]), ['DELETE FROM participants WHERE id = ?', [me.id]]);
       stmts.push(['UPDATE participants SET token = ?, token_expires_at = ? WHERE id = ?', [me.token, me.token_expires_at || 0, target.id]]); // 你現在的登入碼也跟著過去（不是備份裡的）
-      stmts.push(...membership.setWorkspaceRoleStmts(target.id, 'admin', nowIso()),
-        ...membership.setPlatformRoleStmts(target.id, 'admin', nowIso())); // 你＝備份裡的管理員，一定是工作區管理員與平台管理員（備份還原只有平台管理員能做）；備份裡其他管理員照舊
-      // 其他人類的登入不在備份裡：標「要重設登入」，成員頁與總覽寫出來（他用重設連結登入、或你發了重設連結就清掉）
-      stmts.push(['UPDATE participants SET last_seen_at = 0, standby_at = 0 WHERE id != ?', [target.id]]); // 在線、待命是舊站的狀態：這個站還沒人見過他們（不然進不來的人會顯示在線、AI 顯示待命）
-      for (const p of rows) if (p.id !== target.id) stmts.push(["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['relogin:' + p.id, nowIso()]]);
-    } else { // 備份裡沒有人類：你照舊當管理員，名字改回來
-      stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [state.name, state.code, me.id]]);
+    } else {
+      const taken = await db.get('SELECT 1 AS x FROM participants WHERE name = ? AND id != ?', state.name, me.id);
+      if (!taken) stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [state.name, state.code, me.id]]);
     }
+    // 其他人類的登入不在備份裡：標「要重設登入」，成員頁與總覽寫出來（他用重設連結登入、或你發了重設連結就清掉）
+    const you = target?.id || me.id;
+    if (rows.length) stmts.push(['UPDATE participants SET last_seen_at = 0, standby_at = 0 WHERE id != ?', [you]]); // 在線、待命是舊站的狀態：這個站還沒人見過他們（不然進不來的人會顯示在線、AI 顯示待命）
+    for (const p of rows) if (p.id !== you) stmts.push(["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['relogin:' + p.id, nowIso()]]);
     await db.batch(stmts);
     await db.syncIds?.(); // Postgres：匯入時明寫了流水號，自動編號要接到最大號後面（SQLite／D1 會自己接，沒有這個方法）
     await afterRestore?.();
