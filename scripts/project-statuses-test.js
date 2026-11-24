@@ -18,7 +18,8 @@ const db = await openTestDb(path.join(dataDir, 'switch.db'));
 // beforeCardWrite 在下一次寫卡片（UPDATE／INSERT cards）之前執行一次（模擬讀完狀態清單、還沒寫進去時狀態被刪）
 // beforeStatusInit 在下一次補預設狀態組之前執行一次（模擬初始化慢了一步）
 // beforeStatusAdd 在下一次新增狀態（INSERT INTO project_statuses）之前執行一次（模擬讀完狀態清單、還沒寫進去時有人也新增了一個）
-let failStatusDelete = false, beforeStatusDelete = null, beforeCardWrite = null, beforeStatusInit = null, beforeStatusAdd = null;
+// beforeStatusUpdate 在下一次改狀態（UPDATE project_statuses SET name）之前執行一次
+let failStatusDelete = false, beforeStatusDelete = null, beforeCardWrite = null, beforeStatusInit = null, beforeStatusAdd = null, beforeStatusUpdate = null;
 const STATUS_DELETE = /^DELETE FROM project_statuses WHERE id\b/, CARD_WRITE = /^\s*(UPDATE cards SET|INSERT INTO cards)\b/;
 const isStatusDelete = sql => failStatusDelete && STATUS_DELETE.test(sql);
 const cardWriteHook = async sqls => { if (beforeCardWrite && sqls.some(q => CARD_WRITE.test(q))) { const f = beforeCardWrite; beforeCardWrite = null; await f(); } };
@@ -28,6 +29,7 @@ const appDb = { ...db,
   batch: async stmts => {
     await cardWriteHook(stmts.map(([sql]) => sql)); await statusAddHook(stmts.map(([sql]) => sql));
     if (beforeStatusInit && stmts.some(([sql]) => /^INSERT OR IGNORE INTO project_statuses\b/.test(sql))) { const f = beforeStatusInit; beforeStatusInit = null; await f(); }
+    if (beforeStatusUpdate && stmts.some(([sql]) => /^UPDATE project_statuses SET name\b/.test(sql))) { const f = beforeStatusUpdate; beforeStatusUpdate = null; await f(); }
     if (beforeStatusDelete && stmts.some(([sql]) => STATUS_DELETE.test(sql))) { const f = beforeStatusDelete; beforeStatusDelete = null; await f(); }
     return db.batch(stmts.map(([sql, args]) => (isStatusDelete(sql) ? ['SELECT x FROM no_such_table', []] : [sql, args])));
   } };
@@ -409,6 +411,16 @@ try {
     assert.equal(beforeStatusAdd, null, '真的有同時新增');
     const names = (await statuses(PJ)).map(s => s.name);
     assert.equal(names.length, 12, '最多 12 個狀態'); assert.ok(names.includes('第十二') && !names.includes('第十三'));
+  }
+
+  // 24) 「進行中」類別只有兩個狀態：一個人把 A 改成受阻、同時另一個人刪掉 B，後做完的改類別要 409，必要類別不能被清空
+  {
+    const r = ok(await call(boss.token, '/api/projects', 'POST', { name: '同時改類別', statuses: [{ name: '待', category: '待處理' }, { name: 'A', category: '進行中' }, { name: 'B', category: '進行中' }, { name: '完', category: '已完成' }] }), '建專案');
+    const PJ = encodeURIComponent(r.id), sts = r.items.find(p => p.id === r.id).statuses, A = sts.find(s => s.name === 'A'), B = sts.find(s => s.name === 'B');
+    beforeStatusUpdate = async () => ok(await del(B.id, {}, boss.token, PJ), '另一個人先刪掉 B');
+    assert.equal(fail(await patchSt(A.id, { category: '受阻' }, boss.token, PJ), 409, '後做完的改類別').error.code, 'CONFLICT');
+    assert.equal(beforeStatusUpdate, null, '真的有同時改');
+    assert.deepEqual((await statuses(PJ)).filter(s => s.category === '進行中').map(s => s.name), ['A'], '進行中類別還有一個狀態');
   }
 
   console.log('project-statuses-test：全部通過');
