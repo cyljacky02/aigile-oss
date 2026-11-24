@@ -77,6 +77,7 @@ try {
   // 3) 審核：看得到，直接加入被拒；送申請、專案管理員核准後才加入
   it = (await joinable(lin.token)).find(p => p.id === B);
   assert.equal(it?.visibility, 'review', '審核專案也列出');
+  assert.equal(it.members, 0, '人數不算工作區管理員的隱含權限');
   r = await call(lin.token, `/api/projects/${B}/join`, 'POST');
   assert.equal(r.status, 403, '審核專案不能直接加入');
   assert.equal(code(r), 'JOIN_NEEDS_APPROVAL');

@@ -55,7 +55,7 @@ export function registerJoin(d) {
     const people = v.people, mine = projectsOf(me), admin = adminOf(people);
     const reqs = await db.all('SELECT * FROM join_requests WHERE participant_id = ? ORDER BY created_at DESC LIMIT 200', me.id);
     const last = pj => reqs.find(r => r.project === pj);
-    const members = pj => [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && projectsOf(p).includes(pj)).length;
+    const members = pj => [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && projectsOf(p).includes(pj) && !v.implicitOnlyIn(p.id, pj)).length; // 工作區管理員的隱含權限不算成員
     const listed = r => { const vis = v.visibilityOf(r.id); return vis === PROJECT_VISIBILITY.OPEN || (vis === PROJECT_VISIBILITY.REVIEW && (joinOpen(set, r.id) || last(r.id)?.status === 'pending')); };
     const items = projectRows().filter(r => !r.archived && !mine.includes(r.id) && listed(r)).map(r => {
       const l = last(r.id), ls = (leaders[r.id] || []).map(id => people.get(id)?.name).filter(Boolean);
