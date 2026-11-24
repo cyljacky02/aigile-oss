@@ -58,7 +58,8 @@ try {
   await js("document.querySelector('#inv-form').requestSubmit(), true");
   await until(() => js("/帳號密碼，或貼上登入碼/.test(document.querySelector('#inv-error').textContent)"), 8000, '沒填就提醒要登入');
   await js(`(() => { document.querySelector('#iv-login-code').value = ${q(old.token)}; document.querySelector('#inv-form').requestSubmit(); return true; })()`);
-  await until(() => js("!!document.querySelector('.av-btn')"), 10000, '登入後進到工作區');
+  // .av-btn 一直在頁面上：要等邀請頁收起、頭像畫好（接受的請求做完）才算進到工作區（Postgres 比較慢，不等就先查名冊了）
+  await until(() => js("document.querySelector('#invite').hidden && !!document.querySelector('.av-btn')?.textContent.trim()"), 10000, '登入後進到工作區');
   assert.ok((await kit.call(boss.token, '/api/roster')).body.members.some(p => p.participantId === old.participant.participantId), '回到成員名冊');
   await goto(kit.BASE + '/', '登出前的頁面');
   await js("localStorage.clear(), sessionStorage.clear(), true");
