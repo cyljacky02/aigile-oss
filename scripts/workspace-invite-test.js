@@ -111,7 +111,15 @@ try {
   assert.equal(r.body.invite.kind, 'rejoin', '邀請標出是重新加入');
   assert.equal(code(await call(boss.token, '/api/invites', 'POST', { name: '陳昭宇' })), 'INVITE_EXISTS', '已經有有效的邀請就不再發');
   assert.equal((await call(null, '/api/auth/invite/peek', 'POST', { token: tokenOf(r.body.url) })).body.kind, 'rejoin', '被邀請的人看得到是重新加入');
-  const back = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url) });
+  // 已有帳號的人要先用原本的帳號登入才接受：只有連結不會讓任何人登入
+  const linkOnly = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url) });
+  assert.deepEqual([linkOnly.status, code(linkOnly)], [400, 'INVITE_LOGIN_REQUIRED'], '只有連結：要先登入：' + JSON.stringify(linkOnly.body));
+  assert.ok(!linkOnly.body.token, '沒有拿到登入');
+  const otherAccount = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url), code: boss.token });
+  assert.deepEqual([otherAccount.status, code(otherAccount), !!otherAccount.body.token], [400, 'LOGIN_FAILED', false], '用別人的帳號登入不行');
+  assert.equal(code(await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url), code: 'not-a-real-code-xxxxxxxxxxxx' })), 'LOGIN_FAILED', '登入碼不對不行');
+  assert.equal((await call(null, '/api/auth/invite/peek', 'POST', { token: tokenOf(r.body.url) })).body.valid, true, '沒登入成功時邀請照樣有效');
+  const back = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url), code: chen.token }); // 用他自己的登入碼登入
   assert.equal(back.status, 200, '接受邀請：' + JSON.stringify(back.body));
   assert.equal(back.body.participant.participantId, Cn, '回來的是原本的帳號（歷史紀錄接得上）');
   const cBack = await me(back.body.token);

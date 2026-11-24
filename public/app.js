@@ -360,11 +360,16 @@
         <dt>角色</dt><dd>${esc(d.role || '—')}</dd></dl>
       <form id="inv-form" class="join-pane" novalidate>
         <label>你的名字<input name="name" value="${esc(d.name)}" maxlength="40" required autocomplete="nickname" ${reset || rejoin ? 'readonly' : ''}></label>
-        <p class="muted small">${reset ? '這是重設登入的連結：按「加入」後，這台裝置會以你原本的身分登入。' : rejoin ? '你之前被移出這個工作區：按「加入」後，會用你原本的帳號回到工作區。' : '確認名字沒錯就按「加入」，這台裝置會記住你。'}</p>
-        <fieldset class="inv-pwd"><legend>設帳號密碼</legend>
-          <p class="muted small">${reset || rejoin ? '設一組新的帳號密碼（原本有設的會換成這組），' : ''}之後換裝置、清掉瀏覽器都用這組登入。</p>
+        <p class="muted small">${reset ? '這是重設登入的連結：按「加入」後，這台裝置會以你原本的身分登入。' : rejoin ? '你之前被移出這個工作區：用你原本的帳號登入後，就會回到工作區。' : '確認名字沒錯就按「加入」，這台裝置會記住你。'}</p>
+        ${rejoin ? `<fieldset class="inv-pwd inv-login"><legend>用原本的帳號登入</legend>
+          <p class="muted small">輸入原本的帳號密碼；沒設過帳號密碼的話，貼上你的登入碼。</p>
+          <label>帳號<input name="username" id="iv-login-user" maxlength="30" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+          <label>密碼<input name="password" id="iv-login-pwd" type="password" maxlength="128" autocomplete="current-password"></label>
+          <label>或登入碼<input name="code" id="iv-login-code" autocomplete="off" spellcheck="false"></label>
+        </fieldset>` : `<fieldset class="inv-pwd"><legend>設帳號密碼</legend>
+          <p class="muted small">${reset ? '設一組新的帳號密碼（原本有設的會換成這組），' : ''}之後換裝置、清掉瀏覽器都用這組登入。</p>
           ${credFieldsHtml('iv')}
-        </fieldset>
+        </fieldset>`}
         <p id="inv-error" class="error" role="alert"></p>
         <button class="btn primary" type="submit">加入</button>
       </form>
@@ -377,16 +382,21 @@
       $('#inv-cd').textContent = invLeft(left); // 可能是幾小時或幾天
     };
     clearInterval(inviteTimer); inviteTimer = setInterval(tick, 1000); tick();
-    const invCred = bindCredFields($('#inv-form'), 'iv');
+    const invCred = rejoin ? null : bindCredFields($('#inv-form'), 'iv');
     $('#inv-form').addEventListener('submit', async e => {
       e.preventDefault();
       $('#inv-error').textContent = '';
       const btn = e.target.querySelector('button[type=submit]');
       const fd = new FormData(e.target);
-      if (!invCred.check()) return; // 帳號密碼一定要設，之後用它登入
+      // 已有帳號（重新加入）：用原本的帳號密碼或登入碼登入；其他：帳號密碼一定要設，之後用它登入
+      const loginWith = () => { const code = String(fd.get('code') || '').trim(); return code ? { code } : { username: String(fd.get('username') || '').trim(), password: fd.get('password') || '' }; };
+      if (rejoin ? !String(fd.get('code') || '').trim() && !(String(fd.get('username') || '').trim() && fd.get('password')) : !invCred.check()) {
+        if (rejoin) $('#inv-error').textContent = '請輸入原本的帳號密碼，或貼上登入碼';
+        return;
+      }
       btn.disabled = true;
       try {
-        const r = await api('/api/auth/invite', { method: 'POST', body: { token: tok, name: fd.get('name').trim(), ...invCred.values() } });
+        const r = await api('/api/auth/invite', { method: 'POST', body: { token: tok, name: fd.get('name').trim(), ...(rejoin ? loginWith() : invCred.values()) } });
         clearInterval(inviteTimer);
         ss.del(INVITE_KEY);
         history.replaceState(null, '', '/');
@@ -396,7 +406,7 @@
       } catch (err) {
         btn.disabled = false;
         if (err.code === 'INVITE_INVALID') return inviteGone(d.adminName || d.inviterName);
-        if (!invCred.serverError(err)) $('#inv-error').textContent = err.message;
+        if (!invCred?.serverError(err)) $('#inv-error').textContent = err.message;
       }
     });
   }

@@ -475,10 +475,10 @@ export function registerLogin(d) {
   // ---------- 身分來源（可替換的一層） ----------
   const gone = (msg = '這個邀請連結已失效') => new ApiError(400, 'INVITE_INVALID', msg);
   const PROVIDERS = {
-    // 邀請連結：新成員加入，或「重設登入」後回到原本的身分
+    // 邀請連結：新成員加入（順便建帳號）、已有帳號的人回到工作區（要先用原本的帳號登入），或「重設登入」後回到原本的身分
     invite: {
       label: '邀請連結',
-      async verify(body, ctx) {
+      async verify(body, ctx, req) {
         const iv = await validInvite(body.token);
         if (!iv) return null;
         const now = Date.now();
@@ -491,9 +491,10 @@ export function registerLogin(d) {
           const t = await db.get("SELECT * FROM participants WHERE id = ? AND status = 'active'", pid);
           if (!t || (rejoin && t.workspace_status !== 'removed')) throw gone(); // 重新加入的連結只給還在「已移出」的人用
           name = t.name;
+          if (rejoin) await signInAs(t, body, req); // 已有帳號：連結本身不讓人登入，要用原本的帳號登入後才接受
         }
-        // 選填帳號密碼；三格都空＝不設，填了就要都對（在佔用邀請前檢查，錯了連結還能用）
-        const any = [body.username, body.password, body.passwordAgain].some(x => x !== undefined && x !== null && x !== '');
+        // 選填帳號密碼（新帳號、重設登入）；三格都空＝不設，填了就要都對（在佔用邀請前檢查，錯了連結還能用）
+        const any = !rejoin && [body.username, body.password, body.passwordAgain].some(x => x !== undefined && x !== null && x !== '');
         let cred = null;
         if (any) {
           cred = await newCred(body, pid);
@@ -609,6 +610,19 @@ export function registerLogin(d) {
       },
     },
   };
+  // 接受給已有帳號的人的邀請：body 帶原本的帳號密碼（username、password）或登入碼（code），登入的要是邀請的那個帳號。
+  // 沒帶、不對、是別人的帳號都不佔用邀請（連結照樣能用）
+  async function signInAs(t, body, req) {
+    const has = x => x !== undefined && x !== null && x !== '';
+    if (!has(body.code) && !has(body.username) && !has(body.password)) {
+      throw new ApiError(400, 'INVITE_LOGIN_REQUIRED', `${t.name} 已經有帳號：請用原本的帳號密碼或登入碼登入，才能接受這個邀請回到工作區。`);
+    }
+    const p = has(body.code) ? await PROVIDERS.code.verify({ code: body.code }) : await PROVIDERS.password.verify({ username: body.username, password: body.password });
+    if (!p || p.id !== t.id) {
+      failed(req);
+      throw new ApiError(400, 'LOGIN_FAILED', '帳號密碼或登入碼不對，或不是這個邀請的帳號。', { captchaRequired: needCaptcha(req) });
+    }
+  }
   const FAIL_MSG = {
     password: '帳號或密碼不對。',
     rescue: '這個救援連結已失效（15 分鐘、只能用一次）。請聯絡管理員。',
