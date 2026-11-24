@@ -91,7 +91,7 @@ try {
     await until(() => js("!!document.querySelector('.pm-more-menu')"), 5000, L + '⋯ 選單');
     const mi = await J("[...document.querySelectorAll('.pm-more-menu [role=menuitem]')].map(b => b.innerText.replace(/\\s+/g, ' ').trim())");
     assert.deepEqual(mi.map(x => x.replace(/^\S+\s*/, '').split(' ')[0]), ['改名', '程式庫與分支', '專案可見度', '成員與專案角色', '看板狀態', '異動紀錄', '封存專案', '永久刪除'], L + '⋯ 選單：' + mi.join(' / '));
-    assert.match(mi[7], /只有管理員/, L + '永久刪除寫只有管理員');
+    assert.match(mi[7], /只有工作區管理員/, L + '永久刪除寫只有工作區管理員');
     assert.equal(await js("document.querySelector('.pm-more-menu [data-pp=\"archive\"]').classList.contains('danger')"), false, L + '封存可還原，用一般色（UX #6479）');
     assert.equal(await js("document.querySelector('.pm-more-menu [data-pp=\"noop\"]').getAttribute('aria-disabled')"), 'true', L + '永久刪除灰掉');
     assert.ok(!(await hscroll()), L + '專案管理頁不橫向捲動');
@@ -173,7 +173,7 @@ try {
   await click('[data-pm-more="預設專案"]');
   await until(() => js("!!document.querySelector('.pm-more-menu')"), 5000, '英文 ⋯ 選單');
   const enM = await txt('.pm-more-menu');
-  assert.match(enM, /Rename[\s\S]*Repository and branch[\s\S]*Members and project roles[\s\S]*Change log[\s\S]*Archive project[\s\S]*Can be restored[\s\S]*Delete permanently[\s\S]*Admins only/, '英文 ⋯：' + enM);
+  assert.match(enM, /Rename[\s\S]*Repository and branch[\s\S]*Members and project roles[\s\S]*Change log[\s\S]*Archive project[\s\S]*Can be restored[\s\S]*Delete permanently[\s\S]*Workspace admins only/, '英文 ⋯：' + enM);
   assert.deepEqual(zhLeft(enP + ' ' + enM), [], '專案管理頁沒有中文殘留');
   await shot('PLAT-381-8-電腦-英文-leader-專案管理頁');
   await js("document.body.click(); true");

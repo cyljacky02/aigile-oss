@@ -2046,7 +2046,7 @@ ${ending}`;
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看加入設定' });
     return groupSettings();
   });
-  const CREATE_PROJECTS_LABEL = { [CREATE_PROJECTS.MEMBERS]: '所有成員', [CREATE_PROJECTS.ADMINS]: '只有管理員' };
+  const CREATE_PROJECTS_LABEL = { [CREATE_PROJECTS.MEMBERS]: '所有成員', [CREATE_PROJECTS.ADMINS]: '只有工作區管理員' };
   for (const pattern of ['/api/workspace/settings', '/api/group/settings']) route('PUT', pattern, async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '改加入設定' });
     const body = await readJson(req);
@@ -2057,7 +2057,7 @@ ${ending}`;
       code = body.roomCode === null ? '' : String(body.roomCode);
       if (code && (code.length < 4 || code.length > 64 || /\s/.test(code))) throw invalid('房間碼需為 4～64 字，不可有空白；要清除請送空字串');
     }
-    if (has('createProjects') && !Object.values(CREATE_PROJECTS).includes(body.createProjects)) throw invalid('createProjects 只能是 members（所有成員）或 admins（只有管理員）');
+    if (has('createProjects') && !Object.values(CREATE_PROJECTS).includes(body.createProjects)) throw invalid('createProjects 只能是 members（所有成員）或 admins（只有工作區管理員）');
     let name = null;
     if (has('name')) {
       name = String(body.name ?? '').trim();

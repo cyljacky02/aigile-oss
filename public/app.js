@@ -3769,7 +3769,7 @@
       const n = projStats(p), m = lastMsgOf(p);
       const st = (label, v, cls) => `<span class="hs${v && cls ? ' ' + cls : ''}${v ? '' : ' zero'}">${label}<b>${v}</b></span>`;
       return `<button type="button" class="hub-card" style="--pc:${projColor(p)}" data-proj="${esc(p)}" aria-label="進入 ${esc(projName(p))}">
-        <span class="hc-head">${projIcon(p, 44)}<span class="hc-name"><b>${esc(projName(p))}</b><span class="small">成員 ${projMembers(p)} · 最後動態 ${m ? whenText(m.createdAt) : '—'}${projectAdminsOf(p).length ? ` · ★ leader：${esc(projectAdminsOf(p).map(id => state.participants.get(id)?.name).filter(Boolean).join('、'))}` : ''}</span></span>${counts[p] ? `<span class="hc-todo">要你處理 ${counts[p]}</span>` : ''}</span>
+        <span class="hc-head">${projIcon(p, 44)}<span class="hc-name"><b>${esc(projName(p))}</b><span class="small">成員 ${projMembers(p)} · 最後動態 ${m ? whenText(m.createdAt) : '—'}${projectAdminsOf(p).length ? ` · ★ 專案管理員：${esc(projectAdminsOf(p).map(id => state.participants.get(id)?.name).filter(Boolean).join('、'))}` : ''}</span></span>${counts[p] ? `<span class="hc-todo">要你處理 ${counts[p]}</span>` : ''}</span>
         <span class="hc-stats">${st('今日完成', n.done)}${st('進行中', n.doing)}${st('受阻', n.blocked, 'bad')}${st('待驗收', n.verify, 'warn')}</span>
         <span class="hc-last">${m ? `最新：${esc(m.author.name)}「${esc(oneLine(m.text, 50))}」` : '最近 12 小時沒有新訊息'}</span>
         <span class="hc-go">進入 ›</span></button>`;
@@ -9337,13 +9337,13 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       ${groupJoinHtml()}
       ${perm.gs && !perm.gs.error ? wsTtlHtml(perm.gsTtl) : ''}</div>`;
   }
-  // 誰可以建立專案：所有成員／只有管理員（點了就存）
+  // 誰可以建立專案：所有成員／只有工作區管理員（點了就存）
   function createProjectsHtml() {
     const gs = perm.gs;
     if (!gs || gs.error || !gs.createProjects) return '';
     const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-cp" value="${v}" data-pp="createprojects"${gs.createProjects === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
     return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
-      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('admins', '只有管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
   }
   // 可連線的 AI 工具（全站一份）：取消勾選的只擋新接入，至少留一個開著；改的紀錄在「工作區異動紀錄」
   function groupToolsHtml() {
@@ -9397,7 +9397,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="statuses">🗂 看板狀態<span class="pm-sub">${(p.statuses || []).length} 個</span></button>
           <button type="button" role="menuitem" data-pp="log">🕘 異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>🗄 封存專案<span class="pm-sub">${blocked ? esc(why) : '可還原'}</span></button>
-          <button type="button" role="menuitem" aria-disabled="true" class="pm-off" data-pp="noop" title="只有管理員能永久刪除">🗑 永久刪除<span class="pm-sub">只有管理員</span></button></div>` : '';
+          <button type="button" role="menuitem" aria-disabled="true" class="pm-off" data-pp="noop" title="只有工作區管理員能永久刪除">🗑 永久刪除<span class="pm-sub">只有工作區管理員</span></button></div>` : '';
       const last = p.archived ? '<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button></span>'
         : `<span class="pm-more-wrap"><button type="button" class="pm-more" data-pm-more="${esc(p.id)}" aria-haspopup="menu" aria-expanded="${perm.moreOpen === p.id}" aria-label="${esc(p.name)} 的更多動作">⋯</button>${menu}</span>`;
       const log = perm.openLog === p.id ? `<tr class="pm-log-tr" data-pj="${esc(p.id)}"><td colspan="6"><div class="pm-log-head"><b>異動紀錄 · ${esc(p.name)}</b><button type="button" class="link small" data-pp="log" aria-expanded="true">收起</button></div><ul class="pa-log">${(perm.events[p.id] || []).map(e => `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(e.text)}</li>`).join('') || '<li class="muted small">還沒有紀錄</li>'}</ul></td></tr>` : '';
@@ -9407,7 +9407,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <div class="pm-card"><div class="pm-card-head"><strong>你管理的專案 · ${list.filter(p => !p.archived).length}</strong></div>
         ${list.length ? `<table class="pm-table pm-ptable"><thead><tr><th scope="col">專案</th><th scope="col" class="c-code">API 代號</th><th scope="col" class="c-num">成員</th><th scope="col" class="c-num2">未結案卡</th><th scope="col" class="c-repo">程式庫</th><th scope="col" class="c-more"><span class="sr-only">動作</span></th></tr></thead>
         <tbody>${rows}</tbody></table>` : '<p class="muted small pm-pad">你目前不是任何專案的專案管理員。</p>'}</div>
-      <div class="pm-card pm-lead-note"><p class="muted small">專案管理員能做：改名、程式庫與分支、成員與專案角色、看板狀態、封存（可還原）。永久刪除、邀請、帳號只有管理員能做。</p></div></div>`;
+      <div class="pm-card pm-lead-note"><p class="muted small">專案管理員能做：改名、程式庫與分支、成員與專案角色、看板狀態、封存（可還原）。永久刪除、邀請、帳號只有工作區管理員能做。</p></div></div>`;
   }
   // 已永久刪除的專案（全站紀錄，只有管理員）；第一次畫才去讀
   function permDelsHtml() {
@@ -9678,7 +9678,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!onAdm && !onLead) perm.lastMemTab = perm.tab;
     if (state.permTab !== perm.tab) { state.permTab = perm.tab; drawChrome(); }
     // 管理員設定、成員管理分兩頁（頭像選單各一項），頂端互相連過去
-    const title = onRoster ? '<h2>📇 成員名冊</h2><span class="muted small">工作區裡所有人與 AI；專案只列你看得到的</span>' : onLead ? `<h2>📁 專案管理</h2><span class="muted small">你是專案管理員的專案 · 永久刪除專案請找工作區管理員 ${esc(wsAdminNames())}</span>` : onAdm ? '<h2>⚙️ 管理員設定</h2><span class="muted small">只有管理員看得到 · 成員、AI 職務、技能在 <button type="button" class="link small" data-pm-page="members">👥 成員管理 ›</button></span>'
+    const title = onRoster ? '<h2>📇 成員名冊</h2><span class="muted small">工作區裡所有人與 AI；專案只列你看得到的</span>' : onLead ? `<h2>📁 專案管理</h2><span class="muted small">你是專案管理員的專案 · 永久刪除專案請找工作區管理員 ${esc(wsAdminNames())}</span>` : onAdm ? '<h2>⚙️ 管理員設定</h2><span class="muted small">只有工作區管理員看得到 · 成員、AI 職務、技能在 <button type="button" class="link small" data-pm-page="members">👥 成員管理 ›</button></span>'
       : `<h2>👥 成員管理</h2><span class="muted small">工作區管理員：${esc(wsAdminNames())}${admin ? ' · <button type="button" class="link small" data-adm="">⚙️ 管理員設定 ›</button>' : ' · 你是專案管理員'}</span>`;
     const tabs = onAdm || onLead || !manager ? '' : `<div class="seg-scope pm-tabs" role="tablist" aria-label="分頁">${[['roster', '名冊'], ['members', '專案成員'], ['roles', 'AI 職務'], ['skills', '技能']].map(([k, t]) => `<button type="button" role="tab" data-pm-tab="${k}" aria-selected="${perm.tab === k}" aria-pressed="${perm.tab === k}">${t}</button>`).join('')}</div>`;
     const body = onRoster ? rosterHtml() : onLead ? permLeadProjectsHtml() : onAdm ? admBodyHtml() : perm.tab === 'skills' ? permSkillsHtml() : perm.tab === 'roles' ? permRolesHtml() : permView() === 'byMember' ? permByMemberHtml() : permByProjectHtml();
@@ -10210,7 +10210,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     }
     if (a === 'createprojects') {
       if (pp.value === perm.gs?.createProjects) return;
-      return saveGroupSettings({ createProjects: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能建立專案' : '已儲存：只有管理員能建立專案');
+      return saveGroupSettings({ createProjects: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能建立專案' : '已儲存：只有工作區管理員能建立專案');
     }
     if (a === 'openjoin') { const on = pp.getAttribute('aria-checked') !== 'true'; return saveGroupSettings({ openJoin: on }, on ? '已開放自行註冊' : '已關閉自行註冊，只能用邀請連結加入'); }
     if (a === 'roomcode') {

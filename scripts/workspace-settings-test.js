@@ -67,7 +67,7 @@ try {
   assert.equal(s1.body.createProjects, 'admins');
   assert.equal((await call(boss.token, SETTINGS)).body.createProjects, 'admins', '存起來了');
   const log = (await call(boss.token, '/api/group/events')).body.items.map(e => e.text);
-  assert.ok(log.some(t => /林志明 .*只有管理員/.test(t)), '異動紀錄有記：' + log.join('｜'));
+  assert.ok(log.some(t => /林志明 .*只有工作區管理員/.test(t)), '異動紀錄有記：' + log.join('｜'));
 
   // 只有管理員：一般成員被拒，管理員可以且成為專案管理員
   const denied = await call(chen.token, '/api/projects', 'POST', { name: '又一個' });
