@@ -41,7 +41,7 @@ const tokenOf = url => url.split('/invite/')[1];
     assert.equal(h.setup, false);
     assert.equal(h.adminName, undefined, '公開端點不回管理員姓名');
     assert.deepEqual(h.loginMethods, ['invite', 'pair', 'code', 'password', 'rescue'], '身分來源是可替換的一層');
-    // 9. 拿掉群組密碼自己加入
+    // 9. 拿掉房間碼自己加入
     const j2 = await call(null, '/api/join', 'POST', { name: '路人', role: 'PG' });
     assert.equal(j2.status, 403);
     assert.equal(j2.body.error.code, 'JOIN_CLOSED');

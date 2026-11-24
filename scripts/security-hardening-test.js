@@ -1,7 +1,7 @@
 // 公開部署前的安全加固（在程式內呼叫＋真的啟動 server.js）
 // A. 登入：同時送很多次只驗前 5 次；沒有「全站封鎖」（別人亂試不會讓所有人登不進來）；每個 IP 的限制照舊
 // B. 第一次改帳密沒帶帳號（沿用 admin）也要擋
-// C. 自己註冊每個 IP 有次數限制；群組密碼錯太多次要等
+// C. 自己註冊每個 IP 有次數限制；房間碼錯太多次要等
 // D. API 有安全標頭；MCP 送 null、壞的 % 編碼、/api/auth/constructor 都不是 500
 // E. server.js：Host 不合法不會當掉；沒設 TRUST_PROXY 時 X-Forwarded-For 不算數；請求太大回 413；網頁有 CSP；APP_URL 用在連結
 // 用法：node scripts/security-hardening-test.js
@@ -60,7 +60,7 @@ try {
     assert.equal(r.status, 400, '沒帶帳號（沿用 admin）要擋');
     assert.equal((await call(t, '/api/me')).body.mustChangeCredentials, true, '還在改帳密關卡');
   }
-  // ---------- C. 註冊與群組密碼次數 ----------
+  // ---------- C. 註冊與房間碼次數 ----------
   {
     const { call } = await mk({ joinLimitPerHour: '3', roomCode: 'garden-77' });
     for (let i = 0; i < 3; i++) assert.equal((await call(null, '/api/join', 'POST', { name: '人' + i + '號', roomCode: 'garden-77' }, '203.0.113.7')).status, 201);
@@ -68,7 +68,7 @@ try {
     assert.equal(r.status, 429); assert.equal(r.body.error.code, 'TOO_MANY_SIGNUPS');
     assert.equal((await call(null, '/api/join', 'POST', { name: '別處來的', roomCode: 'garden-77' }, '203.0.113.8')).status, 201, '別的 IP 不受影響');
     for (let i = 0; i < 10; i++) assert.equal((await call(null, '/api/join', 'POST', { name: '猜密碼' + i, roomCode: 'guess' + i }, '203.0.113.9')).status, 403);
-    assert.equal((await call(null, '/api/join', 'POST', { name: '猜中了', roomCode: 'garden-77' }, '203.0.113.9')).status, 429, '群組密碼錯 10 次後要等');
+    assert.equal((await call(null, '/api/join', 'POST', { name: '猜中了', roomCode: 'garden-77' }, '203.0.113.9')).status, 429, '房間碼錯 10 次後要等');
   }
   // ---------- D. API 標頭與錯誤處理 ----------
   {

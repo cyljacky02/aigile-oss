@@ -116,9 +116,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     }
     if (!ok) throw new ApiError(403, 'CAPTCHA_FAILED', '人機驗證沒有通過或已過期，請重新驗證', { captchaRequired: true });
   }
-  // 管理頁改過就存 app_settings（open_join＝'1'／'0'；room_code＝密碼雜湊，''＝清除），每次從資料庫讀，多份程式也立刻生效。
-  // 沒改過才用環境變數 OPEN_JOIN／ROOM_CODE。群組密碼只存雜湊，不回傳、不寫日誌
-  // 自己註冊的次數限制（每個 IP）：成功註冊每小時 JOIN_LIMIT_PER_HOUR 個（預設 20）；群組密碼錯 10 次就 10 分鐘內不能再試
+  // 開放自行註冊、房間碼是工作區設定（src/workspace-settings.js joinRules；管理頁改過就存資料庫，沒改過才用環境變數 OPEN_JOIN／ROOM_CODE）
+  // 自己註冊的次數限制（每個 IP）：成功註冊每小時 JOIN_LIMIT_PER_HOUR 個（預設 20）；房間碼錯 10 次就 10 分鐘內不能再試
   // 只記在這份程式的記憶體（Workers 每個執行個體各算各的，擋大量灌帳號已經夠用）；沒有 IP（程式內直接呼叫）不限
   const JOIN_LIMIT = Number(config.joinLimitPerHour) || 20, ROOM_FAIL_LIMIT = 10;
   const joinHits = new Map();
@@ -130,16 +129,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (joinHits.size > 5000) for (const [k, v] of joinHits) if (now - v.start >= 3600_000) joinHits.delete(k);
     return b;
   };
-  async function joinSettings() {
-    const m = Object.fromEntries((await db.all("SELECT key, value FROM app_settings WHERE key IN ('open_join', 'room_code')").catch(() => [])).map(r => [r.key, r.value]));
-    const webOpen = 'open_join' in m, webCode = 'room_code' in m;
-    return {
-      openJoin: webOpen ? m.open_join === '1' : OPEN_JOIN,
-      roomCodeSet: webCode ? !!m.room_code : !!ROOM_CODE,
-      checkRoomCode: async code => webCode ? (!m.room_code || await verifyPassword(String(code ?? ''), m.room_code)) : (!ROOM_CODE || code === ROOM_CODE),
-      source: { openJoin: webOpen ? 'web' : 'env', roomCode: webCode ? 'web' : 'env' },
-    };
-  }
+  const joinSettings = () => workspace.joinRules();
   // 預設管理員：還沒有任何人類的新站，第一個請求就建「管理員」，帳號 admin、密碼 ADMIN_PASSWORD（沒設＝admin），在所有專案。
   // 第一次登入要先改帳號（不能是 admin）與密碼，改之前只能讀自己、改帳密、登出。server.js／worker.js 開；直接呼叫 createApp 的測試不開
   const DEFAULT_ADMIN = config.defaultAdmin === true || config.defaultAdmin === '1';
@@ -1008,15 +998,15 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const js = await joinSettings();
     if (hasHuman && !js.openJoin) {
       const admin = adminOf(await peopleMap(ctx));
-      throw new ApiError(403, 'JOIN_CLOSED', `要加入群組，請管理員 ${admin?.name || ''} 傳邀請連結給你`);
+      throw new ApiError(403, 'JOIN_CLOSED', `這個工作區沒有開放自行註冊，請工作區管理員 ${admin?.name || ''} 傳邀請連結給你`);
     }
     const ip = req ? clientIp(req) : '';
     const jb = ip ? joinBucket(ip) : null;
     if (jb && jb.n >= JOIN_LIMIT) throw new ApiError(429, 'TOO_MANY_SIGNUPS', '這個網路註冊太多帳號了，請一小時後再試', { retryAfter: Math.ceil((jb.start + 3600_000 - Date.now()) / 1000) });
-    if (jb && jb.bad >= ROOM_FAIL_LIMIT) throw new ApiError(429, 'TOO_MANY_ATTEMPTS', '群組密碼錯太多次，請 10 分鐘後再試', { retryAfter: Math.ceil((jb.badStart + 600_000 - Date.now()) / 1000) });
-    await verifyTurnstile(body.turnstileToken, req); // 先過人機驗證，才檢查群組密碼（擋機器猜密碼）
-    if (js.roomCodeSet && !String(body.roomCode ?? '').trim()) throw new ApiError(400, 'ROOM_CODE_REQUIRED', '請輸入群組密碼', { field: 'roomCode' }); // 沒填不算猜錯
-    if (!(await js.checkRoomCode(body.roomCode))) { if (jb) jb.bad++; throw new ApiError(403, 'FORBIDDEN', '群組密碼錯誤'); }
+    if (jb && jb.bad >= ROOM_FAIL_LIMIT) throw new ApiError(429, 'TOO_MANY_ATTEMPTS', '房間碼錯太多次，請 10 分鐘後再試', { retryAfter: Math.ceil((jb.badStart + 600_000 - Date.now()) / 1000) });
+    await verifyTurnstile(body.turnstileToken, req); // 先過人機驗證，才檢查房間碼（擋機器猜房間碼）
+    if (js.roomCodeSet && !String(body.roomCode ?? '').trim()) throw new ApiError(400, 'ROOM_CODE_REQUIRED', '請輸入房間碼', { field: 'roomCode' }); // 沒填不算猜錯
+    if (!(await js.checkRoomCode(body.roomCode))) { if (jb) jb.bad++; throw new ApiError(403, 'FORBIDDEN', '房間碼錯誤'); }
     const name = validateName(body.name);
     await assertNameFree(name);
     // 帳號密碼：網頁註冊一定帶（之後用帳密登入）；API 沒帶照舊只拿登入碼。先檢查完才建人
@@ -1027,13 +1017,16 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const token = newToken();
     const ts = nowIso();
     invalidatePeople();
-    // 新加入的人類：群組裡第一位（建立者）是工作區管理員，所有專案靠隱含權限；之後加入的預設沒有專案，只看得到「全部專案」，等被指派
-    // 「是不是第一位」在同一條 INSERT 裡判斷，兩人同時建群只有一位是管理員
-    await db.batch([[`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, is_admin)
+    // 新加入的人類：工作區成員，預設沒有專案，只看得到「全部專案」，等被加入或自己加入開放專案。
+    // 平台還沒有任何平台管理員時，這位是平台管理員兼工作區管理員（is_admin＝1，enterWorkspaceStmts 照它寫兩個角色），所有專案靠隱含權限。
+    // 「有沒有平台管理員」在同一條 INSERT 裡判斷，先鎖工作區這列：兩人同時註冊排隊（Postgres），只有一位是管理員
+    await db.batch([['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+      [`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, is_admin)
       SELECT ?,?,?,?,?,?,?,?,?,?,
-        CASE WHEN EXISTS (SELECT 1 FROM participants WHERE kind = 'human' AND status = 'active') THEN 0 ELSE 1 END`, // 群組第一位＝管理員
+        CASE WHEN EXISTS (SELECT 1 FROM accounts a JOIN participants o ON o.account_id = a.id
+          WHERE a.platform_role = 'admin' AND a.status = 'active' AND o.kind = 'human' AND o.status = 'active') THEN 0 ELSE 1 END`, // 沒有平台管理員＝管理員
     [id, 'human', name, role, await newCode(), await tokenKey(token), Date.now() + HUMAN_TOKEN_TTL_MS, ts, ts, Date.now()]],
-    ...membership.enterWorkspaceStmts(id, ts)]); // 預設工作區、帳號（第一位＝平台管理員兼工作區管理員）；同一批，一起成功或一起失敗
+    ...membership.enterWorkspaceStmts(id, ts)]); // 預設工作區、帳號；同一批，一起成功或一起失敗
     if (jb) jb.n++; // 成功建立才算一次
     if (cred) {
       try { await login.saveCred(id, cred.username, cred.password); }
@@ -1566,7 +1559,7 @@ ${ending}`;
   });
   // ---------- 專案與成員管理 ----------
   // 權限判斷全部走權限模組（src/access.js）：誰是什麼角色、能不能做什麼；它要讀的成員資料都來自成員資格模組（src/membership.js）
-  const workspace = createWorkspaceSettings({ db });
+  const workspace = createWorkspaceSettings({ db, env: { openJoin: OPEN_JOIN, roomCode: ROOM_CODE }, hashPassword, verifyPassword });
   const access = createAccess({
     loadWorkspace: force => workspace.load(force), membersCreateProjects: () => workspace.membersCreateProjects(),
     ApiError, requireHuman, nameOf: id => nameOf(id), people: ctx => peopleMap(ctx), projects: () => PROJECTS, projectsOf, isolatedFrom,
@@ -1993,7 +1986,7 @@ ${ending}`;
     pageName = { at: 0, name: null }; // 網頁上的群組名立刻換新
   }
   const groupSettings = async () => { const js = await joinSettings(); return { name: await groupName(), openJoin: js.openJoin, roomCodeSet: js.roomCodeSet, source: js.source, createProjects: (await workspace.load(true)).createProjects }; };
-  // 工作區設定（工作區管理員）：開放註冊、群組密碼（房間碼）、工作區名稱、誰可以建立專案；存資料庫立刻生效。群組密碼只回「有沒有設」
+  // 工作區設定（工作區管理員）：開放自行註冊、房間碼、工作區名稱、誰可以建立專案；存資料庫立刻生效。房間碼只回「有沒有設」
   // /api/workspace/settings 是新名字；/api/group/settings 留著給舊的網頁與整合（同一份）
   for (const pattern of ['/api/workspace/settings', '/api/group/settings']) route('GET', pattern, async ({ ctx, me }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看加入設定' });
@@ -2008,7 +2001,7 @@ ${ending}`;
     let code = null;
     if (has('roomCode')) {
       code = body.roomCode === null ? '' : String(body.roomCode);
-      if (code && (code.length < 4 || code.length > 64 || /\s/.test(code))) throw invalid('群組密碼需為 4～64 字，不可有空白；要清除請送空字串');
+      if (code && (code.length < 4 || code.length > 64 || /\s/.test(code))) throw invalid('房間碼需為 4～64 字，不可有空白；要清除請送空字串');
     }
     if (has('createProjects') && !Object.values(CREATE_PROJECTS).includes(body.createProjects)) throw invalid('createProjects 只能是 members（所有成員）或 admins（只有管理員）');
     let name = null;
@@ -2016,15 +2009,15 @@ ${ending}`;
       name = String(body.name ?? '').trim();
       if (!name || name.length > 30 || /\n/.test(name)) throw invalid('name 需為 1～30 字，不可換行');
     }
-    const at = nowIso(), upsert = 'INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', stmts = [];
+    const at = nowIso(), stmts = [];
     if (has('openJoin')) {
       const before = (await joinSettings()).openJoin;
-      stmts.push([upsert, ['open_join', body.openJoin ? '1' : '0']]);
-      if (before !== body.openJoin) stmts.push(projEvent(GROUP_EVT, me.id, body.openJoin ? `${me.name} 開放自己註冊` : `${me.name} 關閉開放註冊（只能用邀請連結加入）`, at));
+      stmts.push(...workspace.setOpenJoinStmts(body.openJoin));
+      if (before !== body.openJoin) stmts.push(projEvent(GROUP_EVT, me.id, body.openJoin ? `${me.name} 開放自行註冊` : `${me.name} 關閉自行註冊（只能用邀請連結加入）`, at));
     }
     if (code !== null) {
-      stmts.push([upsert, ['room_code', code ? await hashPassword(code) : '']]);
-      stmts.push(projEvent(GROUP_EVT, me.id, code ? `${me.name} 設定群組密碼` : `${me.name} 清除群組密碼`, at)); // 紀錄不寫密碼本身
+      stmts.push(...(await workspace.setRoomCodeStmts(code)));
+      stmts.push(projEvent(GROUP_EVT, me.id, code ? `${me.name} 設定房間碼` : `${me.name} 清除房間碼`, at)); // 紀錄不寫房間碼本身
     }
     if (has('createProjects') && (await workspace.load(true)).createProjects !== body.createProjects) {
       stmts.push(...workspace.setCreateProjectsStmts(body.createProjects), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以建立專案：${CREATE_PROJECTS_LABEL[body.createProjects]}`, at));
@@ -3730,8 +3723,7 @@ ${ending}`;
     await loadProjectRoles(true);
     await saveProjectRoles({ ...projRoles, [pid]: { ...(projRoles[pid] || {}), ...clean } });
   }
-  const setInitialReadOnly = (pid, projects) => membership.addReadOnly(pid, projects.filter(pj => PROJECTS.includes(pj))); // 邀請時勾了唯讀
-  login = registerLogin({ route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, setInitialReadOnly, setProjectsStmts, enterWorkspaceStmts: membership.enterWorkspaceStmts, projectListOf: listOf,
+  login = registerLogin({ route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, addMemberStmts: membership.addMemberStmts, loadMembers: force => membership.loadMembers(force), enterWorkspaceStmts: membership.enterWorkspaceStmts, projectListOf: listOf,
     adminOf, access, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
     groupName, humanTtlMs: HUMAN_TOKEN_TTL_MS, failLimit: Number(config.authFailLimit) || 10,
     captcha: { on: TURNSTILE, after: TS_AFTER, verify: verifyTurnstile } });

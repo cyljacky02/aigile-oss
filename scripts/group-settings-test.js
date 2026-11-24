@@ -1,5 +1,5 @@
-// 管理頁直接改加入設定：開放註冊、群組密碼、群組名稱，存資料庫、立刻生效，不用重新部署
-// 環境變數只在網頁沒改過時有效；網頁改過（含清除密碼）就以網頁為準。群組密碼不回傳到任何 API、不寫進日誌；每次改都留在群組異動紀錄
+// 管理頁直接改加入設定：開放自行註冊、房間碼、群組名稱，存資料庫、立刻生效，不用重新部署
+// 環境變數只在網頁沒改過時有效；網頁改過（含清除密碼）就以網頁為準。房間碼不回傳到任何 API、不寫進日誌；每次改都留在群組異動紀錄
 // 用法：node scripts/group-settings-test.js
 import fs from 'node:fs';
 import os from 'node:os';
@@ -38,11 +38,11 @@ try {
   assert.equal(s0.status, 200, JSON.stringify(s0.body));
   assert.deepEqual({ openJoin: s0.body.openJoin, roomCodeSet: s0.body.roomCodeSet }, { openJoin: true, roomCodeSet: true });
   assert.equal(s0.body.source.roomCode, 'env', '還沒在網頁改過：照環境變數');
-  assert.equal((await call(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', roomCode: 'wrong' })).status, 403, '環境變數的群組密碼有效');
-  // 沒填群組密碼：回「請輸入群組密碼」（不是「錯誤」），也不算猜錯；連續 12 次沒填，填對還是能加入
+  assert.equal((await call(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', roomCode: 'wrong' })).status, 403, '環境變數的房間碼有效');
+  // 沒填房間碼：回「請輸入房間碼」（不是「錯誤」），也不算猜錯；連續 12 次沒填，填對還是能加入
   for (let i = 0; i < 12; i++) {
     const r = await call(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', ...(i % 2 ? { roomCode: '  ' } : {}) });
-    assert.equal(r.status, 400); assert.equal(r.body.error.code, 'ROOM_CODE_REQUIRED'); assert.equal(r.body.error.message, '請輸入群組密碼');
+    assert.equal(r.status, 400); assert.equal(r.body.error.code, 'ROOM_CODE_REQUIRED'); assert.equal(r.body.error.message, '請輸入房間碼');
   }
   const mate = (await call(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', roomCode: ENV_CODE })).body;
   assert.ok(mate.token);
@@ -52,7 +52,7 @@ try {
   assert.equal((await call(mate.token, '/api/group/settings', 'PUT', { openJoin: false })).status, 403, '一般成員不能改');
   assert.equal((await call(null, '/api/group/settings')).status, 401, '沒登入不能看');
 
-  // 換群組密碼：立刻生效，舊的（環境變數）不能用
+  // 換房間碼：立刻生效，舊的（環境變數）不能用
   const r1 = await call(boss.token, '/api/group/settings', 'PUT', { roomCode: SECRET });
   assert.equal(r1.status, 200, JSON.stringify(r1.body));
   assert.equal(r1.body.roomCodeSet, true); assert.equal(r1.body.source.roomCode, 'web');
@@ -64,13 +64,13 @@ try {
   const call2 = await mk('a.db', { roomCode: ENV_CODE });
   assert.equal((await call2(null, '/api/join', 'POST', { name: '張美玲', role: 'UX', roomCode: ENV_CODE })).status, 403, '重啟後環境變數不會蓋回去');
 
-  // 清除群組密碼：不用密碼也能註冊
+  // 清除房間碼：不用密碼也能註冊
   const r2 = await call2(boss.token, '/api/group/settings', 'PUT', { roomCode: '' });
   assert.equal(r2.body.roomCodeSet, false);
   assert.equal((await call2(null, '/api/health')).body.roomCodeRequired, false, '登入頁不再要密碼');
   assert.equal((await call2(null, '/api/join', 'POST', { name: '張美玲', role: 'UX' })).status, 201, '清除後不用密碼');
 
-  // 關閉開放註冊：立刻只能用邀請連結
+  // 關閉開放自行註冊：立刻只能用邀請連結
   const r3 = await call2(boss.token, '/api/group/settings', 'PUT', { openJoin: false });
   assert.equal(r3.body.openJoin, false); assert.equal(r3.body.source.openJoin, 'web');
   assert.equal((await call2(null, '/api/health')).body.openJoin, false);
@@ -91,12 +91,12 @@ try {
   const ev = await call2(boss.token, '/api/group/events');
   assert.equal(ev.status, 200);
   const texts = ev.body.items.map(x => x.text);
-  for (const k of ['設定群組密碼', '清除群組密碼', '關閉開放註冊', '開放自己註冊', '我們的團隊', '新團隊']) assert.ok(texts.some(t => t.includes(k)), `異動紀錄有「${k}」：` + JSON.stringify(texts));
+  for (const k of ['設定房間碼', '清除房間碼', '關閉自行註冊', '開放自行註冊', '我們的團隊', '新團隊']) assert.ok(texts.some(t => t.includes(k)), `異動紀錄有「${k}」：` + JSON.stringify(texts));
   assert.ok(ev.body.items.length >= 6 && ev.body.items.every(x => x.actorId && x.at), '記了是誰、什麼時候改的');
   assert.ok(texts.every(t => t.includes('林志明')), '紀錄寫出管理員名字');
   assert.equal((await call2(mate.token, '/api/group/events')).status, 403, '一般成員看不到群組異動紀錄');
 
-  // 群組密碼不出現在任何回應與日誌
+  // 房間碼不出現在任何回應與日誌
   assert.ok(!seen.some(t => t.includes(SECRET)), '密碼沒有出現在任何 API 回應');
   assert.ok(!logs.some(t => t.includes(SECRET)), '密碼沒有寫進日誌');
 
@@ -105,8 +105,8 @@ try {
   const bb = (await b(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body;
   assert.equal((await b(bb.token, '/api/group/settings')).body.roomCodeSet, false);
   await b(bb.token, '/api/group/settings', 'PUT', { roomCode: SECRET });
-  assert.equal((await b(null, '/api/join', 'POST', { name: '陳大文', role: 'QA' })).body.error?.code, 'ROOM_CODE_REQUIRED', '網頁設了就要密碼（沒填：請輸入群組密碼）');
-  assert.equal((await b(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', roomCode: 'nope' })).status, 403, '填錯：群組密碼錯誤');
+  assert.equal((await b(null, '/api/join', 'POST', { name: '陳大文', role: 'QA' })).body.error?.code, 'ROOM_CODE_REQUIRED', '網頁設了就要密碼（沒填：請輸入房間碼）');
+  assert.equal((await b(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', roomCode: 'nope' })).status, 403, '填錯：房間碼錯誤');
   console.log('group-settings-test：全部通過');
 } catch (e) {
   console.error('group-settings-test 失敗：', e.stack || e.message);
