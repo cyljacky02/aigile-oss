@@ -12,10 +12,16 @@ export const CATEGORY_COLOR = { 待整理: 'gray', 待處理: 'indigo', 進行�
 export const DEFAULT_STATUSES = ['待整理', '待處理', '進行中', '受阻', '待確認', '已完成'].map(c => ({ name: c, category: c, color: CATEGORY_COLOR[c] }));
 export const STATUS_LIMITS = { name: 20, min: 3, max: 12 };
 
+// 寫卡片時讀狀態的子查詢都加這個列鎖（Postgres 轉成 FOR SHARE；SQLite／D1 寫入一次一個交易，只是註解）。
+// 刪除狀態的 DELETE 會等拿著這個鎖的寫入做完（之後的檢查就看得到那張卡）；反過來寫入會等未提交的刪除做完，
+// 被刪的那列就不算（落在同類別下一個狀態，或寫不進去）。兩邊不會互相錯過，卡片不會指向已刪的狀態
+export const LOCK_STATUS = ' /* FOR SHARE */';
+// 那個專案、那個類別排最前面的狀態（帶列鎖）
+const firstStatusOf = (project, category) => `(SELECT ps.id FROM project_statuses ps WHERE ps.project = ${project} AND ps.category = ${category} ORDER BY ps.position, ps.id LIMIT 1${LOCK_STATUS})`;
 // 卡片換類別時，status_id 改成那個專案、那個類別排最前面的狀態（UPDATE cards 用；cards.project 是正在改的那張卡）
-export const firstStatusSql = category => `(SELECT ps.id FROM project_statuses ps WHERE ps.project = cards.project AND ps.category = '${category}' ORDER BY ps.position, ps.id LIMIT 1)`;
+export const firstStatusSql = category => firstStatusOf('cards.project', `'${category}'`);
 // 同上，專案與類別用參數（INSERT、或同時改專案時用）
-export const FIRST_STATUS_SQL = '(SELECT ps.id FROM project_statuses ps WHERE ps.project = ? AND ps.category = ? ORDER BY ps.position, ps.id LIMIT 1)';
+export const FIRST_STATUS_SQL = firstStatusOf('?', '?');
 
 const ARCHIVED_ROW = Object.freeze({ id: null, name: ARCHIVED, category: ARCHIVED, color: 'gray', position: null });
 const pub = s => ({ id: s.id, name: s.name, category: s.category, position: s.position, color: s.color });
@@ -75,7 +81,7 @@ export function createStatuses({ db, invalid }) {
     for (const pj of pjs) {
       stmts.push([`INSERT OR IGNORE INTO project_statuses (project, name, category, position, color) SELECT p.id, d.name, d.category, d.position, d.color
         FROM projects p CROSS JOIN (${DEFAULTS_SQL}) d WHERE p.id = ? AND NOT EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.project = p.id)`, [pj]]);
-      stmts.push([`UPDATE cards SET status_id = (SELECT ps.id FROM project_statuses ps WHERE ps.project = cards.project AND ps.category = cards.status ORDER BY ps.position, ps.id LIMIT 1) WHERE project = ? AND status_id IS NULL AND status != '${ARCHIVED}'`, [pj]]);
+      stmts.push([`UPDATE cards SET status_id = ${firstStatusOf('cards.project', 'cards.status')} WHERE project = ? AND status_id IS NULL AND status != '${ARCHIVED}'`, [pj]]);
     }
     await db.batch(stmts);
   }
@@ -90,7 +96,7 @@ export function createStatuses({ db, invalid }) {
     return book;
   }
   // 把專案裡「status_id 空的或對不上」的卡補成實際所在的狀態（改設定前先做，之後只看 status_id）
-  const normalize = pj => db.run(`UPDATE cards SET status_id = (SELECT ps.id FROM project_statuses ps WHERE ps.project = cards.project AND ps.category = cards.status ORDER BY ps.position, ps.id LIMIT 1)
+  const normalize = pj => db.run(`UPDATE cards SET status_id = ${firstStatusOf('cards.project', 'cards.status')}
     WHERE project = ? AND status != '${ARCHIVED}' AND (status_id IS NULL OR status_id NOT IN (SELECT ps2.id FROM project_statuses ps2 WHERE ps2.project = cards.project AND ps2.category = cards.status))`, pj);
   return { load, normalize, ensureDefaults };
 }
@@ -151,6 +157,13 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
   const cardsIn = sid => db.all(`SELECT * FROM cards WHERE status_id = ? AND status != '${ARCHIVED}' ORDER BY seq`, sid);
   const event = (pj, me, text) => (projEvent ? db.batch([projEvent(pj, me.id, `${me.name} ${text}`, nowIso())]) : null);
   const keys = rows => rows.slice(0, 20).map(c => cardKey(c)).filter(Boolean);
+  // 交易的最後一句：寫專案異動紀錄兼檢查。cardsLeft（SELECT …，p.id 是專案）查得到卡時 project_id 是 NULL、違反 NOT NULL，整個交易回復。
+  // 寫卡片時對狀態拿著列鎖（LOCK_STATUS），刪除、改類別的列鎖會等它們做完，所以這一句看得到剛寫進來的卡
+  const eventUnless = (pj, me, text, at, cardsLeft, args) => [`INSERT INTO project_events (project_id, at, actor_id, text) VALUES ((SELECT p.id FROM projects p WHERE p.id = ? AND NOT EXISTS (${cardsLeft})),?,?,?)`,
+    [pj, ...args, at, me.id, `${me.name} ${text}`]];
+  const inStatusSql = pjCol => `SELECT seq FROM cards WHERE project = ${pjCol} AND status_id = ? AND status != '${ARCHIVED}'`;
+  // Postgres 偵測到兩個交易互等（deadlock）會中止其中一個：當成剛好有人同時在改，請對方重試
+  const deadlock = e => e?.code === '40P01';
 
   route('GET', '/api/projects/:id/statuses', async ({ ctx, me, params }) => {
     const book = await projectOf(ctx, me, params.id);
@@ -181,9 +194,20 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
       if (n) throw new ApiError(409, 'STATUS_NOT_EMPTY', `「${s.name}」裡還有 ${n} 張卡，不能改類別：請新建一個狀態，把卡片搬過去。`);
     }
     checkStatusList(book.list(pj).map(x => (x.id === s.id ? { name, category } : x)), invalid);
-    await db.run('UPDATE project_statuses SET name = ?, category = ?, color = ? WHERE id = ?', name, category, color, s.id);
+    const update = ['UPDATE project_statuses SET name = ?, category = ?, color = ? WHERE id = ?', [name, category, color, s.id]];
     const what = [name !== s.name && `改名「${s.name}」→「${name}」`, category !== s.category && `類別 ${s.category} → ${category}`, color !== s.color && '改顏色'].filter(Boolean);
-    if (what.length) await event(pj, me, `看板狀態${what.join('、')}`);
+    if (category !== s.category) {
+      // 改類別跟異動紀錄同一個交易，最後一句兼檢查這個狀態還是空的（剛有卡寫進來就整個不做）
+      try { await db.batch([update, eventUnless(pj, me, `看板狀態${what.join('、')}`, nowIso(), inStatusSql('p.id'), [s.id])]); }
+      catch (e) {
+        const n = (await cardsIn(s.id)).length;
+        if (n || deadlock(e)) throw new ApiError(409, 'STATUS_NOT_EMPTY', `「${s.name}」裡還有 ${n} 張卡，不能改類別：請新建一個狀態，把卡片搬過去。`);
+        throw e;
+      }
+    } else {
+      await db.run(update[0], ...update[1]);
+      if (what.length) await event(pj, me, `看板狀態${what.join('、')}`);
+    }
     return reply(ctx, pj);
   });
 
@@ -226,15 +250,14 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
     const leftArgs = [s.id, ...(last ? [s.category] : [])];
     const at = nowIso(), stmts = [];
     for (const c of rows) stmts.push(...(await moveCardStmts(ctx, me, c, target, at)));
-    // 最後一句寫異動紀錄兼檢查：還有會被留下的卡，project_id 就查不到、是 NULL，違反 NOT NULL，整個交易回復
+    // 最後一句寫異動紀錄兼檢查：還有會被留下的卡就整個交易回復
     stmts.push(['DELETE FROM project_statuses WHERE id = ?', [s.id]],
-      [`INSERT INTO project_events (project_id, at, actor_id, text) VALUES ((SELECT p.id FROM projects p WHERE p.id = ? AND NOT EXISTS (${left('p.id')})),?,?,?)`,
-        [pj, ...leftArgs, at, me.id, `${me.name} 刪除看板狀態「${s.name}」${target ? `（${rows.length} 張卡搬到「${target.name}」）` : ''}`]]);
+      eventUnless(pj, me, `刪除看板狀態「${s.name}」${target ? `（${rows.length} 張卡搬到「${target.name}」）` : ''}`, at, left('p.id'), leftArgs));
     try { await db.batch(stmts); }
     catch (e) {
       // 交易失敗：讀完之後卡片有進出或被改過、或要搬去的狀態剛被刪（搬卡語句與上面的檢查會讓交易失敗）就回 409；其他錯誤照丟
       const now = new Map((await db.all(left('?'), pj, ...leftArgs)).map(c => [c.seq, c.version]));
-      const changed = now.size !== rows.length || rows.some(c => now.get(c.seq) !== c.version) || (target && !(await db.get('SELECT id FROM project_statuses WHERE id = ?', target.id)));
+      const changed = deadlock(e) || now.size !== rows.length || rows.some(c => now.get(c.seq) !== c.version) || (target && !(await db.get('SELECT id FROM project_statuses WHERE id = ?', target.id)));
       if (changed) throw new ApiError(409, 'CONFLICT', `「${s.name}」裡的卡片或要搬去的狀態剛有變動，這次沒有刪除；請重新讀取後再試。`);
       throw e;
     }

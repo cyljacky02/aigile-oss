@@ -1,7 +1,8 @@
 // Postgres 轉接用的 SQL 轉譯（純函式）：業務程式照寫 SQLite／D1 的 SQL，連 Postgres 時在這裡換成 Postgres 寫法。
 // 只改字串常值與註解以外的部分。查詢（queryToPg）與建表（ddlToPg）分開：
 //   查詢：? → $1…、IN (SELECT value FROM json_each(?)) → = ANY($n)（參數改成陣列）、FROM json_each(?) → json_array_elements、INSERT OR IGNORE → ON CONFLICT DO NOTHING、instr → strpos、json_valid、
-//         LIKE → ILIKE（SQLite 的 LIKE 本來就不分英文大小寫）、索引提示 +欄位 拿掉、CAST(… AS INTEGER) → BIGINT、PRAGMA table_info
+//         LIKE → ILIKE（SQLite 的 LIKE 本來就不分英文大小寫）、索引提示 +欄位 拿掉、CAST(… AS INTEGER) → BIGINT、PRAGMA table_info、
+//         /* FOR SHARE */ → FOR SHARE（列鎖；SQLite／D1 的寫入一次一個交易、不需要，對它們只是註解）
 //   建表：INTEGER → BIGINT（毫秒時間戳記超過 int4）、AUTOINCREMENT → IDENTITY、BLOB → BYTEA、
 //         TEXT 用 "C" 排序（跟 SQLite 一樣逐位元組比較）、COLLATE NOCASE → 不分大小寫的 nocase 排序規則、
 //         每張表加隱藏的 rowid 流水號（通知排序、備份分頁會用到；查詢結果由轉接層拿掉）
@@ -56,6 +57,7 @@ export function queryToPg(sql) {
       if (/^FROM/i.test(m)) return `FROM json_array_elements($${++n}::json) AS j(value)`; // 一次插入多列：INSERT … SELECT … FROM json_each(?)
       arrays.push(n); return (not ? '<> ALL($' : '= ANY($') + ++n + ')';
     })
+    .replace(/\/\*\s*FOR SHARE\s*\*\//gi, 'FOR SHARE')
     .replace(/\bLIKE\b/gi, 'ILIKE')
     .replace(/\binstr\(/gi, 'strpos(') // 一樣從 1 起算、找不到回 0
     .replace(/\bjson_valid\(([^()]*)\)/gi, "pg_input_is_valid($1, 'json')") // Postgres 16 以上

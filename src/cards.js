@@ -3,7 +3,7 @@
 // 「已驗證」必須由完成者以外的人或 AI 標記。
 // AI 建議（第三階段）：AI 只能建議改別人的卡片／替別人建卡，由人類採用或略過。
 // 決策卡片（第二階段）：只有指定決策者（人類）能決定；要求補充會把球丟回提案人，補充後自動回到決策者。AI 建議在後續階段。
-import { CATEGORIES, FIRST_STATUS_SQL } from './statuses.js';
+import { CATEGORIES, FIRST_STATUS_SQL, LOCK_STATUS } from './statuses.js';
 // 狀態類別（系統固定，流程規則只看它；cards.status 存的就是類別）。各專案看板上的狀態是自訂的，見 src/statuses.js
 export const CARD_STATUSES = CATEGORIES;
 export const CARD_TYPES = ['工作', '阻塞', '決策', '人類紀錄'];
@@ -220,19 +220,20 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     return { sets: { ...ch.sets, status_id: target.id }, logs: [`狀態 ${book.of(c)?.name ?? c.status} → ${target.name}`, ...ch.logs.slice(1)] };
   }
   // 卡片寫完會落在哪個狀態：指定了 status_id 就是它；換了類別或專案、沒指定就是那個類別排最前面的（auto；已封存沒有狀態）。
-  // check＝那個狀態還在的條件：讀完狀態清單之後狀態剛被刪掉，就不寫（不然卡片會留在已經沒有的欄）
+  // check＝那個狀態還在（而且還是這個類別）的條件：讀完狀態清單之後狀態剛被刪掉或改了類別，就不寫（不然卡片會留在已經沒有的欄）。
+  // 寫入時對狀態加列鎖（LOCK_STATUS），跟刪除狀態互相等：Postgres 兩個交易同時進行也不會錯過
   function landing(c, sets) {
     const pj = sets.project ?? c.project, cat = sets.status ?? c.status;
-    if ('status_id' in sets) return { auto: false, check: sets.status_id == null ? null : ['ps.id = ? AND ps.project = ?', [sets.status_id, pj]] };
+    if ('status_id' in sets) return { auto: false, check: sets.status_id == null ? null : ['ps.id = ? AND ps.project = ? AND ps.category = ?', [sets.status_id, pj, cat]] };
     const auto = (sets.status !== undefined && sets.status !== c.status) || sets.project !== undefined; // 類別沒變就留在原本的欄
     return { auto, pj, cat, check: auto && cat !== '已封存' ? ['ps.project = ? AND ps.category = ?', [pj, cat]] : null };
   }
-  const STATUS_GONE = () => new ApiError(409, 'STATUS_DELETED', '要改到的狀態剛被刪除了，請重新讀取後再試。');
+  const STATUS_GONE = () => new ApiError(409, 'STATUS_DELETED', '要改到的狀態剛被刪除或改了類別，請重新讀取後再試。');
   const statusExists = check => db.get(`SELECT 1 AS x FROM project_statuses ps WHERE ${check[0]}`, ...check[1]);
   // 版本相符、要落腳的狀態還在才更新；D1／SQLite 都用同一條語句，0 筆代表同時有人改過（或狀態剛被刪）
   function updateStmt(c, sets, at) {
     const keys = Object.keys(sets), l = landing(c, sets);
-    const sql = `UPDATE cards SET ${keys.map(k => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}${l.auto ? `status_id = ${FIRST_STATUS_SQL}, ` : ''}updated_at = ?, version = version + 1 WHERE seq = ? AND version = ?${l.check ? ` AND EXISTS (SELECT 1 FROM project_statuses ps WHERE ${l.check[0]})` : ''}`;
+    const sql = `UPDATE cards SET ${keys.map(k => `${k} = ?`).join(', ')}${keys.length ? ', ' : ''}${l.auto ? `status_id = ${FIRST_STATUS_SQL}, ` : ''}updated_at = ?, version = version + 1 WHERE seq = ? AND version = ?${l.check ? ` AND EXISTS (SELECT 1 FROM project_statuses ps WHERE ${l.check[0]}${LOCK_STATUS})` : ''}`;
     return [sql, [...keys.map(k => sets[k]), ...(l.auto ? [l.pj, l.cat] : []), at, c.seq, c.version, ...(l.check ? l.check[1] : [])]];
   }
   async function save(c, sets, logs, me, at) {
@@ -460,14 +461,14 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     await db.batch([
       [`INSERT INTO cards (uid, type, title, reason, owner_id, status, status_id, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at,
       decider_id, proposer_id, question, recommendation, options, impact, after_next, project)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.id = ? AND ps.project = ?)`, [uid, type, title, text(body, 'reason') ?? '', owner, status, target.id, text(body, 'next') ?? '', text(body, 'blocker') ?? '',
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.id = ? AND ps.project = ? AND ps.category = ?${LOCK_STATUS})`, [uid, type, title, text(body, 'reason') ?? '', owner, status, target.id, text(body, 'next') ?? '', text(body, 'blocker') ?? '',
         waitFor, text(body, 'criteria') ?? '', me.id, requestId, at, at,
-        dec.decider_id, dec.proposer_id, dec.question, dec.recommendation, dec.options, dec.impact, dec.after_next, project, target.id, project]],
+        dec.decider_id, dec.proposer_id, dec.question, dec.recommendation, dec.options, dec.impact, dec.after_next, project, target.id, project, target.category]],
       [ASSIGN_PROJ_NO_SQL, [uid]],
       ...[`建立卡片（類型：${type}）`, ...(type === '決策' ? [`等 ${people.get(dec.decider_id)?.name} 決定`] : [])]
         .map(t => [`INSERT INTO card_log (card_seq, at, by_id, via, text) VALUES (${seqOf},?,?,?,?)`, [uid, at, me.id, me.kind === 'human' ? '網頁' : 'API', t]]),
       ...messageIds.map(m => [`INSERT OR IGNORE INTO card_msgs (card_seq, message_id) VALUES (${seqOf},?)`, [uid, m]]),
-    ]).catch(async e => { throw (await statusExists(['ps.id = ?', [target.id]])) ? e : STATUS_GONE(); });
+    ]).catch(async e => { throw (await statusExists(['ps.id = ? AND ps.category = ?', [target.id, target.category]])) ? e : STATUS_GONE(); });
     const c = await db.get('SELECT * FROM cards WHERE uid = ?', uid);
     // 建卡時指定了別人（負責人、等誰、決策者）就通知對方，和交接一樣會叫醒 AI
     const who = [owner && `負責人 ${people.get(owner)?.name}`, waitFor && (type === '決策' ? `等 ${people.get(waitFor)?.name} 決定` : `等 ${people.get(waitFor)?.name}`)].filter(Boolean).join('；');
@@ -994,7 +995,7 @@ export function registerCards({ route, statuses, searchQuota = () => {}, cardKey
     const uid = randId('card');
     // 狀態剛被刪掉（讀完狀態清單之後）就不插入
     const made = await db.run(`INSERT INTO cards (uid, type, title, reason, owner_id, status, status_id, next, blocker, wait_for_id, criteria, created_by, request_id, created_at, updated_at, project)
-      SELECT ?,?,?,?,?,?,${FIRST_STATUS_SQL},?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.project = ? AND ps.category = ?)`, uid, f.type, f.title, f.reason ?? '', f.ownerId ?? null, status, fpj, status, f.next ?? '', f.blocker ?? '', f.waitForId ?? null,
+      SELECT ?,?,?,?,?,?,${FIRST_STATUS_SQL},?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.project = ? AND ps.category = ?${LOCK_STATUS})`, uid, f.type, f.title, f.reason ?? '', f.ownerId ?? null, status, fpj, status, f.next ?? '', f.blocker ?? '', f.waitForId ?? null,
       f.criteria ?? '', r.from_id, `sug_${r.id}`, at, at, fpj, fpj, status);
     if (!made.changes) throw STATUS_GONE();
     await assignProjNo(uid);
