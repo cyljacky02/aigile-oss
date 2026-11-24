@@ -6,6 +6,7 @@
 // 再加帳號密碼（人類自己設）與主機救援連結（只救管理員，只能在主機用 npm run admin-rescue 產生）。
 import { hashPassword, verifyPassword, normUsername, validUsername, USERNAME_RULE, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
 import { ACCESS_ROLE } from './access.js';
+import { PROJECT_ROLE } from './membership.js';
 
 // 邀請連結有效時間可選（預設 24 小時）；照舊只能用一次
 export const INVITE_TTLS = { '15m': 15 * 60_000, '1h': 3_600_000, '24h': 86_400_000, '7d': 7 * 86_400_000 };
@@ -34,7 +35,7 @@ export function deviceLabelAs(prefix, ua = '') {
 }
 
 export function registerLogin(d) {
-  const { route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, setInitialReadOnly, setProjectsStmts, enterWorkspaceStmts, projectListOf,
+  const { route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, addMemberStmts, loadMembers, enterWorkspaceStmts, projectListOf,
     adminOf, access, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
     groupName, humanTtlMs, failLimit = 10, captcha = { on: false } } = d;
 
@@ -251,25 +252,41 @@ export function registerLogin(d) {
 
   // ---------- 邀請 ----------
   const listOf = s => String(s || '').split(',').map(x => x.trim()).filter(x => PROJECTS.includes(x));
+  const readProjectRole = v => { if (!Object.values(PROJECT_ROLE).includes(v)) throw invalid('role 需為 admin（專案管理員）、member（專案成員）或 viewer（唯讀成員）'); return v; };
   const inviteStatus = (iv, now = Date.now()) => (iv.used_at ? '已使用' : iv.revoked_at ? '已取消' : iv.expires_at <= now ? '已過期' : '有效');
   const inviteView = (iv, people) => ({
-    id: iv.id, kind: iv.participant_id ? 'reset' : 'new', name: iv.name, role: roleText(iv.role), roles: rolesOf(iv.role), readOnly: roOf(iv.role), projects: listOf(iv.projects),
+    id: iv.id, kind: iv.participant_id ? 'reset' : 'new', name: iv.name, role: roleText(iv.role), roles: rolesOf(iv.role), readOnly: roOf(iv.role), projects: listOf(iv.projects), presets: presetsOf(iv),
     status: inviteStatus(iv), createdAt: iso(iv.created_at), expiresAt: iso(iv.expires_at), usedAt: iso(iv.used_at),
     ttl: Object.keys(INVITE_TTLS).find(k => INVITE_TTLS[k] === iv.expires_at - iv.created_at) || null,
     usedByName: iv.used_by ? people.get(iv.used_by)?.name ?? null : null, createdByName: people.get(iv.created_by)?.name ?? null,
   });
   const inviteUrl = (base, token) => `${base}/invite/${token}`;
-  // 邀請的角色欄存 { 專案: 角色 } 的 JSON；舊資料是單一字串
-  function rolesOf(raw) { const s = String(raw || ''); if (!s.startsWith('{')) return null; try { const r = JSON.parse(s); delete r.__ro; return r; } catch { return null; } }
-  // 邀請時勾的唯讀專案也存在角色欄的 JSON（__ro）
-  function roOf(raw) { const s = String(raw || ''); if (!s.startsWith('{')) return []; try { return JSON.parse(s).__ro || []; } catch { return []; } }
+  // 邀請的角色欄存 { 專案: 職稱 } 的 JSON；舊資料是單一字串（每個勾的專案都用這個職稱）
+  const roleJson = raw => { const s = String(raw || ''); if (!s.startsWith('{')) return null; try { return JSON.parse(s) || null; } catch { return null; } };
+  function rolesOf(raw) { const r = roleJson(raw); if (!r) return null; for (const k of Object.keys(r)) if (k.startsWith('__')) delete r[k]; return r; }
+  // 預設的專案角色也存在角色欄的 JSON：__ro＝唯讀成員的專案、__admin＝專案管理員的專案；其他勾的專案是專案成員
+  const roOf = raw => roleJson(raw)?.__ro || [];
+  const projectAdminsOf = raw => roleJson(raw)?.__admin || [];
+  // 邀請預設的專案（還在、未封存的）：[{ project, role: admin|member|viewer, title }]
+  function presetsOf(iv) {
+    const ro = roOf(iv.role), pa = projectAdminsOf(iv.role), titles = rolesOf(iv.role);
+    return listOf(iv.projects).map(project => ({ project, role: pa.includes(project) ? PROJECT_ROLE.ADMIN : ro.includes(project) ? PROJECT_ROLE.VIEWER : PROJECT_ROLE.MEMBER,
+      title: titles ? titles[project] || '' : String(iv.role || '') }));
+  }
   const roleText = raw => { const r = rolesOf(raw); return r ? Object.entries(r).map(([k, v]) => `${nameOf(k)} ${v}`).join('、') : String(raw || ''); };
+  // projects：專案 id，或 { project, role?（admin｜member｜viewer，預設 member）, title? }。回 { projects（照專案順序）, roles: {專案: 專案角色}, titles: {專案: 職稱} }
   function readInviteProjects(raw) {
-    if (raw === undefined || raw === null) return [];
+    if (raw === undefined || raw === null) return { projects: [], roles: {}, titles: {} };
     if (!Array.isArray(raw)) throw invalid('projects 需為陣列，例如 ["預設專案"]');
-    const list = [...new Set(raw.map(x => String(x).trim()))];
-    if (list.some(x => !PROJECTS.includes(x))) throw invalid(`projects 只能是（專案編號）：${PROJECTS.join('、')}`);
-    return PROJECTS.filter(x => list.includes(x));
+    const roles = {}, titles = {};
+    for (const x of raw) {
+      const o = x && typeof x === 'object' ? x : { project: x };
+      const pj = String(o.project ?? '').trim();
+      if (!PROJECTS.includes(pj)) throw invalid(`projects 只能是（專案編號）：${PROJECTS.join('、')}`);
+      roles[pj] = o.role === undefined || o.role === null || o.role === '' ? PROJECT_ROLE.MEMBER : readProjectRole(o.role);
+      if (o.title !== undefined && o.title !== null) { const t = readRole(o.title); if (t) titles[pj] = t; }
+    }
+    return { projects: PROJECTS.filter(x => x in roles), roles, titles };
   }
   async function validInvite(token) {
     if (!token || typeof token !== 'string') return null;
@@ -301,23 +318,25 @@ export function registerLogin(d) {
     const now = Date.now();
     const dup = await db.get('SELECT id FROM invites WHERE name = ? COLLATE NOCASE AND participant_id IS NULL AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?', name, now);
     if (dup) throw new ApiError(409, 'INVITE_EXISTS', `已經有給「${name}」的有效邀請，可以在「邀請」清單重新產生`);
-    const projects = readInviteProjects(body.projects);
+    const { projects, roles: projRoles, titles } = readInviteProjects(body.projects);
     const ttlMs = readTtl(body.ttl);
-    // roles＝{ 專案: 角色 }（勾的每個專案各一個）；舊的 role 字串照舊收
-    let role;
+    // 職稱：projects 裡的 title，或舊的 roles＝{ 專案: 職稱 }；舊的 role 字串照舊收（每個勾的專案都用它）
     if (body.roles && typeof body.roles === 'object' && !Array.isArray(body.roles)) {
-      const r = {};
-      for (const [k, v] of Object.entries(body.roles)) { if (!projects.includes(k)) throw invalid(`「${nameOf(k)}」沒有勾選，不能設角色`); const x = readRole(v); if (x) r[k] = x; }
-      role = Object.keys(r).length ? JSON.stringify(r) : '';
-    } else {
-      role = String(body.role ?? '').trim();
-      if (role.length > 30) throw invalid('角色最多 30 字');
+      for (const [k, v] of Object.entries(body.roles)) { if (!projects.includes(k)) throw invalid(`「${nameOf(k)}」沒有勾選，不能設角色`); const x = readRole(v); if (x) titles[k] = x; }
     }
+    let role = String(body.role ?? '').trim();
+    if (role.length > 30) throw invalid('角色最多 30 字');
+    // 舊的 readOnly＝[專案]：那些專案是唯讀成員
     if (Array.isArray(body.readOnly) && body.readOnly.length) {
       const ro = [...new Set(body.readOnly.map(String))];
       const out = ro.filter(x => !projects.includes(x));
       if (out.length) throw invalid(`唯讀的專案要先勾選：${out.map(nameOf).join('、')}`);
-      role = JSON.stringify({ ...(rolesOf(role) || {}), __ro: ro });
+      for (const pj of ro) if (projRoles[pj] !== PROJECT_ROLE.ADMIN) projRoles[pj] = PROJECT_ROLE.VIEWER;
+    }
+    const ro = projects.filter(pj => projRoles[pj] === PROJECT_ROLE.VIEWER), pa = projects.filter(pj => projRoles[pj] === PROJECT_ROLE.ADMIN);
+    if (Object.keys(titles).length || ro.length || pa.length) {
+      const t = Object.keys(titles).length || !role ? titles : Object.fromEntries(projects.map(pj => [pj, role.slice(0, 10)]));
+      role = JSON.stringify({ ...t, ...(ro.length ? { __ro: ro } : {}), ...(pa.length ? { __admin: pa } : {}) });
     }
     const id = randId('inv'), token = newToken();
     await db.run('INSERT INTO invites (id, token_hash, name, role, projects, participant_id, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)',
@@ -476,17 +495,18 @@ export function registerLogin(d) {
           invalidatePeople();
           const roles = rolesOf(iv.role);
           try {
+            // 新的工作區成員（帳號一起建），依邀請預設的專案與專案角色加入；同一批，一起成功或一起失敗
             await db.batch([[`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at)
               VALUES (?,?,?,?,?,?,?,?,?,?)`, [pid, 'human', name, roles ? Object.values(roles)[0] || '' : iv.role || '', await newCode(), await tokenKey(newToken()), 0, ts, ts, now]],
-            ...enterWorkspaceStmts(pid, ts), ...setProjectsStmts(pid, listOf(iv.projects), ts)]);
+            ...enterWorkspaceStmts(pid, ts), ...presetsOf(iv).flatMap(x => addMemberStmts(pid, x.project, x.role))]);
           } catch (e) {
             // 檢查名稱到建人之間，名稱被別人用掉（UNIQUE 失敗）→ 把邀請還回去，換個名稱就能重試（原本邀請已用掉、人沒建、回 500）
             await db.run('UPDATE invites SET used_at = NULL WHERE id = ? AND used_at = ? AND used_by IS NULL', iv.id, now);
             await assertNameFree(name);
             throw e;
           }
+          await loadMembers(true);
           await setInitialRoles(pid, roles || Object.fromEntries(listOf(iv.projects).map(pj => [pj, iv.role || ''])));
-          if (roOf(iv.role).length) await setInitialReadOnly(pid, roOf(iv.role));
           created = true;
         }
         await db.run('UPDATE invites SET used_by = ? WHERE id = ?', pid, iv.id);

@@ -1,6 +1,7 @@
 // 預設管理員：新站自動建「管理員」（帳號 admin、密碼 ADMIN_PASSWORD，沒設＝admin），第一次登入要先改帳號與密碼
 // 測：沒設／有設 ADMIN_PASSWORD、改之前其他功能被擋、帳號和密碼都改才解除、改完能用、重啟不重建、同時兩個請求只建一位、
-//     之後自己註冊的人是一般成員且沒有專案、預設密碼不出現在任何 API 回應與日誌、測試模式（不開）照舊第一位註冊＝管理員
+//     預設管理員是平台管理員兼工作區管理員（不加入專案，靠隱含權限）、之後自己註冊的人是工作區成員且沒有專案、
+//     預設密碼不出現在任何 API 回應與日誌、測試模式（不開）第一位註冊＝平台管理員兼工作區管理員
 // 用法：node scripts/default-admin-test.js
 import fs from 'node:fs';
 import os from 'node:os';
@@ -38,7 +39,9 @@ try {
   const tok = r.body.token;
   const me = (await A.call(tok, '/api/me')).body;
   assert.equal(me.mustChangeCredentials, true, '/api/me 標出還在用預設帳密');
-  assert.ok(me.projects.includes((await A.db.get('SELECT id FROM projects LIMIT 1')).id), '預設管理員在所有專案');
+  assert.deepEqual([me.platformRole, me.workspaceRole], ['admin', 'admin'], '預設管理員是平台管理員兼工作區管理員');
+  assert.ok(me.projects.includes((await A.db.get('SELECT id FROM projects LIMIT 1')).id), '預設管理員靠隱含權限進得了所有專案');
+  assert.deepEqual(me.memberProjects, [], '預設管理員不加入任何專案（不是專案成員）');
   // 改之前：其他功能都被擋
   for (const [m, p] of [['GET', '/api/participants'], ['GET', '/api/messages?limit=5'], ['GET', '/api/projects'], ['POST', '/api/invites']]) {
     const x = await A.call(tok, p, m, m === 'POST' ? { name: 'x' } : undefined);
@@ -55,11 +58,13 @@ try {
   assert.equal((await login(A.call, 'admin', 'admin')).status, 400, '舊的 admin／admin 不能再登入');
   assert.equal((await login(A.call, 'boss.lin', 'longpassword1')).status, 200, '新帳密登入得了');
 
-  // 2. 之後自己註冊的人：一般成員、沒有專案；管理員還是預設那位
+  // 2. 之後自己註冊的人：工作區成員、沒有專案；已經有平台管理員（預設那位），所以不是管理員
   r = await A.call(null, '/api/join', 'POST', { name: '王小明', role: 'UX' });
   assert.equal(r.status, 201, '開放註冊：' + JSON.stringify(r.body));
   const mate = r.body;
-  assert.deepEqual((await A.call(mate.token, '/api/me')).body.projects, [], '自己註冊的人沒有專案');
+  const mateMe = (await A.call(mate.token, '/api/me')).body;
+  assert.deepEqual(mateMe.projects, [], '自己註冊的人沒有專案');
+  assert.deepEqual([mateMe.platformRole, mateMe.workspaceRole], ['none', 'member'], '自己註冊的人是工作區成員，不是管理員');
   assert.ok(!(await A.call(mate.token, '/api/me')).body.mustChangeCredentials, '一般成員不用改帳密');
   assert.equal((await A.call(mate.token, '/api/invites', 'POST', { name: 'x', projects: [] })).status, 403, '一般成員不是管理員（不能發邀請）');
 
@@ -118,11 +123,14 @@ try {
   await D2.call(null, '/api/health');
   assert.equal((await D2.db.get("SELECT COUNT(*) AS n FROM credentials WHERE username = 'admin'")).n, 0, '舊站不建 admin');
 
-  // 7. 測試模式（defaultAdmin 沒開）：照舊第一位註冊＝管理員、在所有專案
+  // 7. 測試模式（defaultAdmin 沒開）：平台還沒有平台管理員，第一位註冊＝平台管理員兼工作區管理員（靠隱含權限進得了所有專案）
   const E = await mk('e.db', {}, {});
   assert.equal((await E.call(null, '/api/health')).body.setup, true);
   const first = (await E.call(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body;
-  assert.ok((await E.call(first.token, '/api/me')).body.projects.length > 0, '沒開預設管理員：第一位註冊就是管理員');
+  const firstMe = (await E.call(first.token, '/api/me')).body;
+  assert.deepEqual([firstMe.platformRole, firstMe.workspaceRole], ['admin', 'admin'], '沒開預設管理員：第一位註冊就是平台管理員兼工作區管理員');
+  assert.ok(firstMe.projects.length > 0, '靠隱含權限進得了專案');
+  assert.deepEqual(firstMe.memberProjects, [], '但不是專案成員');
 
   // 8. 預設密碼沒出現在任何 API 回應與日誌
   assert.ok(!seen.some(t => t.includes(SECRET)), 'ADMIN_PASSWORD 沒出現在回應或日誌');
