@@ -25,5 +25,5 @@ We're moving to a three-tier model: Accounts live on the Platform, memberships a
 
 ## Consequences
 
-- **第一階段**：只有一個預設工作區。改用正規的成員資格表（工作區成員、專案成員帶角色），資料結構預留 `workspace_id`。拿掉 `is_admin` 單一旗標與 `/api/admin/transfer`；負責人改為專案管理員。
+- **第一階段**：只有一個預設工作區。改用正規的成員資格表（工作區成員、專案成員帶角色），資料結構預留 `workspace_id`。拿掉 `is_admin` 單一旗標與 `/api/admin/transfer`；負責人改為專案管理員。`/api/admin/transfer` 不直接拿掉，而是保留一個版本、回 410 `GONE` 並說明改用「先升別人、再降自己」，讓還在呼叫它的整合拿到看得懂的錯誤，下一版再移除。The transfer endpoint stays for one version as a 410 tombstone that points to promote-then-demote, instead of disappearing into a 404.
 - **第二階段**才真正開放多個工作區。盤點到的阻礙：全域唯一性（帳號名、成員名、專案代碼與 slug、卡片代號 `MAIN-12`）、行程層級快取（`PROJECTS`、`peopleCache`、`leadersMap` 等）、`projectsOf()` 76 處呼叫、網址沒有工作區段、跨專案頻道與 `audience='all'`、Supabase 單一頻道、整庫備份還原、全實例容量上限。
