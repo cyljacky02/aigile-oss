@@ -1,7 +1,7 @@
 // 驗收測試：成員名冊（#13；詞彙見 GLOSSARY「成員與權限」）
 // 1. 所有工作區成員都看得到工作區裡所有啟用中的人與 AI（名字、類型、工作區角色、職稱、AI 的擁有者），包括還沒有專案的人
 // 2. 每個人的專案資訊只列查詢者看得到的專案（私人專案不外洩）
-// 3. 已移出與待接受邀請只有工作區管理員看得到；全平台帳號清單（含停用）只有平台管理員看得到
+// 3. 已移出與待接受邀請只有工作區管理員看得到（待接受的邀請：GET /api/invites?status=pending，#14）；全平台帳號清單（含停用）只有平台管理員看得到
 // 4. 有隱含權限的人不因此出現在名冊上
 // 5. 給 AI 用的成員查詢（aigile_team → /api/team-status）回傳形狀不變，範圍依新規則
 // SQLite 與 Postgres（設了 AIGILE_TEST_PG_URL）都跑。用法：node scripts/roster-test.js
@@ -86,7 +86,7 @@ try {
   const zhou = await join('周大同', 'UX');
   const Zh = zhou.participant.participantId;
   {
-    assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '張新人', projects: [A] })).status, 201, '邀請新的人');
+    assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '張新人', projects: [{ project: A, role: 'viewer' }] })).status, 201, '邀請新的人');
     const used = (await call(boss.token, '/api/invites', 'POST', { name: '已取消', projects: [] })).body.invite;
     assert.equal((await call(boss.token, `/api/invites/${used.id}/cancel`, 'POST')).status, 200, '取消的邀請不算待接受');
     assert.equal((await call(boss.token, `/api/participants/${Ln}/remove`, 'POST')).status, 200, '把林小新移出工作區');
@@ -97,6 +97,7 @@ try {
     for (const [tok, who] of [[chen.token, '一般成員'], [ai.token, 'AI']]) {
       const r = await roster(tok);
       for (const k of ['removed', 'pending', 'accounts']) assert.ok(!(k in r), `${who}看不到 ${k}`);
+      assert.equal((await call(tok, '/api/invites?status=pending')).status, 403, `${who}看不到待接受的邀請`);
       assert.ok(!JSON.stringify(r).includes('張新人') && !JSON.stringify(r).includes('林小新') && !JSON.stringify(r).includes('周大同'), `${who}看不到這些人`);
       assert.deepEqual(r.can, { assignWorkspaceAdmin: false, removeMember: false, assignPlatformAdmin: false, manageAccounts: false });
     }
@@ -105,9 +106,9 @@ try {
     const w = await roster(chen.token);
     assert.deepEqual(names(w.removed), ['林小新'], '工作區管理員看得到已移出的人');
     assert.equal(w.removed[0].status, 'removed');
-    assert.deepEqual(w.pending.map(x => x.name), ['張新人'], '工作區管理員看得到待接受的邀請');
-    assert.deepEqual(w.pending[0].projects.map(x => x.project), [A], '邀請預設的專案');
-    assert.ok(w.pending[0].expiresAt && w.pending[0].inviteId, '邀請到期時間');
+    const pending = (await call(chen.token, '/api/invites?status=pending')).body.items;
+    assert.deepEqual(pending.map(x => x.name), ['張新人'], '工作區管理員看得到待接受的邀請（取消的不算）');
+    assert.deepEqual(pending[0].presets.map(x => [x.project, x.role]), [[A, 'viewer']], '邀請預設的專案與專案角色');
     assert.ok(!('accounts' in w), '工作區管理員看不到全平台帳號清單');
     assert.ok(!JSON.stringify(w).includes('周大同'), '工作區管理員看不到停用的帳號');
     assert.deepEqual(w.can, { assignWorkspaceAdmin: true, removeMember: true, assignPlatformAdmin: false, manageAccounts: false });

@@ -2,19 +2,12 @@
 // GET /api/roster：
 //   members   所有工作區成員：工作區裡啟用中的人與 AI（包括還沒有專案的人）。有隱含權限的人（平台管理員）不因此列進來
 //   removed   已移出工作區的人類（只有工作區管理員，含平台管理員的隱含權）
-//   pending   待接受的邀請（只有工作區管理員）
 //   accounts  全平台帳號（含停用；只有平台管理員）
 //   can       查詢者在名冊上能做的事（畫面決定要不要顯示按鈕；伺服器端照樣各自檢查）
 // 每個人的專案資訊（memberships）只列查詢者看得到的專案（私人專案不外洩，access discovers）；AI 查詢時看的是擁有者看得到的。
 // 欄位叫 memberships 而不是 projects：core 的 scrubProjects 會把別人的 projects 過濾成「自己在的專案」，名冊要照可見度過濾，不照共同專案。
-export const ROSTER_STATUS = Object.freeze({ ACTIVE: 'active', REMOVED: 'removed', PENDING: 'pending' });
-
-// 待接受的邀請：還沒用、沒取消、沒過期的「新成員」邀請（重設登入的不算）。
-// 邀請的存法 #14 可能會改（工作區邀請、預設專案角色），名冊只透過這個函式讀，改的時候只要改這裡。
-export async function readPendingInvites(db, now = Date.now()) {
-  const rows = await db.all('SELECT id, name, projects, created_by, created_at, expires_at FROM invites WHERE participant_id IS NULL AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC', now);
-  return rows.map(r => ({ inviteId: r.id, name: r.name, projects: String(r.projects || '').split(',').map(x => x.trim()).filter(Boolean), createdBy: r.created_by, createdAt: r.created_at, expiresAt: r.expires_at }));
-}
+// 待接受的邀請不在這裡：畫面直接讀 GET /api/invites?status=pending（#14，只有工作區管理員；邀請的存法歸 src/login.js 管）。
+export const ROSTER_STATUS = Object.freeze({ ACTIVE: 'active', REMOVED: 'removed' });
 
 // deps：route、db、access、peopleMap(ctx)、membership、PROJECTS（未封存專案 id）、nameOf(專案id)、loadTitles()（{ 成員id: { 專案id: 職稱 } }）、
 //       isWorkspaceAdmin(p)、isOnline(p, now)、iso(ms)
@@ -58,11 +51,6 @@ export function registerRoster({ route, db, access, peopleMap, membership, PROJE
     };
     if (v.can(me, 'see_removed_members', 'workspace')) {
       out.removed = all.filter(p => human(p) && !inWorkspace(p)).map(p => ({ ...personOf(p, ROSTER_STATUS.REMOVED), removedAt: p.updated_at || null }));
-      out.pending = (await readPendingInvites(db, now)).map(iv => ({
-        inviteId: iv.inviteId, name: iv.name, status: ROSTER_STATUS.PENDING,
-        projects: iv.projects.filter(pj => PROJECTS.includes(pj)).map(pj => ({ project: pj, projectName: nameOf(pj) })),
-        invitedByName: people.get(iv.createdBy)?.name ?? null, createdAt: iso(iv.createdAt), expiresAt: iso(iv.expiresAt),
-      }));
     }
     if (can.manageAccounts) {
       const rows = await db.all("SELECT p.id, a.platform_role, a.status FROM participants p JOIN accounts a ON a.id = p.account_id WHERE p.kind = 'human'");

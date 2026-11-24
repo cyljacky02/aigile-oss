@@ -17,8 +17,9 @@ try {
   const chen = await join('陳昭宇', 'PG'), wang = await join('王小美', 'QA'), lin = await join('林小新', 'BA'), zhao = await join('趙前同事', 'UX');
   const Bo = boss.participant.participantId, Cn = chen.participant.participantId, Wg = wang.participant.participantId, Ln = lin.participant.participantId, Zo = zhao.participant.participantId;
   for (const id of [Cn, Wg]) assert.equal((await call(boss.token, `/api/participants/${id}/projects`, 'PUT', { projects: ['預設專案'] })).status, 200);
-  assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '張新人', projects: ['預設專案'] })).status, 201);
+  assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '張新人', projects: [{ project: '預設專案', role: 'viewer' }] })).status, 201);
   assert.equal((await call(boss.token, `/api/participants/${Zo}/remove`, 'POST')).status, 200);
+  assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '趙前同事' })).status, 201, '邀請已移出的人回來（#14 rejoin）');
 
   const { js, login, cdp } = await kit.browser(1280, 860);
   const size = (w, h) => cdp('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: w < 700 });
@@ -57,8 +58,12 @@ try {
   await filter('removed');
   await until(() => has('趙前同事'), 8000, '已移出有趙前同事');
   assert.ok(!(await has('陳昭宇')));
+  assert.match(await js("document.querySelector('.rs-table').innerText"), /已邀請回來/, '已移出的人有邀請回來的標記');
   await filter('pending');
   await until(() => has('張新人'), 8000, '待接受邀請有張新人');
+  const pend = await js("document.querySelector('.rs-table').innerText");
+  assert.match(pend, /張新人[\s\S]*預設專案[\s\S]*唯讀成員/, '待接受邀請顯示預設的專案與專案角色：' + pend);
+  assert.match(pend, /趙前同事[\s\S]*重新加入/, '重新加入的邀請');
   await filter('accounts');
   await until(() => has('趙前同事') && has('林小新'), 8000, '所有帳號');
   await filter('active');

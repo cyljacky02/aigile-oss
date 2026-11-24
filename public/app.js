@@ -8918,10 +8918,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <table class="pm-table adm-acc"><thead><tr><th scope="col">成員</th><th scope="col" class="c-reset">帳號動作</th></tr></thead><tbody>
         ${hs.length ? `<tr class="pm-grp-tr"><td colspan="2">人類 · ${hs.length}</td></tr>${hs.map(row).join('')}` : ''}${as.length ? `<tr class="pm-grp-tr"><td colspan="2">AI · ${as.length}</td></tr>${as.map(row).join('')}` : ''}</tbody></table>
       <p class="muted small pm-note">重設登入：登出他所有裝置、作廢舊登入碼、清掉帳號密碼，產生新邀請連結讓他重新登入（他的 AI 不受影響），連結會列在「邀請」。</p></div>
-      <div class="pm-card adm-rescue" id="adm-rescue"><div class="pm-card-head"><strong>救援指令（管理員自己登不進來時）</strong></div>
-        <p class="small">其他人登不進來，用上面的「重設登入」。管理員自己完全登不進來（裝置都登出了、又忘了密碼），請有主機權限的人在程式資料夾執行：</p>
+      <div class="pm-card adm-rescue" id="adm-rescue"><div class="pm-card-head"><strong>救援指令（平台管理員自己登不進來時）</strong></div>
+        <p class="small">其他人登不進來，用上面的「重設登入」。平台管理員自己完全登不進來（裝置都登出了、又忘了密碼），請有主機權限的人在程式資料夾執行：</p>
         <pre class="adm-cmd"><code>APP_URL=https://你的網址 npm run admin-rescue</code></pre>
-        <p class="muted small">會產生一次性的救援登入連結（15 分鐘內、只能用一次），只救管理員。本機或 Docker 版（node server.js）改用 <code>npm run admin-rescue -- --local</code>，有設 <code>DATABASE_URL</code> 就照同一組設定連 Postgres。</p></div></div>`;
+        <p class="muted small">會產生一次性的救援登入連結（15 分鐘內、只能用一次），只救平台管理員。平台管理員不只一位時要指定名字：<code>npm run admin-rescue -- --name 名字</code>（沒指定只列出名單、不產生連結）。本機或 Docker 版（node server.js）改用 <code>npm run admin-rescue -- --local</code>，有設 <code>DATABASE_URL</code> 就照同一組設定連 Postgres。</p></div></div>`;
   }
   // 稽核與儲存：全站稽核紀錄（只有管理員拿得到全站）＋儲存空間狀態；點進來才讀
   const auditLabel = { upload: '上傳', download: '下載', delete: '刪除', reject: '拒絕', expire: '到期清除', rename: '改名', move: '搬移' };
@@ -9576,12 +9576,14 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   }
   // ---------- 成員名冊（#13，GET /api/roster）----------
   // 所有工作區成員看得到啟用中的人與 AI；工作區管理員另有「已移出」「待接受邀請」，平台管理員另有「所有帳號」（含停用）。
+  // 待接受的邀請只從 loadPendingInvites 讀（GET /api/invites?status=pending，#14；邀請的格式改了只要改這裡）
   // 升降工作區管理員／平台管理員、移出工作區、停用帳號都從這裡做（按鈕照 roster.can；最後一位時停用並說明原因）
   const RS_FILTERS = [['active', '啟用中'], ['removed', '已移出'], ['pending', '待接受邀請'], ['accounts', '所有帳號']];
   const RS_ROLE = { admin: '專案管理員', member: '專案成員', viewer: '唯讀成員' };
+  const loadPendingInvites = () => (isAdmin() ? api('/api/invites?status=pending').then(d => d.items || []).catch(() => null) : Promise.resolve(null));
   function loadRoster() {
     perm.roster = null;
-    api('/api/roster').then(d => { perm.roster = d; }).catch(err => { perm.roster = { members: [], can: {}, error: err.message }; }).then(() => { if (state.page === 'perm' && perm.tab === 'roster') drawPerm(); });
+    Promise.all([api('/api/roster'), loadPendingInvites()]).then(([d, pending]) => { perm.roster = pending ? { ...d, pending } : d; }).catch(err => { perm.roster = { members: [], can: {}, error: err.message }; }).then(() => { if (state.page === 'perm' && perm.tab === 'roster') drawPerm(); });
   }
   const rsList = (r, k) => (k === 'active' ? r.members : r[k]) || [];
   const rsLastWs = r => r.members.filter(p => p.memberType === 'human' && p.workspaceRole === 'admin').length <= 1;
@@ -9613,7 +9615,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     return out.join('');
   }
   const rsTags = p => [p.workspaceRole === 'admin' ? '<span class="pill-tag blue">工作區管理員</span>' : '', p.platformRole === 'admin' ? '<span class="pill-tag">平台管理員</span>' : '', p.participantId === meId() ? '<span class="muted small">· 你</span>' : ''].join('');
-  const rsProjects = p => (p.memberships || []).map(m => `<span class="rs-pj"><b>${esc(m.projectName || projName(m.project))}</b>${m.role !== 'member' ? ` <span class="muted small">${RS_ROLE[m.role] || ''}</span>` : ''}${m.title ? ` <span class="muted small">· ${esc(m.title)}</span>` : ''}</span>`).join('') || '<span class="muted small">還沒有專案</span>';
+  const rsProjects = (p, none = '還沒有專案') => (p.memberships || []).map(m => `<span class="rs-pj"><b>${esc(m.projectName || projName(m.project))}</b>${m.role !== 'member' ? ` <span class="muted small">${RS_ROLE[m.role] || ''}</span>` : ''}${m.title ? ` <span class="muted small">· ${esc(m.title)}</span>` : ''}</span>`).join('') || `<span class="muted small">${none}</span>`;
   function rosterHtml() {
     if (perm.roster === undefined) loadRoster();
     const r = perm.roster;
@@ -9627,8 +9629,8 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const anyActs = k === 'active' && Object.values(r.can || {}).some(Boolean);
     let head, row;
     if (k === 'pending') {
-      head = '<th scope="col">名字</th><th scope="col">預設專案</th><th scope="col">邀請人</th><th scope="col">到期</th>';
-      row = iv => `<tr class="rs-tr"><td class="rs-name"><b>${esc(iv.name)}</b> <span class="pill-tag yellow">待接受</span></td><td>${iv.projects.map(x => esc(x.projectName)).join('、') || '<span class="muted small">—</span>'}</td><td>${esc(iv.invitedByName || '')}</td><td class="small">${fmtTime(iv.expiresAt)}</td></tr>`;
+      head = '<th scope="col">名字</th><th scope="col">預設專案（專案角色、職稱）</th><th scope="col">邀請人</th><th scope="col">到期</th>';
+      row = iv => `<tr class="rs-tr"><td class="rs-name"><b>${esc(iv.name)}</b> <span class="pill-tag yellow">待接受</span>${iv.kind === 'rejoin' ? ' <span class="pill-tag">重新加入</span>' : ''}</td><td class="rs-pjs">${rsProjects({ memberships: (iv.presets || []).map(x => ({ ...x, projectName: projName(x.project) })) }, '—')}</td><td>${esc(iv.createdByName || '')}</td><td class="small">${fmtTime(iv.expiresAt)}</td></tr>`;
     } else if (k === 'accounts') {
       head = '<th scope="col">帳號</th><th scope="col">狀態</th><th scope="col">平台角色</th><th scope="col">工作區</th><th scope="col">動作</th>';
       row = a => {
@@ -9639,11 +9641,11 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       };
     } else {
       head = `<th scope="col">名字</th><th scope="col">類型</th><th scope="col">專案（專案角色、職稱）</th>${anyActs ? '<th scope="col">動作</th>' : ''}`;
-      row = p => `<tr class="rs-tr"><td class="rs-name"><b>${esc(p.name)}</b>${k === 'removed' ? ' <span class="pill-tag">已移出</span>' : rsTags(p)}</td>
+      row = p => `<tr class="rs-tr"><td class="rs-name"><b>${esc(p.name)}</b>${k === 'removed' ? ` <span class="pill-tag">已移出</span>${(r.pending || []).some(iv => iv.kind === 'rejoin' && iv.name === p.name) ? ' <span class="pill-tag yellow">已邀請回來</span>' : ''}` : rsTags(p)}</td>
         <td class="small">${p.memberType === 'ai' ? `AI · ${esc(L(`${p.ownerName || ''}的`, `${p.ownerName || ''}'s`))}` : '人類'}${p.role ? `<span class="muted small"> · ${esc(p.role)}</span>` : ''}</td>
         <td class="rs-pjs">${k === 'removed' ? '<span class="muted small">—</span>' : rsProjects(p)}</td>${anyActs ? `<td><span class="adm-acts">${rsActs(r, p)}</span></td>` : ''}</tr>`;
     }
-    const note = k === 'removed' ? '已移出工作區的人進不來，歷史紀錄與名字保留；要他回來請重新邀請。' : k === 'pending' ? '邀請的重發、作廢在「管理員設定 › 邀請」。' : k === 'accounts' ? '所有帳號是整個平台的（含已停用、已移出工作區的）；停用的帳號進不了任何工作區，恢復後要重新登入。'
+    const note = k === 'removed' ? '已移出工作區的人進不來，歷史紀錄與名字保留；要他回來，在「管理員設定 › 邀請」用同一個名字邀請他（用原本的帳號回來）。' : k === 'pending' ? '邀請的重發、作廢在「管理員設定 › 邀請」。' : k === 'accounts' ? '所有帳號是整個平台的（含已停用、已移出工作區的）；停用的帳號進不了任何工作區，恢復後要重新登入。'
       : '專案只列你看得到的（私人專案不列）。管理員靠隱含權限管所有專案，只列他們加入的。';
     return `<div class="pm-card rs-card"><div class="pm-card-head rs-head">${seg}<span class="grow"></span><input id="rs-q" type="search" placeholder="搜尋名字、專案、職稱" aria-label="搜尋成員名冊" value="${esc(perm.rsQ || '')}"></div>
       ${r.error ? `<p class="warn-text small pm-pad">${esc(r.error)}</p>` : ''}

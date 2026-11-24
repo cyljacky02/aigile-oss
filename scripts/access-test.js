@@ -150,7 +150,7 @@ try {
   assert.ok(v.can(plat, 'see_member', { target: loner }), '平台管理員（隱含權限）');
   assert.ok(!v.can(gone, 'see_member', { target: loner }), '已移出工作區的人看不到');
   assert.ok(v.can(loner, 'see_member', { target: loner }), '看得到自己');
-  assert.ok(v.can(admin, 'see_removed_members', 'workspace') && v.can(plat, 'see_removed_members', 'workspace'), '工作區管理員看得到已移出與待邀請');
+  assert.ok(v.can(admin, 'see_removed_members', 'workspace') && v.can(plat, 'see_removed_members', 'workspace'), '工作區管理員看得到已移出的人');
   assert.ok(!v.can(member, 'see_removed_members', 'workspace') && !v.can(bot, 'see_removed_members', 'workspace'));
   assert.ok(v.can(member, 'see_ai_state', { target: bot }));
   assert.ok(!v.can(sider, 'see_ai_state', { target: bot }));
