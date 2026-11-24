@@ -208,7 +208,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       ["UPDATE workspaces SET name = (SELECT value FROM app_settings WHERE key = 'group_name') WHERE id = ? AND name = '' AND EXISTS (SELECT 1 FROM app_settings WHERE key = 'group_name')", [DEFAULT_WORKSPACE]],
       ['UPDATE projects SET workspace_id = ? WHERE workspace_id IS NULL', [DEFAULT_WORKSPACE]],
     ];
-    const todo = await db.all('SELECT id, kind, status, role, role_key FROM participants WHERE workspace_id IS NULL ORDER BY created_at, id');
+    const todo = await db.all('SELECT id, kind, status, role, role_key, owner_id FROM participants WHERE workspace_id IS NULL ORDER BY created_at, id');
     if (!todo.length) { await db.batch(base); await migrateCrossRoles(false); await dropLegacy(); return true; }
     const { rows: old, table } = await legacyRows();
     // 管理員：還沒轉的看舊的 is_admin，已轉的看工作區角色；都沒有就最早加入的啟用人類
@@ -222,6 +222,9 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     const listed = (map, pj, id) => Array.isArray(map?.[pj]) && map[pj].includes(id);
     // 跨專案角色（還沒寫成固定名單的套舊規則）：沒在逗號字串裡也能當 leader、設唯讀 → 以那個角色加入；其他人不在專案裡的角色是移出時沒清掉的，不算
     const isCross = p => crossOf(cr, p);
+    // 已刪除的人類＝已移出工作區，跟升級後才被移出的人一樣：成員列是啟用的（帳號沒停用，可以再被邀請回來）、沒有專案成員資格、
+    // 名下的 AI 停用並移出工作區
+    const gone = new Set(todo.filter(p => p.kind === 'human' && p.status === 'deleted').map(p => p.id));
     const at = nowIso(), each = [];
     for (const p of todo) {
       const stmts = [];
@@ -231,11 +234,13 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       const roleIn = pj => (human && listed(leaders, pj, p.id) ? PR.ADMIN : human && listed(ro, pj, p.id) ? PR.VIEWER : PR.MEMBER);
       const extra = human && isCross(p) ? [...exists].filter(pj => !list.includes(pj) && roleIn(pj) !== PR.MEMBER) : [];
       const ghost = pj => admin && !titles[p.id]?.[pj] && roleIn(pj) !== PR.ADMIN; // 隱形管理員的專案：改靠隱含權限
-      const rows = [...list, ...extra].filter(pj => !ghost(pj)).map(pj => ({ p: pj, r: roleIn(pj) }));
+      const rows = gone.has(p.id) ? [] : [...list, ...extra].filter(pj => !ghost(pj)).map(pj => ({ p: pj, r: roleIn(pj) }));
       if (rows.length) stmts.push([`INSERT OR IGNORE INTO project_members (project_id, participant_id, role) SELECT json_extract(value, '$.p'), ?, json_extract(value, '$.r') FROM json_each(?) WHERE ${guard}`, [p.id, JSON.stringify(rows), p.id]]);
       if (human) stmts.push([`INSERT OR IGNORE INTO accounts (id, platform_role, status, created_at, updated_at) SELECT ?, ?, ?, ?, ? WHERE ${guard}`, [accountIdOf(p.id), admin ? 'admin' : 'none', p.status === 'disabled' ? 'disabled' : 'active', at, at, p.id]]);
-      stmts.push(['UPDATE participants SET workspace_id = ?, account_id = ?, workspace_role = ?, workspace_status = ? WHERE id = ? AND workspace_id IS NULL',
-        [DEFAULT_WORKSPACE, human ? accountIdOf(p.id) : null, admin ? 'admin' : 'member', human && p.status === 'deleted' ? 'removed' : 'active', p.id]]);
+      const removed = gone.has(p.id) || (p.kind === 'ai' && gone.has(p.owner_id));
+      const status = gone.has(p.id) ? 'active' : removed && p.status === 'active' ? 'disabled' : p.status;
+      stmts.push(['UPDATE participants SET workspace_id = ?, account_id = ?, workspace_role = ?, workspace_status = ?, status = ? WHERE id = ? AND workspace_id IS NULL',
+        [DEFAULT_WORKSPACE, human ? accountIdOf(p.id) : null, admin ? 'admin' : 'member', removed ? 'removed' : 'active', status, p.id]]);
       if (table) stmts.push(['DELETE FROM legacy_members WHERE participant_id = ?', [p.id]]);
       each.push(stmts);
     }

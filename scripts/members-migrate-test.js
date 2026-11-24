@@ -125,6 +125,19 @@ try {
   // 3) 第一個請求：轉換舊資料，API 看到的跟升級前一樣
   await seesSameAsBefore(db, mkApp(db), '第一次啟動');
   console.log('✓ 升級後成員、專案、權限照舊');
+  // 已刪除的人＝已移出工作區，跟升級後才被移出的人一樣：名冊列在已移出、帳號沒停用、可以再被邀請回來
+  {
+    const call = mkApp(db), boss = await testToken(db, 'p_boss');
+    const roster = (await call(boss, '/api/roster')).body;
+    const gone = roster.removed.find(p => p.participantId === 'p_gone');
+    assert.deepEqual([gone?.name, gone?.status], ['錢已刪', 'removed'], '名冊：已移出：' + JSON.stringify(roster.removed));
+    assert.deepEqual(roster.accounts.filter(a => a.participantId === 'p_gone').map(a => [a.accountStatus, a.workspaceStatus]), [['active', 'removed']], '帳號沒停用，只是移出工作區');
+    const inv = await call(boss, '/api/invites', 'POST', { name: '錢已刪' });
+    assert.equal(inv.status, 201, '已刪除的人可以再被邀請回來：' + JSON.stringify(inv.body));
+    assert.equal(inv.body.invite.kind, 'rejoin', '用原本的帳號回來');
+    await call(boss, `/api/invites/${inv.body.invite.id}/cancel`, 'POST');
+  }
+  console.log('✓ 已刪除的人跟升級後被移出的人一樣');
 
   // 新結構裡的樣子（遷移測試例外，直接看表）
   const ws = await db.get("SELECT name, create_projects FROM workspaces WHERE id = 'default'");
