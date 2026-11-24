@@ -187,6 +187,18 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       : [`UPDATE accounts SET platform_role = 'none', updated_at = ? WHERE platform_role = 'admin' AND id IN (SELECT account_id FROM participants WHERE id = ?)
           AND EXISTS (SELECT 1 FROM accounts o JOIN participants op ON op.account_id = o.id WHERE o.platform_role = 'admin' AND o.status = 'active' AND op.status = 'active' AND op.kind = 'human' AND o.id != accounts.id)`, [at, id]],
   ];
+  // 停用帳號（人類）：先鎖工作區這列（跟升降管理員同一把鎖，同時停用、降級的人排隊），再在同一句檢查：
+  // 他是工作區管理員時還有別的啟用中工作區管理員、他是平台管理員時還有別的啟用中平台管理員；不然什麼都不改（呼叫端再讀一次）。
+  // 帳號狀態只在真的停用了才跟著改。token：換上的新登入碼雜湊（舊的立刻失效）
+  const disableStmts = (id, at, token) => [
+    ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    [`UPDATE participants SET status = 'disabled', token = ?, updated_at = ?, version = version + 1 WHERE id = ? AND kind = 'human' AND status = 'active'
+      AND (workspace_role != '${WR.ADMIN}' OR EXISTS (SELECT 1 FROM participants o WHERE o.workspace_id = ? AND o.workspace_role = '${WR.ADMIN}' AND o.kind = 'human' AND o.status = 'active' AND o.id != participants.id))
+      AND (NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = participants.account_id AND a.platform_role = 'admin' AND a.status = 'active')
+        OR EXISTS (SELECT 1 FROM accounts o JOIN participants op ON op.account_id = o.id WHERE o.platform_role = 'admin' AND o.status = 'active' AND op.status = 'active' AND op.kind = 'human' AND op.id != participants.id))`,
+    [token, at, id, DEFAULT_WORKSPACE]],
+    ["UPDATE accounts SET status = 'disabled', updated_at = ? WHERE id IN (SELECT account_id FROM participants WHERE id = ? AND status = 'disabled')", [at, id]],
+  ];
   // 停用／恢復（人類）：帳號狀態跟著
   const accountStatusStmts = (id, status, at) => [['UPDATE accounts SET status = ?, updated_at = ? WHERE id IN (SELECT account_id FROM participants WHERE id = ?)', [status, at, id]]];
   // 成員列整個刪掉（加入失敗收回、清示範資料）：他的專案成員資格與帳號一起刪。要放在 DELETE FROM participants 之前
@@ -309,6 +321,6 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     makeProjectAdminStmts,
     loadReadOnly, isReadOnlyHuman, isReadOnly, readOnlyProjectsOf, readOnlyOf, setReadOnlyStmts, addReadOnly,
     fetchProjectsOf, fetchMembersOf, removeProjectStmts,
-    enterWorkspaceStmts, setWorkspaceRoleStmts, isPlatformAdmin, setPlatformRoleStmts, accountStatusStmts, forgetStmts, migrateLegacy,
+    enterWorkspaceStmts, setWorkspaceRoleStmts, isPlatformAdmin, setPlatformRoleStmts, disableStmts, accountStatusStmts, forgetStmts, migrateLegacy,
     loadMembers, refreshOne, load, invalidate };
 }

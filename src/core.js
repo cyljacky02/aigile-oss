@@ -2961,14 +2961,20 @@ ${ending}`;
     if (t.status === 'disabled') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyDisabled: true };
     await assertNotLastAdmin(ctx, t, { platform: true });
     const now = Date.now(), at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
+    // 最後一位管理員在寫入那句再擋一次（上面的檢查之後、寫入之前，另一位可能剛好被停用或降級）；沒停用成功就不登出他的裝置、不換 AI 的 Token
+    const done = "EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'disabled')";
     await db.batch([
-      ["UPDATE participants SET status = 'disabled', token = ?, updated_at = ?, version = version + 1 WHERE id = ?", [await tokenKey(newToken()), at, t.id]],
-      ...membership.accountStatusStmts(t.id, 'disabled', at),
-      ['UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL', [now, t.id]],
-      ['DELETE FROM pair_codes WHERE participant_id = ?', [t.id]],
-      ...await Promise.all(ais.map(async a => ['UPDATE participants SET token = ?, token_expires_at = 1, updated_at = ? WHERE id = ?', [await tokenKey(newToken()), at, a.id]])),
+      ...membership.disableStmts(t.id, at, await tokenKey(newToken())),
+      [`UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL AND ${done}`, [now, t.id, t.id]],
+      [`DELETE FROM pair_codes WHERE participant_id = ? AND ${done}`, [t.id, t.id]],
+      ...await Promise.all(ais.map(async a => [`UPDATE participants SET token = ?, token_expires_at = 1, updated_at = ? WHERE id = ? AND ${done}`, [await tokenKey(newToken()), at, a.id, t.id]])),
     ]);
     invalidatePeople();
+    if ((await db.get('SELECT status FROM participants WHERE id = ?', t.id))?.status !== 'disabled') { // 另一位管理員剛好同時被停用或降級：資料庫那句檢查擋下來了
+      await membership.loadMembers(true);
+      await assertNotLastAdmin(ctx, await db.get('SELECT * FROM participants WHERE id = ?', t.id), { platform: true });
+      throw lastAdminError();
+    }
     live?.dropPerson?.(t.id); // 連著的即時通道也斷掉（有實作才做）
     console.log(`成員已停用：${t.name}（${me.name} 操作）`);
     return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)), revokedAiTokens: ais.length };
