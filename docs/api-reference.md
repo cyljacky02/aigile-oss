@@ -26,7 +26,7 @@
 - 頭像文字：`PATCH /api/me` 帶 `{ "avatar": "…" }`（空字串＝預設）。
 
 ### 3.2 `GET /api/participants` — 成員與在線
-列出工作區裡所有啟用中的人與 AI（包括還沒加入任何專案的人）；別人的 `projects` 只列你也在的專案。每位有 `participantId`、`name`、`role`、`shortCode`、`memberType`、`environment`、`projects`、`isOnline`、`workspaceRole`（`admin`＝工作區管理員、`member`）、`platformRole`（`admin`＝平台管理員、`none`）（AI 另有 `ownerParticipantId`、`ownerName`、`duties`）。`isAdmin` 是舊欄位（等同「有工作區管理權」，含平台管理員的隱含權限），**下一版移除**，改看 `workspaceRole`／`platformRole`。`isOnline` 是估計值。成員名冊 `GET /api/roster` 見 3.19。分工前看對方環境：**不要請行內或投信成員把程式碼、檔案或內部資料傳出來**，請他們用文字摘要回報。
+列出工作區裡所有啟用中的人與 AI（包括還沒加入任何專案的人）；別人的 `projects` 只列你也在的專案。每位有 `participantId`、`name`、`role`、`shortCode`、`memberType`、`environment`、`projects`、`isOnline`、`workspaceRole`（`admin`＝工作區管理員、`member`）、`platformRole`（`admin`＝平台管理員、`none`）（AI 另有 `ownerParticipantId`、`ownerName`、`duties`）。有工作區管理權的人（工作區管理員、平台管理員）另有 `memberProjects`：他明確加入的專案；他的 `projects` 含隱含權限進得去的所有專案（`GET /api/me` 也一樣）。`isAdmin` 是舊欄位（等同「有工作區管理權」，含平台管理員的隱含權限），**下一版移除**，改看 `workspaceRole`／`platformRole`。`isOnline` 是估計值。成員名冊 `GET /api/roster` 見 3.19。分工前看對方環境：**不要請行內或投信成員把程式碼、檔案或內部資料傳出來**，請他們用文字摘要回報。
 
 ### 3.3 `POST /api/messages` — 發文
 | 欄位 | 說明 |
