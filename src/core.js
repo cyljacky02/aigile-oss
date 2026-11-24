@@ -7,7 +7,7 @@
 import { ROLES, SETTING_FIELDS } from './roles.js';
 import { registerCards, teamCards, workFrom, autoArchive, claimsOf, CLAIM_LOG } from './cards.js';
 import { createStatuses, registerStatusRoutes, firstStatusSql, readStatusList } from './statuses.js'; // 專案看板狀態
-import { createMembership } from './membership.js'; // 成員資格：誰在哪些專案、leader、唯讀、跨專案角色
+import { createMembership, DEFAULT_WORKSPACE } from './membership.js'; // 成員資格：誰在哪些專案、leader、唯讀、跨專案角色
 import { registerLogin } from './login.js';
 import { registerSkills, KEYISH } from './skills.js'; // 角色技能庫
 import { registerJoin, joinOpen } from './join.js'; // 申請加入專案
@@ -147,6 +147,13 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   const CRED_ALLOW = new Set(['GET /api/me', 'GET /api/me/password', 'PUT /api/me/password', 'POST /api/auth/logout']);
   const credOk = new Set(); // 已確認不用改帳密的人（每份程式各查一次）
   let adminReady;
+  // 舊資料轉到新的成員資料表（src/membership.js migrateLegacy）：每份程式第一個請求做一次；匯入備份中先不做，之後的請求再試
+  let membersReady;
+  const migrateMembers = () => (membersReady ??= membership.migrateLegacy().then(done => { if (!done) membersReady = undefined; }, error => {
+    membersReady = undefined;
+    console.error('成員資料轉換失敗', error);
+    throw error;
+  }));
   // 即時喚醒門鈴（Supabase Realtime Broadcast）：沒設 URL／金鑰就完全不動作。只送 AI 的 ID、時間與簽章，不帶人名與內文
   const SB_URL = String(config.supabaseUrl || '').replace(/[/]+$/, '');
   const SB_KEY = config.supabaseKey || '';
@@ -239,13 +246,13 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 保險：最多 10 分鐘還是整張重讀一次。原本每 30 秒整張讀，一天 4,775 次、13 萬列
   const PEOPLE_CHECK_MS = Number(config.peopleCheckMs) || 30_000, PEOPLE_MAX_MS = 10 * 60_000; // 測試可調短
   let peopleCache = { at: 0, map: null }, peopleDirty = false;
-  const invalidatePeople = () => { peopleCache = { at: 0, map: null }; teamCache = { at: 0, data: null }; peopleDirty = true; };
+  const invalidatePeople = () => { peopleCache = { at: 0, map: null }; teamCache = { at: 0, data: null }; peopleDirty = true; membership.invalidate(); }; // 成員資格快照一起過期
   const invalidateTeam = () => { teamCache = { at: 0, data: null }; }; // 卡片變動只影響團隊狀態，不用讓每份程式重讀成員表
   const peopleVer = async () => (await db.get("SELECT value FROM app_settings WHERE key = 'people_ver'").catch(() => null))?.value || '';
   async function bumpPeopleVer() { peopleDirty = false; await db.run("INSERT INTO app_settings (key, value) VALUES ('people_ver', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", String(Date.now()) + Math.random().toString(36).slice(2, 6)).catch(() => {}); }
   const loadPeople = async ctx => {
     const now = Date.now();
-    const [ver, rows] = await Promise.all([peopleVer(), db.all('SELECT * FROM participants ORDER BY rowid')]); // 依加入順序（SQLite 不寫也是這個順序；Postgres 改過的列會跑到後面，要寫明）
+    const [ver, rows] = await Promise.all([peopleVer(), db.all('SELECT * FROM participants ORDER BY rowid'), membership.loadMembers(true)]); // 依加入順序（SQLite 不寫也是這個順序；Postgres 改過的列會跑到後面，要寫明）；成員資格快照跟成員表一起重讀
     peopleCache = { at: now, loadedAt: now, seenAt: now, ver, map: new Map(rows.map(p => [p.id, p])) };
     ctx.people = peopleCache.map;
     ctx.peopleFresh = true;
@@ -294,7 +301,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     // 匯入備份中不自動建預設專案：備份的專案還沒寫進來
     if (!projectRows.length && !(await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null))) { // 新站第一次啟動，自動建「預設專案」（之後管理員可改名）
       const id = randId('prj'), at = nowIso();
-      await db.batch([['INSERT OR IGNORE INTO projects (id, name, archived, created_by, created_at) VALUES (?,?,0,?,?)', [id, '預設專案', 'system', at]],
+      await db.batch([['INSERT OR IGNORE INTO projects (id, name, archived, workspace_id, created_by, created_at) VALUES (?,?,0,?,?,?)', [id, '預設專案', DEFAULT_WORKSPACE, 'system', at]],
         ['INSERT INTO project_events (project_id, at, actor_id, text) VALUES (?,?,?,?)', [id, at, 'system', '新站第一次啟動，系統自動建立']]]);
       projectRows = await db.all('SELECT * FROM projects ORDER BY created_at, id');
     }
@@ -533,6 +540,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     // 人類的網頁登入是「裝置」（dv_ 開頭）；AI Token 與人類登入碼照舊
     const { p, dev } = await login.resolve(token);
     if (!p || p.status !== 'active') throw new ApiError(401, 'INVALID_TOKEN', 'Token 不存在、已重設或已撤銷');
+    await membership.refreshOne(p.id); // 發請求的人：專案與角色看最新的（以前存在他那列，每次驗證都重讀）
     p.authKind = dev ? 'device' : 'code';
     p.deviceId = dev?.id || null;
     if (p.owner_id) {
@@ -953,6 +961,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
         [`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, is_admin)
           SELECT ?,?,?,?,?,?,?,?,?,?,1 WHERE NOT EXISTS (SELECT 1 FROM participants WHERE kind = 'human' AND status = 'active')`,
         [id, 'human', '管理員', '', await newCode(), await tokenKey(newToken()), Date.now() + HUMAN_TOKEN_TTL_MS, ts, ts, 0]],
+        ...membership.enterWorkspaceStmts(id, ts), // 預設工作區、帳號：平台管理員兼工作區管理員
         ...setProjectsStmts(id, [...PROJECTS], ts), // 在所有專案（上一句沒建人就什麼都不寫）
         ['INSERT INTO credentials (participant_id, username, pwd_hash, updated_at) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM participants WHERE id = ?)', [id, 'admin', await hashPassword(ADMIN_PASSWORD), Date.now(), id]],
         ["INSERT INTO app_settings (key, value) SELECT ?, '1' WHERE EXISTS (SELECT 1 FROM participants WHERE id = ?) ON CONFLICT(key) DO UPDATE SET value = '1'", [MUST_KEY(id), id]],
@@ -998,11 +1007,12 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       SELECT ?,?,?,?,?,?,?,?,?,?,
         CASE WHEN EXISTS (SELECT 1 FROM participants WHERE kind = 'human' AND status = 'active') THEN 0 ELSE 1 END`, // 群組第一位＝管理員
     [id, 'human', name, role, await newCode(), await tokenKey(token), Date.now() + HUMAN_TOKEN_TTL_MS, ts, ts, Date.now()]],
+    ...membership.enterWorkspaceStmts(id, ts), // 預設工作區、帳號（第一位＝平台管理員兼工作區管理員）
     ...setProjectsStmts(id, [...PROJECTS], ts, { onlyIf: 'is_admin = 1' })]); // 第一位在所有專案；同一批，一起成功或一起失敗
     if (jb) jb.n++; // 成功建立才算一次
     if (cred) {
       try { await login.saveCred(id, cred.username, cred.password); }
-      catch (e) { await db.run('DELETE FROM participants WHERE id = ?', id); invalidatePeople(); throw e; } // 帳號剛好被搶走：人不留，換帳號重試
+      catch (e) { await db.batch([...membership.forgetStmts([id]), ['DELETE FROM participants WHERE id = ?', [id]]]); invalidatePeople(); throw e; } // 帳號剛好被搶走：人不留，換帳號重試
     }
     const p = await db.get('SELECT * FROM participants WHERE id = ?', id);
     return { token, participant: publicParticipant(p, await peopleMap(ctx)), ...(cred ? { username: cred.username } : {}) };
@@ -1065,7 +1075,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       avatar, token, token_expires_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, 'ai', name, s.role, s.roleKey, await newCode(), me.id, s.duties, s.style, s.autonomy, s.mustConfirm, s.handoff,
       s.avatar, await tokenKey(token), Date.now() + AI_TOKEN_TTL_MS, ts, ts]],
-    ...setProjectsStmts(id, aiProjects.split(','), ts)]);
+    ...membership.enterWorkspaceStmts(id, ts), ...setProjectsStmts(id, aiProjects.split(','), ts)]);
+    await membership.loadMembers(true);
     return { ...aiView(await db.get('SELECT * FROM participants WHERE id = ?', id), await peopleMap(ctx)), token }; // Token 原文只在建立當下給一次
   }
 
@@ -1763,6 +1774,7 @@ ${ending}`;
     }
     await db.batch(stmts);
     invalidatePeople();
+    await membership.loadMembers(true);
     ctx.people = null; // 同一請求接下來要讀到更新後的成員（例如回應裡的 projects）
     // 移出某專案，那個專案的角色一起清掉（之後再加入＝未設定）
     const rmRoles = plan.filter(x => x.removed.length && projRoles[x.target.id]);
@@ -2008,7 +2020,8 @@ ${ending}`;
   const GROUP_EVT = '_group';
   async function saveGroupName(me, name) {
     const old = await groupName();
-    const stmts = [["INSERT INTO app_settings (key, value) VALUES ('group_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [name]]];
+    const stmts = [["INSERT INTO app_settings (key, value) VALUES ('group_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [name]],
+      ['UPDATE workspaces SET name = ? WHERE id = ?', [name, DEFAULT_WORKSPACE]]]; // 工作區名稱跟著（#10 改成工作區設定）
     if (old !== name) stmts.push(projEvent(GROUP_EVT, me.id, `${me.name} 把群組名稱從「${old}」改成「${name}」`, nowIso()));
     await db.batch(stmts);
     pageName = { at: 0, name: null }; // 網頁上的群組名立刻換新
@@ -2114,7 +2127,7 @@ ${ending}`;
     // 看板狀態（選填）：建立時直接給整份清單；沒給就是預設狀態組（第一次讀狀態時補上）
     const initial = body.statuses === undefined || body.statuses === null ? [] : readStatusList(body.statuses, invalid);
     await loadCrossRoles();
-    const stmts = [['INSERT INTO projects (id, name, archived, created_by, created_at) VALUES (?,?,0,?,?)', [id, name, me.id, at]], projEvent(id, me.id, `${me.name} 建立專案`, at),
+    const stmts = [['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at) VALUES (?,?,0,?,?,?)', [id, name, DEFAULT_WORKSPACE, me.id, at]], projEvent(id, me.id, `${me.name} 建立專案`, at),
       ...initial.map((st, i) => ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [id, st.name, st.category, i, st.color]]),
       ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['slug:' + id, slug]]];
     if (code) stmts.push(["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['pcode:' + id, code]]);
@@ -2125,6 +2138,7 @@ ${ending}`;
     }
     await db.batch(stmts);
     invalidatePeople(); invalidateProjects();
+    await membership.loadMembers(true);
     return { __status: 201, ...(await projectsResponse(ctx)), id };
   });
   route('PATCH', '/api/projects/:id', async ({ ctx, me, req, params }) => {
@@ -2701,8 +2715,9 @@ ${ending}`;
     const log = { projectId: id, name: row.name, code: projCodes[id] || null, by: me.id, byName: me.name, at, counts, aisDeleted: onlyHere.map(p => p.name) };
     settings.push(['DELETE FROM projects WHERE id = ?', [id]], [upsert, [`${DEL_LOG}${at}:${id}`, JSON.stringify(log)]]);
     await db.batch(settings);
-    projRolesAt = 0; membership.invalidate();
+    projRolesAt = 0;
     invalidatePeople(); invalidateProjects();
+    await membership.loadMembers(true);
     return projectsResponse(ctx, { deleted: log });
   });
   route('GET', '/api/project-deletions', async ({ ctx, me }) => {
@@ -2903,6 +2918,7 @@ ${ending}`;
     const now = Date.now(), at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
     await db.batch([
       ["UPDATE participants SET status = 'disabled', token = ?, is_admin = 0, updated_at = ?, version = version + 1 WHERE id = ?", [await tokenKey(newToken()), at, t.id]],
+      ...membership.accountStatusStmts(t.id, 'disabled', at), ...membership.syncAdminStmts(),
       ['UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL', [now, t.id]],
       ['DELETE FROM pair_codes WHERE participant_id = ?', [t.id]],
       ...await Promise.all(ais.map(async a => ['UPDATE participants SET token = ?, token_expires_at = 1, updated_at = ? WHERE id = ?', [await tokenKey(newToken()), at, a.id]])),
@@ -2916,7 +2932,8 @@ ${ending}`;
     const t = await humanTarget(ctx, me, params.id);
     if (t.status !== 'disabled') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyActive: true };
     await assertNameFree(t.name, t.id).catch(() => { throw new ApiError(409, 'NAME_TAKEN', `已經有人叫「${t.name}」，先請對方改名再恢復。`); });
-    await db.run("UPDATE participants SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?", nowIso(), t.id);
+    const at = nowIso();
+    await db.batch([["UPDATE participants SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?", [at, t.id]], ...membership.accountStatusStmts(t.id, 'active', at)]);
     invalidatePeople();
     return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)) };
   });
@@ -2936,6 +2953,7 @@ ${ending}`;
     await db.batch([
       ['UPDATE participants SET is_admin = 0 WHERE is_admin = 1', []],
       ['UPDATE participants SET is_admin = 1, updated_at = ? WHERE id = ?', [nowIso(), to.id]],
+      ...membership.syncAdminStmts(), // 工作區管理員、平台管理員跟著
     ]);
     invalidatePeople();
     console.log(`群組管理員：${me.name} → ${to.name}`);
@@ -3626,7 +3644,7 @@ ${ending}`;
     await saveProjectRoles({ ...projRoles, [pid]: { ...(projRoles[pid] || {}), ...clean } });
   }
   const setInitialReadOnly = (pid, projects) => membership.addReadOnly(pid, projects.filter(pj => PROJECTS.includes(pj))); // 邀請時勾了唯讀
-  login = registerLogin({ route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, setInitialReadOnly, setProjectsStmts, projectListOf: listOf,
+  login = registerLogin({ route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, setInitialReadOnly, setProjectsStmts, enterWorkspaceStmts: membership.enterWorkspaceStmts, projectListOf: listOf,
     adminOf, access, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
     groupName, humanTtlMs: HUMAN_TOKEN_TTL_MS, failLimit: Number(config.authFailLimit) || 10,
     captcha: { on: TURNSTILE, after: TS_AFTER, verify: verifyTurnstile } });
@@ -3669,7 +3687,7 @@ ${ending}`;
     maxTotalBytes: (Number(config.docMaxTotalMb) || 0) * 1048576 || DOC_MAX_TOTAL_BYTES });
   const skillsApi = registerSkills({ route, db, ApiError, invalid, readJson, randId, nowIso, sha256, peopleMap, projectsOf, PROJECTS, nameOf, access, assertNoSecret, writeDm, myAi, requireHuman, setupSha: SETUP_SHA256, roleDefsMap, storage }); // 技能包放分塊儲存 // C-xxx；C-xxx 唯讀；MAIN-240 同步工具版本；MAIN-249 專案自訂角色
   registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage,
-    afterRestore: async () => { invalidatePeople(); await bumpPeopleVer(); await Promise.all([loadProjects(true), loadLeaders(true), loadReadOnly(true), loadProjectRoles(true)]); } });
+    membership, afterRestore: async () => { invalidatePeople(); await bumpPeopleVer(); membersReady = undefined; await migrateMembers(); await Promise.all([loadProjects(true), membership.loadMembers(true), loadProjectRoles(true)]); } }); // 舊版備份：成員資料匯入後再轉一次
   registerUpdateCheck({ route, db, access, requireHuman, config });
   registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership,
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });
@@ -3838,7 +3856,7 @@ ${ending}`;
   async function handleMcp(req, url, base) {
     if (req.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST' } });
     let me;
-    try { await loadProjects(); me = await authenticate(req, url); } catch (e) {
+    try { await loadProjects(); await migrateMembers(); await membership.loadMembers(); me = await authenticate(req, url); } catch (e) {
       if (!(e instanceof ApiError)) throw e;
       return json(e.status, { error: { code: e.code, message: e.message } });
     }
@@ -3875,11 +3893,13 @@ ${ending}`;
         const ctx = {};
         await loadProjects();
         if (!tokensHashed) await hashOldTokens();
+        await migrateMembers(); // 舊資料轉到新的成員資料表（要在「有沒有管理員」之前）
         if (DEFAULT_ADMIN) await (adminReady ??= ensureDefaultAdmin().catch(error => {
           adminReady = undefined;
           console.error('預設管理員初始化失敗', error);
           throw new ApiError(503, 'ADMIN_SETUP_FAILED', '無法初始化預設管理員');
         }));
+        await membership.loadMembers(); // 成員資格快照（10 秒快取；本份程式改過就重讀）
         const me = r.open ? null : await authenticate(req, url);
         const routeKey = `${r.method} ${r.pattern}`;
         if (me?.kind === 'human' && DEFAULT_ADMIN && !credOk.has(me.id)) {

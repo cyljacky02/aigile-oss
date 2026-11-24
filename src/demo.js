@@ -3,6 +3,8 @@
 // 標記：建了什麼記在 app_settings 的 demo_data；訊息與卡片的 request_id 一律以 demo: 開頭
 // 清除只刪這些（含它們的通知、收件人、卡片紀錄）；示範專案裡如果有你們自己發的訊息或建的卡，專案保留、只刪示範的部分
 // 內容是虛構的通用情境（活動報名網站），不含任何真實人名；示範成員不能登入（沒有密碼、登入碼已過期）
+import { DEFAULT_WORKSPACE } from './membership.js';
+
 export const DEMO_KEY = 'demo_data';
 const TAG = 'demo:';
 // 示範內容的文字：網頁是英文介面時（lang=en）用英文。協定標籤（[接單]、[需確認]、選項：、建議：）、卡片狀態與類型是 AI／程式在解析的值，兩種語言都照原文
@@ -84,7 +86,7 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
     // 加入時間一定要是現在：管理員＝最早加入的人類，示範成員比你早就會變成管理員
     const joinedAt = new Date(now + 1000).toISOString();
     const stmts = [
-      ['INSERT INTO projects (id, name, archived, created_by, created_at) VALUES (?,?,0,?,?)', [pj, pname, me.id, iso(6 * H)]],
+      ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at) VALUES (?,?,0,?,?,?)', [pj, pname, DEFAULT_WORKSPACE, me.id, iso(6 * H)]],
       ['INSERT INTO project_events (project_id, at, actor_id, text) VALUES (?,?,?,?)', [pj, iso(6 * H), me.id, T.loaded(me.name)]],
     ];
     const slugUsed = await db.get("SELECT 1 AS x FROM app_settings WHERE key >= 'slug:' AND key < 'slug;' AND value = 'demo'");
@@ -94,7 +96,7 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
     for (const p of people) {
       stmts.push([`INSERT INTO participants (id, kind, name, role, role_key, code, owner_id, duties, token, token_expires_at, status, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?)`, [p.id, p.kind, p.name, p.role, p.role_key, p.code, p.owner_id, p.duties, 'demo_' + newToken(), joinedAt, joinedAt]], // token_expires_at=1：AI 顯示「Token 已過期」；人類沒有密碼、沒有裝置，登入碼是沒人拿得到的亂數
-        ...membership.setProjectsStmts(p.id, [pj], null));
+        ...membership.enterWorkspaceStmts(p.id, joinedAt), ...membership.setProjectsStmts(p.id, [pj], null));
     }
     // 你（管理員）加進示範專案，才看得到
     const mine = await membership.fetchProjectsOf(me.id);
@@ -172,6 +174,7 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
       ['DELETE FROM message_recipients WHERE participant_id IN (SELECT value FROM json_each(?))', [ids]],
       ['DELETE FROM ai_state WHERE participant_id IN (SELECT value FROM json_each(?))', [ids]],
       ['DELETE FROM dms WHERE human_id IN (SELECT value FROM json_each(?)) OR ai_id IN (SELECT value FROM json_each(?))', [ids, ids]],
+      ...membership.forgetStmts(JSON.parse(ids)), // 專案成員資格、帳號
       ['DELETE FROM participants WHERE id IN (SELECT value FROM json_each(?))', [ids]],
       ['DELETE FROM app_settings WHERE key = ?', [DEMO_KEY]],
     ];
