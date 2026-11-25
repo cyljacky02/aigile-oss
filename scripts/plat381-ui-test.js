@@ -132,7 +132,7 @@ try {
     await until(() => js("!!document.querySelector('[data-pset=\"預設專案\"]')"), 10000, L + '管理員的專案 ⚙');
     await js("(() => { const b = document.querySelector('[data-pset=\"預設專案\"]'); b.scrollIntoView(); b.click(); return true; })()");
     await until(() => js("!document.querySelector('#pset-menu')?.hidden"), 5000, L + '管理員 ⚙ 選單');
-    assert.equal(await js("[...document.querySelectorAll('#pset-menu [data-pset-act]')].map(b => b.dataset.psetAct).join(',')"), 'rename,repo,visibility,members,kbai', L + '管理員的 ⚙ 跟 leader 一樣、沒有封存');
+    assert.equal(await js("[...document.querySelectorAll('#pset-menu [data-pset-act]')].map(b => b.dataset.psetAct).join(',')"), 'rename,repo,visibility,members,kbai,clearmsgs', L + '管理員的 ⚙ 跟 leader 一樣、沒有封存；多了清空專案訊息（只有工作區管理員）');
     await shot(`PLAT-381-5b-${tag}-管理員-專案齒輪`);
     await js("document.body.click(); true");
     await login(liu.token, '/p/main/inbox');
