@@ -1,5 +1,7 @@
-# Release: when a version tag (v*) is pushed, build the Docker image for linux/amd64 and linux/arm64
+# Release: when a version tag (v*) is pushed, first run the full CI (ci.yml: Linux / Windows / macOS, Postgres, Docker);
+# only if it passes, build the Docker image for linux/amd64 and linux/arm64
 # and push it to GitHub Container Registry as ghcr.io/<owner>/<repo>:<version> and :latest.
+# If CI fails nothing is published: fix, then delete and re-push the tag (or bump the version).
 # The image has no npm dependencies (COPY + mkdir only), so the arm64 build under QEMU stays fast.
 name: Release image
 
@@ -16,7 +18,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   image:
+    needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

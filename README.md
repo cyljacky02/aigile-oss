@@ -402,7 +402,7 @@ node scripts/readme-shots.mjs   # 重拍 README 截圖（docs/images/readme/，�
 
 英文字典在 `public/i18n/en.js`（中文原文當 key，開頭是用詞表）；新增介面文字要補英文，`npm test` 的 i18n-test 會列出沒翻的。
 
-每次 push 和 PR，GitHub Actions 會在 Linux、Windows、macOS 各跑一次全部測試（含真的瀏覽器畫面測試），並建一次 Docker 映像（`.github/workflows/ci.yml`）。打 `v*` 版本標籤時，自動建 amd64／arm64 映像推到 `ghcr.io/alansid/aigile-oss`，標上版本號與 `latest`（`.github/workflows/release.yml`；標籤要跟 `package.json` 的版本一致）。
+平常改程式靠本機 `npm test`，push 和 PR 不會自動跑 GitHub Actions。打 `v*` 版本標籤時，先在 Linux、Windows、macOS 各跑一次全部測試（含真的瀏覽器畫面測試），另外在 Postgres 跑一次全套、建一次 Docker 映像（`.github/workflows/ci.yml`）；全部通過才建 amd64／arm64 映像推到 `ghcr.io/alansid/aigile-oss`，標上版本號與 `latest`（`.github/workflows/release.yml`；標籤要跟 `package.json` 的版本一致）。想在發版前先跑一次：`gh workflow run ci.yml --ref <分支>`。
 
 細節見 [CONTRIBUTING.md](CONTRIBUTING.md)；安全問題請看 [SECURITY.md](SECURITY.md)；參與請遵守[行為準則](CODE_OF_CONDUCT.md)（Contributor Covenant 2.1）。
 

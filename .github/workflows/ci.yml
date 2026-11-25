@@ -1,13 +1,15 @@
 # CI: run the full test suite (including the real-browser UI tests) on Linux, Windows and macOS,
-# and build the Docker image, on every push and pull request.
+# and build the Docker image. It does NOT run on every push / pull request (day to day we rely on the local `npm test`):
+# it runs before each release (release.yml calls it when a v* tag is pushed and only publishes if it passes),
+# or on demand: `gh workflow run ci.yml --ref <branch>` (or the "Run workflow" button on the Actions tab).
 # The SQLite jobs have no install step on purpose: the default (SQLite) setup must keep working with zero dependencies.
 # The Postgres job installs the one optional dependency (pg) and runs the same full suite against a Postgres service.
 # Publishing the image to ghcr.io on a version tag is in release.yml.
 name: CI
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
