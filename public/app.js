@@ -1078,6 +1078,7 @@
       for (let i = 0; i < 5; i++) {
         const d = await api(`/api/messages?limit=100&after=${encodeURIComponent(state.nextCursor)}`, { timeoutMs: 8_000 });
         d.items.forEach(onNewMessage);
+        noteChangesVer(d);
         if (d.items.length) state.newMsgAt = Date.now(); // 收件匣據此決定要不要重抓通知
         state.nextCursor = d.nextCursor;
         if (!d.hasMore) break;
@@ -1387,6 +1388,32 @@
     const i = state.messages.findIndex(x => x.messageId === m.messageId);
     if (i >= 0) state.messages[i] = m;
     const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top;
+  }
+  // 別人刪除、復原、清空了訊息：輪詢回來的 changesVer 跟上次不同就照原位重讀已載入的訊息（Workers 沒有即時通道時靠這個）
+  function noteChangesVer(d) {
+    if (!d?.changesVer) return;
+    if (state.changesVer && d.changesVer !== state.changesVer) refreshLoaded().catch(() => {});
+    state.changesVer = d.changesVer;
+  }
+  // 已載入的訊息（最新的一段或前後文）從第一則起重讀，被刪除或復原的換掉；不動捲動位置、不離開前後文
+  async function refreshLoaded() {
+    const list = state.messages || [];
+    if (!list.length) return;
+    const first = list[0].sequence, last = list[list.length - 1].sequence, fresh = new Map();
+    let cur = curOf(first - 1);
+    for (let i = 0; i < 5; i++) {
+      const d = await api(`/api/messages?limit=100&after=${encodeURIComponent(cur)}`);
+      for (const m of d.items) if (m.sequence <= last) fresh.set(m.messageId, m);
+      if (!d.hasMore || !d.items.length || d.items[d.items.length - 1].sequence >= last) break;
+      cur = d.nextCursor;
+    }
+    let changed = false;
+    state.messages = state.messages.map(m => {
+      const x = fresh.get(m.messageId);
+      if (!x || (!!x.deleted === !!m.deleted && x.text === m.text)) return m;
+      changed = true; state.byId.set(x.messageId, x); return x;
+    });
+    if (changed) { const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top; }
   }
   async function reloadMsg(id) {
     if (!state.byId.has(id)) return;
@@ -2098,6 +2125,7 @@
     state.mobileWin = mobile;
     state.byId = state.byId || new Map();
     setMessages(d.items);
+    if (d.changesVer) state.changesVer = d.changesVer;
     const seen = Number(store.get(seenKey())) || 0; // 上次看到的地方（這台裝置）
     state.seenId = seen ? (d.items.find(x => x.sequence > seen && !isMine(x) && visible(x))?.messageId || null) : null;
     markSeen(Math.max(0, ...d.items.map(x => x.sequence || 0)));
@@ -7606,10 +7634,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       } catch (err) { const el = body.querySelector('#mc-err'); if (el) el.textContent = err.message; }
     });
   }
-  // 整個專案的訊息被清空或整批復原：畫面上有這個專案的訊息就重讀訊息視窗（正在看前後文時不動）
+  // 整個專案的訊息被清空或整批復原：畫面上有這個專案的訊息就重讀訊息視窗；正在看前後文時照原位重讀（不離開前後文）
   function reloadProjMsgs(pj) {
-    if (state.ctx || !state.messages?.some(m => m.project === pj)) return;
-    loadWindow().catch(() => {});
+    if (!state.messages?.some(m => m.project === pj)) return;
+    (state.ctx ? refreshLoaded() : loadWindow()).catch(() => {});
   }
 
   // 角色範本：常用的排前面，其餘收進「其他角色」群組（只是選單分組，角色定義不變；既有成員的角色照常顯示已選）

@@ -13,6 +13,7 @@
 // K. 刪除與復原寫稽核紀錄（不存原文）、不發通知；刪除單則訊息不用再驗證身分
 // L. 即時通道推送刪除與復原
 // M. 已刪除（可復原期內）的專案裡的訊息：刪除、復原都當它不存在（404）；專案復原後照常
+// N. 沒有即時通道（Workers）也會更新：網頁輪詢的訊息列表給人類多帶 changesVer，有訊息被刪除、復原、清空就換新（網頁據此重讀已載入的訊息）；給 AI 的形狀不變
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres
 // 本機暫存資料庫，不連任何站。用法：node scripts/message-delete-test.js
 import './test-home.mjs'; // 不寫到真的家目錄
@@ -277,6 +278,20 @@ try {
   assert.equal(code(await call(boss.token, `/api/messages/${inPjGone.messageId}`)), '404 NOT_FOUND', 'M 也讀不到');
   assert.equal((await call(boss.token, `/api/projects/${enc}/restore`, 'POST')).status, 200, 'M 專案復原');
   assert.equal((await restore(boss.token, inPjGone.messageId)).status, 200, 'M 專案復原後，訊息照常可以復原');
+
+  // ---------- N 輪詢看得出刪除、復原 ----------
+  const poll = async token => (await call(token, `/api/messages?limit=100&after=${encodeURIComponent((await call(token, '/api/messages?limit=1')).body.nextCursor)}`)).body;
+  const v0 = (await poll(chen.token)).changesVer;
+  assert.ok(typeof v0 === 'string' && v0, 'N 輪詢的回應帶 changesVer：' + JSON.stringify(v0));
+  await post(chen.token, '發新訊息不算變動');
+  assert.equal((await poll(chen.token)).changesVer, v0, 'N 只有新訊息時不變');
+  const pn = await post(chen.token, '等一下被刪');
+  assert.equal((await del(lin.token, pn.messageId)).status, 200);
+  const v1 = (await poll(chen.token)).changesVer;
+  assert.notEqual(v1, v0, 'N 別人刪除後 changesVer 換新');
+  assert.equal((await restore(lin.token, pn.messageId)).status, 200);
+  assert.notEqual((await poll(chen.token)).changesVer, v1, 'N 復原後也換新');
+  assert.equal('changesVer' in (await poll(wangAi.token)), false, 'N 給 AI 的列表沒有 changesVer');
 
   console.log('message-delete-test：全部通過');
 } finally {

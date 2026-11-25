@@ -913,7 +913,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       olderCursor = hasMore ? encodeCursor(oldest) : null;
       nextCursor = encodeCursor(maxSeq);
       const items = await serializeMessages(ctx, rows);
-      return { items, nextCursor, olderCursor, hasMore, from: (!beforeId && !before) ? from : (rows[0]?.created_at ?? null) };
+      return { items, nextCursor, olderCursor, hasMore, from: (!beforeId && !before) ? from : (rows[0]?.created_at ?? null), ...(await changesVerOf(ctx)) };
     }
 
     if (after) {
@@ -947,8 +947,10 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
         return { ...m, text: m.text.slice(0, BRIEF_CHARS) + '…', truncated: true, textLength: m.text.length };
       });
     }
-    return { items, nextCursor, olderCursor, hasMore };
+    return { items, nextCursor, olderCursor, hasMore, ...(await changesVerOf(ctx)) };
   }
+  // 給人類的網頁：訊息刪除、復原的版本（messagesChanged 換新）；給 AI 的形狀不變
+  const changesVerOf = async ctx => (ctx.viewerKind === 'human' ? { changesVer: (await db.get("SELECT value FROM app_settings WHERE key = 'msg_ver'"))?.value || '0' } : {});
 
   async function listNotifications(ctx, me, url) {
     onlyParams(url, ['status', 'limit', 'order', 'brief'], 'GET /api/notifications'); // brief：MCP 與規格會帶，收下但沒有作用
@@ -3459,10 +3461,12 @@ ${ending}`;
     if (!m || !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到訊息');
     return m;
   }
-  // 訊息被刪除、復原、永久清除：團隊狀態與待處理通知的快取重讀
-  function messagesChanged() {
+  // 訊息被刪除、復原、永久清除：團隊狀態與待處理通知的快取重讀；msg_ver 換新（網頁輪詢時比對，有變就重讀已載入的訊息；
+  // Workers 沒有即時通道，開著的頁面靠這個換成佔位或復原）
+  async function messagesChanged() {
     pendCache = { at: 0, rows: null };
     teamCache = { at: 0, data: null };
+    await db.run("INSERT INTO app_settings (key, value) VALUES ('msg_ver', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", String(Date.now()) + Math.random().toString(36).slice(2, 8));
   }
   // 作者刪自己的、工作區管理員刪任何人的（不用再驗證身分）。永久清除時間在刪除當下依生效的可復原期決定，0 天＝當下就永久清除
   // 不發通知；寫稽核紀錄（不存原文）；這則訊息的待處理通知自動確認（復原時不重發）；[接單] 的認領記在卡片紀錄，不受影響
@@ -3479,7 +3483,7 @@ ${ending}`;
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_DELETE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, days, purgeAt: purgeIso }, at }),
       msgFileAuditStmt('msg_delete', me, 'MESSAGE_DELETED', at, '?', [m.id]),
     ]);
-    messagesChanged();
+    await messagesChanged();
     if (days === 0) await purgeMessages([m.id]);
     await liveMessageChange(ctx, m, 'message_deleted').catch(() => {});
     return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
@@ -3498,7 +3502,7 @@ ${ending}`;
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_RESTORE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, deletedBy: m.deleted_by }, at }),
       msgFileAuditStmt('msg_restore', me, 'MESSAGE_RESTORED', at, '?', [m.id]),
     ]);
-    messagesChanged();
+    await messagesChanged();
     await liveMessageChange(ctx, m, 'message_restored').catch(() => {});
     return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
   });
@@ -3510,7 +3514,7 @@ ${ending}`;
   async function purgeMessages(ids) {
     let total = 0;
     for (let i = 0; i < ids.length; i += MESSAGE_PURGE_BATCH) total += await purgeMessageBatch(ids.slice(i, i + MESSAGE_PURGE_BATCH));
-    if (total) messagesChanged();
+    if (total) await messagesChanged();
     return total;
   }
   async function purgeMessageBatch(ids) {
@@ -3584,7 +3588,7 @@ ${ending}`;
       msgFileAuditStmt('msg_delete', me, 'PROJECT_MESSAGES_CLEARED', at, 'SELECT id FROM messages WHERE clear_id = ?', [clearId]),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_CLEAR, detail: { a: me.name, p: row.name } }),
     ]);
-    messagesChanged();
+    await messagesChanged();
     if (days === 0) await purgeMessages((await db.all('SELECT id FROM messages WHERE clear_id = ?', clearId)).map(x => x.id));
     await liveProjectMessages(ctx, row.id, 'messages_cleared', { clearId }).catch(() => {});
     return { ok: true, clear: { clearId, projectId: row.id, name: row.name, messages: r.changes, files, recoveryDays: days, purgeAt: purgeIso, purged: days === 0 } };
@@ -3621,7 +3625,7 @@ ${ending}`;
       msgFileAuditStmt('msg_restore', me, 'PROJECT_MESSAGES_RESTORED', at, 'SELECT value FROM json_each(?)', [ids]),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_RESTORE, detail: { a: me.name, p: row.name } }),
     ]);
-    messagesChanged();
+    await messagesChanged();
     await liveProjectMessages(ctx, row.id, 'messages_restored', { clearId: params.id }).catch(() => {});
     return { ok: true, restored: { clearId: params.id, projectId: row.id, name: row.name, messages: r.changes } };
   });
