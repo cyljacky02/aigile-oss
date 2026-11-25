@@ -505,7 +505,7 @@ CREATE TABLE IF NOT EXISTS project_members (
 );
 CREATE INDEX IF NOT EXISTS idx_project_members_participant ON project_members (participant_id);
 -- 稽核紀錄（docs/adr/0003；migrations/010）：管理與破壞性操作只能新增的紀錄；平台層，專案永久清除後仍保留。不存訊息原文
--- 沒有修改、刪除的 API；跟著備份走（還原時換成備份裡的，再加一筆 backup.restore）
+-- 沒有修改、刪除的 API；跟著備份走（還原時把備份裡的合併進來、這個站原本的留著，再加一筆 backup.restore）
 CREATE TABLE IF NOT EXISTS audit_log (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, -- 分頁游標（新的在前）
   id TEXT NOT NULL UNIQUE,
