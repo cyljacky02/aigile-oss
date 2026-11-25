@@ -3680,6 +3680,18 @@ window.AIGILE_EN = {
     "這是敏感操作：請先再輸入一次密碼確認身分（10 分鐘內不必重複輸入）。": "This is a sensitive action: enter your password again to confirm it's you (no need to repeat it for 10 minutes).",
 
     // #30 可復原期設定
+    "可復原期": "Recovery window",
+    "跟平台預設": "platform default",
+    "立即永久清除": "Purge immediately",
+    "可復原期：{0} → {1}": "Recovery window: {0} → {1}",
+    "已儲存：之後刪除的東西會立即永久清除；已經刪除的照原本的時間清除": "Saved: anything deleted from now on is purged immediately; things already deleted keep their original purge time",
+    "已儲存：之後刪除的東西保留 {0} 天後永久清除；已經刪除的照原本的時間清除": "Saved: anything deleted from now on is kept for {0} days, then purged; things already deleted keep their original purge time",
+    "訊息、專案被刪除後保留多久才永久清除，這段期間內可以復原。永久清除的時間在刪除當下決定，改了不影響已經刪除的東西。修改要再驗證身分，並寫進稽核紀錄。": "How long deleted messages and projects are kept before they are purged; they can be restored until then. The purge time is set when something is deleted, so a change here doesn't affect things already deleted. Changing it requires confirming your identity and is recorded in the audit log.",
+    "這是平台預設：工作區可以在「工作區設定」改成自己的天數。": "This is the platform default: a workspace can set its own number of days in Workspace settings.",
+    "這個工作區的訊息、專案被刪除後保留多久才永久清除。預設跟著平台設定；改了只影響之後刪除的東西。修改要再驗證身分，並寫進稽核紀錄。": "How long this workspace keeps deleted messages and projects before they are purged. It follows the platform setting by default; a change only affects things deleted afterwards. Changing it requires confirming your identity and is recorded in the audit log.",
+    "{0} 只能是 {1}（天）": "{0} must be one of {1} (days)",
+    "要帶 days（天數，或 null 跟平台預設）": "days is required (number of days, or null to follow the platform default)",
+    "要帶 fileTtlHours 或 recoveryDays": "fileTtlHours or recoveryDays is required",
 
     // #31 刪除與復原訊息
 
