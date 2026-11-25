@@ -467,14 +467,28 @@ try {
     assert.deepEqual((await statuses(PJ)).map(s => s.name), ['待', '做', '完', '測試'], '只有一個「測試」');
   }
 
-  // 27) 兩個人同時把不同的狀態改成同一個名稱：後做完的那個要 409（不是 500），名稱不重複（只改名、跟改類別都要）
-  for (const category of [undefined, '進行中']) {
-    const r = ok(await call(boss.token, '/api/projects', 'POST', { name: `同時同名改名${category ?? ''}`, statuses: [{ name: '待', category: '待處理' }, { name: 'A', category: '進行中' }, { name: 'B', category: '受阻' }, { name: '完', category: '已完成' }] }), '建專案');
+  // 27) 兩個人同時改成同一個名稱：後做完的回 409 CONFLICT，即使也改類別、且同時有卡寫進來
+  for (const [label, category, addCard] of [['只改名'], ['兼改類別', '進行中'], ['兼改類別且有新卡', '進行中', true]]) {
+    const r = ok(await call(boss.token, '/api/projects', 'POST', { name: `同時同名改名${label}`, statuses: [{ name: '待', category: '待處理' }, { name: 'A', category: '進行中' }, { name: 'B', category: '受阻' }, { name: '完', category: '已完成' }] }), '建專案');
     const PJ = encodeURIComponent(r.id), sts = r.items.find(p => p.id === r.id).statuses, A = sts.find(s => s.name === 'A'), B = sts.find(s => s.name === 'B');
-    beforeStatusUpdate = async () => ok(await patchSt(A.id, { name: '同名' }, boss.token, PJ), '另一個人先改名');
-    assert.equal(fail(await patchSt(B.id, { name: '同名', ...(category ? { category } : {}) }, boss.token, PJ), 409, `後做完的改名（${category ?? '只改名'}）`).error.code, 'CONFLICT');
+    beforeStatusUpdate = async () => {
+      ok(await patchSt(A.id, { name: '同名' }, boss.token, PJ), '另一個人先改名');
+      if (addCard) ok(await mkCard(boss.token, { project: r.id, status: 'B' }), 'B 同時有新卡');
+    };
+    assert.equal(fail(await patchSt(B.id, { name: '同名', ...(category ? { category } : {}) }, boss.token, PJ), 409, `後做完的改名（${label}）`).error.code, 'CONFLICT', label);
     assert.equal(beforeStatusUpdate, null, '真的有同時改名');
     assert.deepEqual((await statuses(PJ)).map(s => s.name), ['待', '同名', 'B', '完'], '只有一個「同名」');
+  }
+
+  // 28) 只有狀態名稱索引的違規回 409，欄位相似的其他唯一索引違規仍回 500
+  for (const [message, status, code] of [
+    ['UNIQUE constraint failed: project_statuses.project, project_statuses.name, project_statuses.category', 500, 'INTERNAL'],
+    ['D1_ERROR: UNIQUE constraint failed: project_statuses.project, project_statuses.name, project_statuses.category: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_UNIQUE)', 500, 'INTERNAL'],
+    ['D1_ERROR: UNIQUE constraint failed: project_statuses.project, project_statuses.name: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_UNIQUE)', 409, 'CONFLICT'],
+  ]) {
+    const s = await byName('開發中');
+    beforeStatusUpdate = async () => { throw new Error(message); };
+    assert.equal(fail(await patchSt(s.id, { name: '新名稱' }), status, message).error.code, code);
   }
 
   console.log('project-statuses-test：全部通過');
