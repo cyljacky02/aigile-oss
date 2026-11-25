@@ -459,6 +459,10 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (!since) return true;
     return m.created_at >= since ? !m.project : m.created_at >= (me.created_at || '') && (!m.project || discovers(me, m.project));
   }
+  // 私訊屬於可復原期內的專案：對話、最後一句、通知都當它不存在（c：資料表別名加點）
+  const dmScope = (c = '') => { const del = [...deletedProjects]; return del.length ? { sql: ` AND (${c}project IS NULL OR ${c}project NOT IN (${del.map(() => '?').join(',')}))`, args: del } : { sql: '', args: [] }; };
+  // 通知查詢裡「私訊通知」的條件（n：notifications 別名）
+  const dmNotifScope = () => { const h = dmScope('d.'); return h.args.length ? { sql: `(n.reasons = '["dm"]' AND EXISTS (SELECT 1 FROM dms d WHERE d.id = n.message_id${h.sql}))`, args: h.args } : { sql: `n.reasons = '["dm"]'`, args: [] }; };
   function identity(p, people) {
     const out = { participantId: p.id, name: p.status === 'deleted' ? p.name + '（已刪除）' : p.name, role: p.role, roleKey: p.role_key || null, avatar: p.avatar || null, avatarImg: p.avatar_v || null, shortCode: p.code, memberType: p.kind, projects: projectsOf(p) };
     if (p.status === 'deleted') out.deleted = true; // 已刪除成員的舊訊息仍顯示原名稱，前端加註（已刪除）
@@ -583,7 +587,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const msgs = new Map((await db.all('SELECT * FROM messages WHERE id IN (SELECT value FROM json_each(?))',
       JSON.stringify(rows.filter(n => n.reasons !== '["dm"]').map(n => n.message_id)))).map(m => [m.id, m]));
     // 私訊通知（只有收件的本人看得到自己的通知）
-    if (dmIds.length) for (const d of await db.all('SELECT * FROM dms WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(dmIds)))
+    const dmHid = dmScope();
+    if (dmIds.length) for (const d of await db.all(`SELECT * FROM dms WHERE id IN (SELECT value FROM json_each(?))${dmHid.sql}`, JSON.stringify(dmIds), ...dmHid.args))
       msgs.set(d.id, { id: d.id, author_id: d.from_id, ai_id: d.ai_id, reply_to: null, project: d.project, text: d.text, dm: true });
     const people = await peopleMap(ctx, [...msgs.values()].map(m => m.author_id).filter(id => id !== 'system')); // 平台通知不是成員，別為它重讀成員表
     return rows.filter(n => msgs.has(n.message_id)).map(n => {
@@ -949,14 +954,14 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (!['pending', 'confirmed'].includes(status)) throw invalid('status 需為 pending 或 confirmed');
     const limit = parseLimit(url);
     // 看不到的訊息（例如被移出專案後）的通知不列出
-    const scope = await messageScope(me, 'm');
-    const join = scope ? ` AND (n.reasons = '["dm"]' OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''; // 私訊通知不看專案範圍
+    const scope = await messageScope(me, 'm'), dmN = dmNotifScope();
+    const join = scope ? ` AND (${dmN.sql} OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''; // 私訊通知不看專案範圍（可復原期內的專案除外）
     // order=desc（網頁收件匣用）：先給最新的；預設由舊到新（AI 依序處理）
     const desc = url.searchParams.get('order') === 'desc';
     const sql = status === 'pending'
       ? `SELECT n.* FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${join} ORDER BY ${desc ? 'n.created_at DESC, n.rowid DESC' : 'n.created_at, n.rowid'} LIMIT ?` // rowid 讓索引順序可用，讀到 LIMIT 就停
       : `SELECT n.* FROM notifications n WHERE n.recipient_id = ? AND n.status = 'acked'${join} ORDER BY n.created_at DESC, n.rowid DESC LIMIT ?`; // 依建立時間（走 idx_notif_recipient，讀到 LIMIT 就停）；原依 acked_at 要把整個人的已確認通知讀出來排序
-    let rows = await db.all(sql, me.id, ...(scope ? scope.args : []), limit + 1);
+    let rows = await db.all(sql, me.id, ...(scope ? [...dmN.args, ...scope.args] : []), limit + 1);
     const hasMore = rows.length > limit;
     if (hasMore) rows = rows.slice(0, limit);
     const items = await serializeNotifications(ctx, rows);
@@ -2465,7 +2470,8 @@ ${ending}`;
   // 改版：私訊清單的最後一句（每個 AI 只取最後一則；開頁一次、有私訊通知或打開時才再查）
   route('GET', '/api/dm/summary', async ({ me }) => {
     requireHuman(me);
-    const rows = await db.all('SELECT ai_id, from_id, text, created_at, seq FROM dms WHERE human_id = ? AND seq IN (SELECT MAX(seq) FROM dms WHERE human_id = ? GROUP BY ai_id)', me.id, me.id);
+    const hid = dmScope();
+    const rows = await db.all(`SELECT ai_id, from_id, text, created_at, seq FROM dms WHERE human_id = ? AND seq IN (SELECT MAX(seq) FROM dms WHERE human_id = ?${hid.sql} GROUP BY ai_id)`, me.id, me.id, ...hid.args);
     // 最後一則是頭像提案時，看它還沒處理就寫「🖼 有頭像提案」（只在最後一則是提案時多查那幾張的狀態）
     const propIds = rows.map(r => AP_RE.exec(r.text)?.[1]).filter(Boolean);
     const props = propIds.length ? new Map((await db.all('SELECT id, status, created_at FROM avatar_proposals WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(propIds))).map(p => [p.id, apStatus(p)])) : new Map();
@@ -2477,7 +2483,8 @@ ${ending}`;
     const { human, ai } = await dmPair(ctx, me, url.searchParams.get('aiId'));
     const after = Number(url.searchParams.get('after')) || 0;
     const limit = parseLimit(url, 50, 100);
-    const rows = await db.all('SELECT * FROM dms WHERE human_id = ? AND ai_id = ? AND seq > ? ORDER BY seq LIMIT ?', human.id, ai.id, after, limit + 1);
+    const hid = dmScope();
+    const rows = await db.all(`SELECT * FROM dms WHERE human_id = ? AND ai_id = ? AND seq > ?${hid.sql} ORDER BY seq LIMIT ?`, human.id, ai.id, after, ...hid.args, limit + 1);
     const hasMore = rows.length > limit;
     const items = rows.slice(0, limit);
     const people = await peopleMap(ctx);
@@ -3646,11 +3653,11 @@ ${ending}`;
   route('GET', '/api/notifications', ({ ctx, me, url }) => listNotifications(ctx, me, url));
   route('GET', '/api/notifications/count', async ({ me, ctx, url }) => {
     onlyParams(url, ['wake'], 'GET /api/notifications/count');
-    const scope = await messageScope(me, 'm');
-    const r = await db.get(`SELECT COUNT(*) AS c FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${scope ? ` AND (n.reasons = '["dm"]' OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''}`, me.id, ...(scope ? scope.args : [])); // 私訊通知也算
+    const scope = await messageScope(me, 'm'), dmN = dmNotifScope(), sArgs = scope ? [...dmN.args, ...scope.args] : [];
+    const r = await db.get(`SELECT COUNT(*) AS c FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${scope ? ` AND (${dmN.sql} OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''}`, me.id, ...sArgs); // 私訊通知也算
     // （UX 退回）：?wake=1 另回「要叫醒的」數量，知會類（wake:false）不算——等待腳本看這個，否則留著的知會會讓它一啟動就醒、空轉
     if (url.searchParams.get('wake') !== '1' || !r.c) return { pending: r.c, ...(url.searchParams.get('wake') === '1' ? { wake: 0 } : {}) };
-    const rows = await db.all(`SELECT n.* FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${scope ? ` AND (n.reasons = '["dm"]' OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''} ORDER BY n.created_at, n.rowid LIMIT 200`, me.id, ...(scope ? scope.args : []));
+    const rows = await db.all(`SELECT n.* FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${scope ? ` AND (${dmN.sql} OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''} ORDER BY n.created_at, n.rowid LIMIT 200`, me.id, ...sArgs);
     return { pending: r.c, wake: (await serializeNotifications(ctx, rows)).filter(x => x.wake).length };
   });
   route('POST', '/api/notifications/ack', async ({ me, req }) => { const b = await readJson(req); return ackNotifications(me, b.notificationIds, b.cursor); }); // cursor 選填

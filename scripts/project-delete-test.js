@@ -3,7 +3,7 @@
 // B. 刪除是敏感動作：這台裝置沒再驗證過回 403 REAUTH_REQUIRED（登入碼沒有裝置：DEVICE_REQUIRED）；預覽不用再驗證
 // C. 預覽列出訊息、卡片、文件、上傳檔、技能、成員數、只屬於這個專案的 AI，以及依生效的可復原期算出的預計永久清除時間
 // D. 可復原期內：專案只出現在工作區管理員的「已刪除的專案」（GET /api/deleted-projects，含預計清除時間）；
-//    專案清單、卡片代號、搜尋、訊息、MCP 都當它不存在；專案代碼與網址英文名保留，新專案不能用
+//    專案清單、卡片代號、搜尋、訊息、MCP、跟別的專案共用的 AI 的私訊（對話、最後一句、通知）都當它不存在；專案代碼與網址英文名保留，新專案不能用
 // E. 只屬於這個專案的 AI 暫停（Token 401、所屬人類不能自己啟用）；其他人和 AI 照常
 // F. 工作區管理員可以復原（POST /api/projects/:id/restore），復原後回到封存狀態，暫停的 AI 恢復；可復原期過了就不能復原
 // G. 刪除與復原通知其他工作區管理員（不含操作者）；刪除、復原、永久清除都寫稽核紀錄（專案名稱快照與數量；清除的操作者是系統）
@@ -79,7 +79,19 @@ try {
   await db.run("INSERT INTO skills (id, project, name, version, files, sha256, size, status, uploaded_by, uploaded_at) VALUES ('sk_del', ?, 'del-skill', 1, '[]', 'x', 1, 'published', ?, ?)", pid, id(liu), at);
   await db.run("INSERT INTO skill_installs (ai_id, skill_id, at) VALUES (?, 'sk_del', ?)", aiBoth.participantId, at);
   await db.run("INSERT INTO skill_syncs (ai_id, requested_at, tool) VALUES (?, ?, 'claude')", aiOnly.participantId, at);
+  await db.run("INSERT INTO dms (id, human_id, ai_id, from_id, text, project, request_id, created_at) VALUES ('dm_keep', ?, ?, ?, '另一個專案的私訊', '預設專案', 'd0', ?)", id(liu), aiBoth.participantId, id(liu), at);
   await db.run("INSERT INTO dms (id, human_id, ai_id, from_id, text, project, request_id, created_at) VALUES ('dm_del', ?, ?, ?, '私訊', ?, 'd1', ?)", id(liu), aiBoth.participantId, id(liu), pid, at);
+  await db.run("INSERT INTO notifications (id, recipient_id, message_id, reasons, created_at) VALUES ('notif_dmdel', ?, 'dm_del', '[\"dm\"]', ?)", aiBoth.participantId, at);
+  // 跟別的專案共用的 AI 的私訊：人類讀對話、最後一句，AI 讀對話與待處理通知
+  const dmSeen = async () => {
+    const human = (await call(liu.token, `/api/dm?aiId=${aiBoth.participantId}`)).body.items, ai = (await call(aiBothTok, '/api/dm')).body.items;
+    const last = (await call(liu.token, '/api/dm/summary')).body.items.find(x => x.aiId === aiBoth.participantId)?.text;
+    const inbox = (await call(aiBothTok, '/api/notifications')).body.items.some(x => x.messageId === 'dm_del');
+    const count = (await call(aiBothTok, '/api/notifications/count')).body.pending;
+    return { human: human.map(d => [d.dmId, d.project]), ai: ai.map(d => d.dmId), last, inbox, count };
+  };
+  const dmBefore = await dmSeen();
+  assert.deepEqual([dmBefore.human, dmBefore.ai, dmBefore.last, dmBefore.inbox], [[['dm_keep', '預設專案'], ['dm_del', pid]], ['dm_keep', 'dm_del'], '私訊', true], '刪除前私訊都看得到：' + JSON.stringify(dmBefore));
   await db.run("INSERT INTO join_requests (id, project, participant_id, created_at) VALUES ('jr_del', ?, ?, ?)", pid, id(liu), at);
   await db.run("INSERT INTO app_settings (key, value) VALUES (?, '{\"url\":\"https://example.com/repo\"}')", 'repo:' + pid);
   assert.ok(await n('SELECT COUNT(*) AS n FROM notifications WHERE message_id = ?', m1.messageId), '有通知');
@@ -159,6 +171,9 @@ try {
   assert.equal((await call(liu.token, '/api/search?q=' + encodeURIComponent('這個專案的卡'))).body.cards.length, 0, 'D 卡片搜尋不到');
   assert.equal(await mcpRead(aiAllTok), 'error', 'D MCP 讀不到');
   assert.ok(!(await notified()), 'D 待處理通知不列這個專案的訊息');
+  const dmDuring = await dmSeen();
+  assert.deepEqual([dmDuring.human, dmDuring.ai, dmDuring.last, dmDuring.inbox, dmDuring.count], [[['dm_keep', '預設專案']], ['dm_keep'], '另一個專案的私訊', false, dmBefore.count - 1],
+    'D 共用 AI 的私訊不露出這個專案（對話、最後一句、通知與數量）：' + JSON.stringify(dmDuring));
   assert.equal((await call(liu.token, `/api/cards?project=${enc}`)).status, 400, 'D 不能當專案篩選');
   assert.equal((await preview(boss.token)).status, 404, 'D 刪除預覽 404');
   assert.equal((await call(liu.token, `/api/projects/${enc}/unarchive`, 'POST')).status, 404, 'D 不能用「還原封存」帶回來');
@@ -198,6 +213,7 @@ try {
   assert.equal((await call(liu.token, `/api/messages/${m1.messageId}`)).status, 200, 'F 訊息回來了');
   assert.equal((await call(liu.token, '/api/cards/DEL-1')).status, 200, 'F 卡片代號查得到');
   assert.ok(await notified(), 'F 待處理通知回來了');
+  assert.deepEqual(await dmSeen(), dmBefore, 'F 私訊回來了');
   assert.deepEqual((await notices(lin)).map(x => x.kind), ['admin_project_restore'], 'G 林工作收到復原通知');
   assert.deepEqual((await notices(liu)).map(x => x.kind), [], 'G 操作者自己不收');
   L = await audit('project.restore');
