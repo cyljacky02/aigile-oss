@@ -83,8 +83,8 @@ try {
   assert.equal((await db.get('SELECT COUNT(*) AS n FROM files')).n, files0, '沒有留下沒掛訊息的檔');
   assert.ok(await db.get("SELECT 1 FROM file_audit WHERE action = 'reject' AND actor_id = ? AND detail = 'PROJECT_FORBIDDEN'", philId), '記進稽核');
   // 唯讀 → 403 READ_ONLY、記稽核（AI 跟著所屬人類唯讀）
-  await db.run("INSERT INTO app_settings (key, value) VALUES ('read_only', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify({ 預設專案: [philId] }));
-  await new Promise(r => setTimeout(r, 10_100)); // 唯讀設定快取 10 秒
+  await db.run("UPDATE project_members SET role = 'viewer' WHERE project_id = '預設專案' AND participant_id = ?", philId); // 別份程式設的唯讀
+  await new Promise(r => setTimeout(r, 10_100)); // 成員資格快取 10 秒
   up = await call(ux.tok, '/api/files?name=draft.md&declared=true&project=預設專案', 'POST', null, '# 草案');
   assert.equal(up.status, 403, JSON.stringify(up.body));
   assert.equal(up.body.error?.code, 'READ_ONLY');

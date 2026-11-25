@@ -20,7 +20,7 @@ const fnSrc = name => {
 
 const P = (id, name, kind, extra = {}) => ({ participantId: id, name, memberType: kind, status: 'active', projects: ['預設專案'], isOnline: false, ...extra });
 const people = [
-  P('me', '林志明', 'human', { shortCode: 'TWE6', projectRoles: { 預設專案: 'PO' } }),
+  P('me', '林志明', 'human', { shortCode: 'TWE6', projectRoles: { 預設專案: 'PO' }, workspaceRole: 'admin', memberProjects: [] }), // 工作區管理員：有職稱的專案算成員
   P('h2', '陳詠翰', 'human', { shortCode: 'CH01', projectRoles: { 預設專案: 'UX' } }),
   P('a1', '示範的程式開發助手', 'ai', { shortCode: 'AB12', role: '程式開發', roleKey: 'PG' }),
   P('a2', '兩隻示範', 'ai', { shortCode: 'CD34', role: '程式開發', roleKey: 'PG' }),
@@ -38,7 +38,7 @@ const env = {
   meId: () => 'me', myProjects: () => ['預設專案'], projName: x => x, projectView: () => '預設專案', roOf: () => false,
   sendTarget: () => '預設專案',
 };
-const names = ['roleIn', 'ghostAdmin', 'memberIn', 'findQ', 'findHit', 'markQ', 'NO_FIND', 'findPrefs', 'saveFindPrefs', 'findPass', 'mentionScope', 'inScope', 'recentAt', 'noteRecentAt', 'mentionCandidates', 'mentionItemsHtml'];
+const names = ['roleIn', 'isAdmId', 'implicitOnlyAdmin', 'memberIn', 'findQ', 'findHit', 'markQ', 'NO_FIND', 'findPrefs', 'saveFindPrefs', 'findPass', 'mentionScope', 'inScope', 'recentAt', 'noteRecentAt', 'mentionCandidates', 'mentionItemsHtml'];
 const fns = new Function(...Object.keys(env), `${names.map(fnSrc).join('\n')}\nreturn { ${names.join(', ')} };`)(...Object.values(env));
 const ids = list => list.map(p => p.participantId);
 

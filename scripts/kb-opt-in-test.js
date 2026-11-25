@@ -12,6 +12,7 @@ import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { memStorage } from '../src/storage-r2.js';
+import { makeProjectAdmin } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-kb-opt-in-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -39,7 +40,7 @@ try {
   const chen = (await req(null, '/api/join', 'POST', { name: '陳大文', role: 'PG' })).body;
   const id = x => x.participant.participantId;
   for (const p of [lead, chen]) await req(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: ['預設專案'] });
-  await req(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(lead), leaderOf: ['預設專案'] }] });
+  await makeProjectAdmin(req, liu.token, id(lead), ['預設專案']);
   const kbAi = (await req(liu.token, '/api/my-ais', 'POST', { projects: ['預設專案'], roleKey: 'PO', role: '產品負責', name: '整理助手', duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body;
   await req(lead.token, `${KB}/settings`, 'PUT', { aiId: kbAi.participantId });
   const up = (tok, name, text, kb) => req(tok, `/api/projects/${pj}/docs?name=${encodeURIComponent(name)}&declared=true${kb ? '&kb=1' : ''}`, 'POST', null, enc(text));

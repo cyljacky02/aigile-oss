@@ -1,5 +1,5 @@
 // 畫面測試（真的瀏覽器）：管理員沒有專案角色時，名片顯示「管理員」，不露出舊的跨專案角色；一般成員照舊（搜尋成員、跨專案訊息用同一個函式）
-// 退回：管理員看得到、管得了所有專案，但在沒有角色的專案不算成員——
+// 退回：工作區管理員看得到、管得了所有專案（隱含權限），但在沒加入、也沒有角色的專案不算成員——
 //   成員名單、人數、交接對象、團隊狀態、@ 選人都不列，@所有人不通知；名單上方一行灰字說明；有角色的專案照舊
 //   修正前：新建的 testing 在「成員與權限」列出管理員（未設定、1 人）
 // 伺服器端（第一次上線不幫管理員帶角色）在 roles-test.js。需要 Chrome 或 Edge；找不到就略過。用法：node scripts/admin-card-ui-test.js
@@ -27,25 +27,28 @@ try {
 
   // ---- ：新建專案 testing，管理員沒角色 → 不算成員 ----
   const pj = (await kit.call(boss.token, '/api/projects', 'POST', { name: 'testing' })).body.id;
-  await kit.call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: mateId, projects: ['預設專案', '第二專案', pj] }] });
+  // 工作區管理員不必加入專案（隱含權限）：建立者先退出 testing，在這裡就只有隱含權限
+  assert.equal((await kit.call(boss.token, `/api/projects/${pj}/members/${bossId}`, 'DELETE')).status, 200, '管理員退出 testing');
+  await kit.call(boss.token, `/api/participants/${mateId}/projects`, 'PUT', { projects: ['預設專案', '第二專案', pj] });
   await kit.call(boss.token, `/api/participants/${mateId}/project-roles`, 'PUT', { roles: { [pj]: 'BA' } });
   const wang = (await kit.call(null, '/api/join', 'POST', { name: '王小明', role: 'UX' })).body, wangId = wang.participant.participantId;
-  await kit.call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: wangId, projects: [pj] }] });
+  await kit.call(boss.token, `/api/participants/${wangId}/projects`, 'PUT', { projects: [pj] });
   await kit.call(boss.token, `/api/participants/${wangId}/project-roles`, 'PUT', { roles: { [pj]: 'UX' } });
-  await kit.call(boss.token, `/api/participants/${bossId}/project-roles`, 'PUT', { roles: { 預設專案: 'PO' } }); // 平台有角色＝照舊是成員
+  await kit.call(boss.token, `/api/participants/${bossId}/project-roles`, 'PUT', { roles: { [pj]: 'PO' } }); // 只有職稱不算成員：testing 照樣不列他
+  assert.equal((await kit.call(boss.token, '/api/projects/預設專案/members', 'POST', { participantIds: [bossId] })).status, 201, '管理員明確加入預設專案');
   const views = (await kit.call(boss.token, '/api/projects')).body.items;
-  assert.equal(views.find(p => p.id === pj).memberCount, 2, 'testing 人數不算沒角色的管理員');
-  assert.equal(views.find(p => p.id === '預設專案').memberCount, 2, '平台有角色，照算');
+  assert.equal(views.find(p => p.id === pj).memberCount, 2, 'testing 人數不算只有隱含權限（只有職稱）的管理員');
+  assert.equal(views.find(p => p.id === '預設專案').memberCount, 2, '明確加入的專案照算');
   const ids = async q => (await kit.call(mate.token, q)).body.members?.map(m => m.participantId) || (await kit.call(mate.token, q)).body.items.map(m => m.participantId);
   assert.ok(!(await ids(`/api/participants?project=${encodeURIComponent(pj)}`)).includes(bossId), '依專案查成員不列管理員');
   assert.ok(!(await ids(`/api/team-status?project=${encodeURIComponent(pj)}`)).includes(bossId), '團隊狀態不列管理員');
-  assert.ok((await ids('/api/participants?project=' + encodeURIComponent('預設專案'))).includes(bossId), '有角色的專案照舊列');
+  assert.ok((await ids('/api/participants?project=' + encodeURIComponent('預設專案'))).includes(bossId), '明確加入的專案照舊列');
   // @所有人：testing 不通知管理員；平台照常
   const before = (await kit.call(boss.token, '/api/notifications?status=pending')).body.items.length;
   await kit.call(mate.token, '/api/messages', 'POST', { requestId: 'all1', project: pj, audience: 'all', text: '[通知] testing 的大家' });
   assert.equal((await kit.call(boss.token, '/api/notifications?status=pending')).body.items.length, before, '@所有人不通知沒角色的管理員');
   await kit.call(mate.token, '/api/messages', 'POST', { requestId: 'all2', project: '預設專案', audience: 'all', text: '[通知] 平台的大家' });
-  assert.equal((await kit.call(boss.token, '/api/notifications?status=pending')).body.items.length, before + 1, '有角色的專案 @所有人照常通知');
+  assert.equal((await kit.call(boss.token, '/api/notifications?status=pending')).body.items.length, before + 1, '明確加入的專案 @所有人照常通知');
 
   // 網頁：成員與權限的 testing 不列管理員、上方一行灰字；人數 1
   await login(boss.token);
@@ -60,8 +63,8 @@ try {
   assert.match(await js(`document.querySelector('[data-pm-proj="${pj}"]').textContent`), /2/, '左邊清單人數 2');
   await js(`document.querySelector('[data-pm-proj="預設專案"]').click(); true`);
   await until(() => js("/預設專案/.test(document.querySelector('.pm-dtitle')?.textContent || '')"), 8000, '選預設專案');
-  assert.ok(await js("[...document.querySelectorAll('.pm-table .c-name')].some(td => td.textContent.includes('林志明'))"), '平台有角色照舊列');
-  assert.ok(!(await js("!!document.querySelector('.pm-admin-note')")), '有角色的專案沒有灰字');
+  assert.ok(await js("[...document.querySelectorAll('.pm-table .c-name')].some(td => td.textContent.includes('林志明'))"), '明確加入的專案照舊列');
+  assert.ok(!(await js("!!document.querySelector('.pm-admin-note')")), '明確加入的專案沒有灰字');
 
   // 網頁：testing 的 @ 選人、交接對象不列管理員（用陳建宏登入）
   const c = (await kit.call(mate.token, '/api/cards', 'POST', { requestId: 'tc', project: pj, title: 'testing 的卡', ownerId: mateId })).body;

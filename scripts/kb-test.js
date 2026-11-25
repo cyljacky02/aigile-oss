@@ -15,6 +15,7 @@ import { dbStorage } from '../src/storage-db.js';
 import { memStorage } from '../src/storage-r2.js';
 import { extractChunks, splitLong, kbTerms, KB_MAX_CHARS_PER_DOC } from '../src/kb.js';
 import { makeZip, makeDocx, makePptx, makeXlsx } from './kb-fixtures.js';
+import { setProjectRole, makeProjectAdmin } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-kb-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -70,7 +71,8 @@ try {
   const lead = (await req(null, '/api/join', 'POST', { name: '專案組長', role: 'SM' })).body;
   const id = x => x.participant.participantId;
   for (const [p, ps] of [[chen, ['預設專案']], [bank, ['第二專案']], [ro, ['預設專案']], [lead, ['預設專案']]]) await req(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: ps });
-  await req(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(ro), readOnlyIn: ['預設專案'] }, { id: id(lead), leaderOf: ['預設專案'] }] });
+  await setProjectRole(req, liu.token, '預設專案', id(ro), 'viewer');
+  await makeProjectAdmin(req, liu.token, id(lead), ['預設專案']);
   const ai = (await req(chen.token, '/api/my-ais', 'POST', { projects: ['預設專案'], roleKey: 'PG', role: '程式開發', name: '陳的PG', duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' })).body;
   const up = (tok, name, bytes, p = pj) => req(tok, `/api/projects/${p}/docs?name=${encodeURIComponent(name)}&declared=true&kb=1`, 'POST', null, bytes); // 上傳到知識庫才抽字（leader 才能放）
 

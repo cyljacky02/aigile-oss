@@ -32,7 +32,7 @@
       </div>
       <!-- 群組還沒有任何人時：建立群組（第一位就是管理員） -->
       <form id="join-form" class="join-pane" hidden novalidate>
-        <p class="muted small" id="join-desc">建立群組：輸入你的名稱與角色，你會是群組管理員，之後用邀請連結加人。</p>
+        <p class="muted small" id="join-desc">建立工作區：輸入你的名稱與角色，你會是工作區管理員，之後用邀請連結加人。</p>
         <label>名稱
           <input name="name" required maxlength="40" autocomplete="nickname" placeholder="例如：王小明">
         </label>
@@ -40,8 +40,8 @@
           <input name="role" maxlength="20" list="role-list" placeholder="PO / BA / UX / PG / QA / Sponsor">
         </label>
         <div id="join-cred" class="join-cred"></div>
-        <label id="room-code-field" hidden>群組密碼
-          <input name="roomCode" type="password" autocomplete="current-password" placeholder="請向群組管理員索取">
+        <label id="room-code-field" hidden>房間碼
+          <input name="roomCode" type="password" autocomplete="current-password" placeholder="請向工作區管理員索取">
         </label>
         <div id="join-ts" class="ts-box" hidden><div class="ts-widget"></div></div>
         <p id="join-error" class="error" role="alert"></p>

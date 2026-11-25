@@ -11,7 +11,7 @@ try {
   const boss = (await kit.call(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body;
   const ids = [];
   for (const [name, role] of [['王中明', 'UX'], ['Alice', 'QA']]) ids.push((await kit.call(null, '/api/join', 'POST', { name, role })).body.participant.participantId);
-  await kit.call(boss.token, '/api/members/matrix', 'PUT', { changes: ids.map(id => ({ id, projects: ['預設專案'] })) });
+  for (const id of ids) await kit.call(boss.token, `/api/participants/${id}/projects`, 'PUT', { projects: ['預設專案'] });
   for (const [i, t] of ['中文搜尋卡', 'apple 卡', '第三張'].entries()) await kit.call(boss.token, '/api/cards', 'POST', { requestId: 'c' + i, project: '預設專案', title: t });
   const { js, login, cdp } = await kit.browser();
   const go = async url => { await js(`history.pushState(null, '', ${JSON.stringify(url)}); dispatchEvent(new PopStateEvent('popstate')); true`); await sleep(700); };

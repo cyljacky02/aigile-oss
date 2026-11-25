@@ -2,7 +2,8 @@
 // 1. 登入碼與 AI Token 只存雜湊：資料庫沒有原文、拿雜湊本身登入不算數；原文只在建立／重發／產生當下給一次
 // 2. 舊資料（原文）照樣能用：驗證時順手轉成雜湊；啟動後第一個請求把全部舊的轉掉
 // 3. 停用成員：裝置、登入碼、帳號密碼、他的 AI 全部不能用；名單標已停用；恢復後帳號密碼能登入，AI 要重發
-// 4. 管理員是明確標記：可以交給別人；不再看誰最早加入；舊資料庫升級（migrations/001）把原本的管理員標起來
+// 4. 工作區管理員是明確的角色：可以有多位（升降與最後一位保護見 workspace-admin-test.js）；不再看誰最早加入；
+//    舊資料庫升級（migrations/001）把原本的管理員標起來
 // 用法：node scripts/member-admin-test.js
 import fs from 'node:fs';
 import os from 'node:os';
@@ -107,27 +108,32 @@ try {
   assert.equal((await call(mai2.token, '/api/me')).status, 200, '主人重發後 AI 能用');
   console.log('✓ 停用：所有登入方式失效；恢復後重新登入、AI 重發');
 
-  // ---------- 4. 管理員明確標記 ----------
-  const adminName = async tok => (await call(tok, '/api/projects')).body;
-  assert.equal(Number((await db.get('SELECT is_admin FROM participants WHERE id = ?', B)).is_admin), 1, '第一位是管理員');
-  assert.equal((await call(mdev2, '/api/admin/transfer', 'POST', { toId: M })).status, 403, '不是管理員不能交');
-  assert.equal((await call(bossTok, '/api/admin/transfer', 'POST', { toId: ai.participantId })).status, 404, '不能交給 AI');
-  const tr = await call(bossTok, '/api/admin/transfer', 'POST', { toId: M });
-  assert.equal(tr.status, 200); assert.equal(tr.body.adminName, '陳大文');
-  assert.equal((await call(bossTok, `/api/participants/${M}/disable`, 'POST')).status, 403, '交出去後原本的管理員不能再管');
-  assert.equal((await call(mdev2, '/api/participants/disabled')).status, 200, '新的管理員可以');
+  // ---------- 4. 工作區管理員是明確的角色 ----------
+  const role = async tok => (await call(tok, '/api/me')).body.workspaceRole;
+  assert.equal(await role(bossTok), 'admin', '第一位是工作區管理員');
+  assert.equal((await call(bossTok, '/api/admin/transfer', 'POST', { toId: M })).status, 410, '移交管理員拿掉了');
+  assert.equal((await call(mdev2, `/api/participants/${B}/workspace-role`, 'PUT', { role: 'member' })).status, 403, '不是管理員不能降別人');
+  assert.equal((await call(bossTok, `/api/participants/${M}/workspace-role`, 'PUT', { role: 'admin' })).status, 200, '先升別人');
+  assert.equal((await call(bossTok, `/api/participants/${B}/workspace-role`, 'PUT', { role: 'member' })).status, 200, '再降自己');
+  // 第一位同時是平台管理員（對工作區有隱含管理權）：平台管理員也先升別人、再降自己
+  assert.equal((await call(bossTok, `/api/participants/${M}/platform-role`, 'PUT', { role: 'admin' })).status, 200, '平台管理員也先升別人');
+  assert.equal((await call(bossTok, `/api/participants/${B}/platform-role`, 'PUT', { role: 'none' })).status, 200, '再降自己');
+  assert.equal((await call(bossTok, '/api/invites')).status, 403, '降級後原本的管理員不能再管');
+  assert.equal((await call(mdev2, '/api/invites')).status, 200, '新的管理員可以');
   assert.equal((await call(mdev2, `/api/participants/${M}/disable`, 'POST')).status, 400, '管理員不能停用自己');
   // 最早加入的人換了也不影響
   await db.run("UPDATE participants SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ?", B);
   app = mk();
-  assert.equal((await call(mdev2, '/api/participants/disabled')).status, 200, '不再看誰最早加入');
-  assert.equal((await call(bossTok, '/api/participants/disabled')).status, 403);
-  void adminName;
-  console.log('✓ 管理員是明確標記、可以交給別人');
+  assert.equal((await call(mdev2, '/api/invites')).status, 200, '不再看誰最早加入');
+  assert.equal((await call(bossTok, '/api/invites')).status, 403);
+  assert.equal(await role(bossTok), 'member');
+  console.log('✓ 工作區管理員是明確的角色、可以先升別人再降自己');
 
   // 舊資料庫升級：001 把原本的管理員（最早加入的人類）標起來
   {
-    const OLD = fs.readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8').replace(/\n\s*is_admin INTEGER[^\n]*/, '').replace(/\n\s*wake_(day|count|at) [^\n]*/g, '').replace(/,\n\s*kb_status TEXT[\s\S]*?kb_card INTEGER[^\n]*/, '').replace(/\n\s*status_id INTEGER[^\n]*/, '').replace(/-- 專案看板狀態：[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS idx_project_statuses_name [^\n]*\n/, ''); // 之後的升級（002 叫醒次數、004／005 知識庫、007 看板狀態）加的欄位也拿掉
+    const OLD = fs.readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8').replace(/\n\s*is_admin INTEGER[^\n]*/, '').replace(/\n\s*wake_(day|count|at) [^\n]*/g, '').replace(/,\n\s*kb_status TEXT[\s\S]*?kb_card INTEGER[^\n]*/, '').replace(/\n\s*status_id INTEGER[^\n]*/, '').replace(/-- 專案看板狀態：[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS idx_project_statuses_name [^\n]*\n/, '')
+      .replace(/\n\s*(account_id|workspace_id|workspace_role|workspace_status|visibility) [^\n]*/g, '').replace(/-- 成員與權限（docs\/adr\/0002；migrations\/008）：[\s\S]*?CREATE INDEX IF NOT EXISTS idx_project_members_participant [^\n]*\n/, '')
+      .replace(/(\n  standby_at [^\n]*)\n\);/, "$1\n  projects TEXT NOT NULL DEFAULT ''\n);"); // 1.0 就有的專案歸屬欄位（009 才拿掉）補回來。之後的升級（002 叫醒次數、004／005 知識庫、007 看板狀態、008 成員與權限）加的欄位也拿掉
     assert.ok(!OLD.includes('is_admin'), '1.0 的結構沒有 is_admin');
     const odb = new DatabaseSync(path.join(dataDir, 'old.db'));
     odb.exec(OLD);
@@ -136,7 +142,7 @@ try {
     ins.run('p_first', '最早的人', 'AAA1', 'tok-first', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
     const r = migrateNode(odb, { schema: fs.readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8'), dir: fileURLToPath(new URL('../migrations/', import.meta.url)) });
     assert.ok(r.applied.includes('001_admin_flag.sql'), JSON.stringify(r));
-    assert.deepEqual(odb.prepare('SELECT id FROM participants WHERE is_admin = 1').all().map(x => x.id), ['p_first'], '升級後原本的管理員有標記');
+    assert.deepEqual(odb.prepare('SELECT participant_id FROM legacy_members WHERE is_admin = 1').all().map(x => x.participant_id), ['p_first'], '升級後原本的管理員有標記（009 拿掉 is_admin 前抄起來，等程式轉成工作區管理員）');
     odb.close();
   }
   console.log('✓ 舊資料庫升級標出管理員');

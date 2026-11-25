@@ -5,7 +5,8 @@
 // - 手機：總覽與選單有「＋ 新增專案」（只有管理員）
 // 本機暫存資料庫＋無頭 Chrome／Edge，不連正式站。用法：node scripts/project-entry-ui-test.js（找不到瀏覽器就略過）
 import assert from 'node:assert';
-import { startKit, findBrowser, until, sleep } from './browser-kit.js';
+import { startKit, findBrowser, until } from './browser-kit.js';
+import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('project-entry-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('projentry');
@@ -14,12 +15,14 @@ try {
   const liu = await join('林志明', 'PO'), wang = await join('陳小美', 'UX'), chen = await join('王大同', 'PG');
   const id = p => p.participant.participantId;
   for (const [p, pj] of [[wang, ['預設專案', '第二專案']], [chen, ['預設專案']]]) await kit.call(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: pj });
-  assert.equal((await kit.call(liu.token, '/api/members/matrix', 'PUT', { changes: [{ id: id(wang), leaderOf: ['預設專案'] }] })).status, 200, 'wang 當預設專案 leader');
+  assert.equal((await makeProjectAdmin(kit.call, liu.token, id(wang), ['預設專案'])).status, 200, 'wang 當預設專案 leader');
   const np = (await kit.call(liu.token, '/api/projects', 'POST', { name: '要封存的', code: 'ARC' })).body;
   const arc = np.items.find(p => p.name === '要封存的');
 
   const { js, login, cdp } = await kit.browser(1280, 900);
   const click = sel => js(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; el.click(); return true; })()`);
+  // 打開專案切換清單：畫面剛重畫、按到舊按鈕時再按一次，直到清單打開
+  const openSwitch = () => until(async () => (await js("!!document.querySelector('.proj-switch .ps-btn[aria-expanded=\"true\"]')")) || (await click('.proj-switch .ps-btn'), false), 5000, '專案清單打開');
   const text = sel => js(`document.querySelector(${JSON.stringify(sel)})?.textContent || ''`);
   const crumbs = () => text('#crumbs');
   const menuItems = () => js("[...document.querySelectorAll('#pset-menu [data-pset-act]')].map(b => b.dataset.psetAct).join(',')");
@@ -34,16 +37,16 @@ try {
     return js("[...document.querySelectorAll('#av-menu [data-av]')].map(b => b.dataset.av + '=' + b.textContent.trim()).join('|')");
   };
 
-  // 1. 管理員：專案卡 ⚙ 四項
+  // 1. 管理員：專案卡 ⚙ 五項
   await login(liu.token, '/p/main/messages');
   await openGear();
-  assert.equal(await menuItems(), 'rename,repo,members,kbai', '管理員四項（封存只在專案管理頁；知識庫整理 AI）');
+  assert.equal(await menuItems(), 'rename,repo,visibility,members,kbai', '管理員五項（封存只在專案管理頁；專案可見度；知識庫整理 AI）');
   assert.match(await text('#pset-menu .pset-head'), /預設專案 · 專案設定/);
   // 成員與本專案角色 → 成員管理、選好預設專案
   await click('#pset-menu [data-pset-act="members"]');
   await until(() => js("!!document.querySelector('.pm-tabs')"), 8000, '成員管理頁');
   assert.match(await crumbs(), /成員管理/, '麵包屑寫成員管理：' + await crumbs());
-  assert.equal(await js("[...document.querySelectorAll('.pm-tabs [data-pm-tab]')].map(b => b.dataset.pmTab).join(',')"), 'members,roles,skills', '成員管理只留成員、角色、技能');
+  assert.equal(await js("[...document.querySelectorAll('.pm-tabs [data-pm-tab]')].map(b => b.dataset.pmTab).join(',')"), 'roster,members,roles,skills', '成員管理：名冊、專案成員、AI 職務、技能');
   assert.equal(await js("document.querySelector('[data-pm-proj][aria-current=\"true\"], .pm-plist [data-pm-proj].sel, [data-pm-proj].on')?.dataset.pmProj || document.querySelector('.pm-detail h3, .pm-dhead b')?.textContent || ''").then(v => /預設專案/.test(v)), true, '選好預設專案');
   // 頂端連到管理員設定：沒有分頁、有左側目錄
   await click('.work-title [data-adm=""]');
@@ -57,7 +60,7 @@ try {
   await openGear();
   await click('#pset-menu [data-pset-act="repo"]');
   await until(() => js("/程式庫/.test(document.querySelector('#modal-root')?.textContent || '')"), 8000, '程式庫視窗');
-  await js("document.querySelector('#modal-root [data-close]')?.click(); true"); await sleep(200);
+  await js("document.querySelector('#modal-root [data-close]')?.click(); true"); await until(() => js("!document.querySelector('#modal-root [data-close]')"), 5000, '視窗關掉');
   // Esc 關選單
   await openGear();
   await js("document.querySelector('#pset-menu button').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true");
@@ -71,20 +74,20 @@ try {
   await until(() => js("!!document.querySelector('.pm-ptable')"), 8000, '管理專案… 開專案管理');
   await login(liu.token, '/p/main/messages');
   await until(() => js("!!document.querySelector('.proj-switch [data-ps-act=\"newproj\"]')"), 8000, '管理員選項畫好'); // 登入後要等成員資料載入，管理員選項才會畫出來（平台 plat359 同修法）
-  await click('.proj-switch .ps-btn'); await sleep(100);
+  await openSwitch();
   await click('.proj-switch [data-ps-act="newproj"]');
   await until(() => js("!!document.querySelector('#np-form')"), 5000, '新增專案視窗');
-  await js("document.querySelector('#modal-root [data-close]')?.click(); true"); await sleep(200);
+  await js("document.querySelector('#modal-root [data-close]')?.click(); true"); await until(() => js("!document.querySelector('#modal-root [data-close]')"), 5000, '視窗關掉');
 
   // 3. 頭像選單：管理員設定、專案管理、成員管理
   let av = await avItems();
   assert.match(av, /admin=⚙️管理員設定專案、邀請、帳號/, '管理員設定：' + av);
   assert.match(av, /pm-projects=📁專案管理新增、改名、封存/, '專案管理：' + av);
-  assert.match(av, /perm=👥成員管理成員、角色、技能/, '成員管理：' + av);
+  assert.match(av, /perm=👥成員管理成員、AI 職務、技能/, '成員管理：' + av);
   assert.ok(!av.includes('成員與權限'), '沒有「成員與權限」');
   await click('#av-menu [data-av="pm-projects"]');
   await until(() => js("!!document.querySelector('.adm-main .pm-ptable') && location.pathname === '/admin/projects'"), 8000, '頭像 › 專案管理＝管理員設定 › 專案');
-  await click('.topbar .av-btn'); await sleep(150);
+  await click('.topbar .av-btn'); await until(() => js("document.querySelector('.topbar .av-btn')?.getAttribute('aria-expanded') === 'true'"), 5000, '頭像選單打開');
   await click('#av-menu [data-av="perm"]');
   await until(() => js("!!document.querySelector('.pm-tabs')"), 8000, '頭像 › 成員管理');
   assert.match(await crumbs(), /成員管理/);
@@ -106,14 +109,14 @@ try {
   assert.ok(!(await js("document.getElementById('m-newproj').hidden")), '手機選單有「＋ 新增專案」');
   await click('#m-newproj');
   await until(() => js("!!document.querySelector('#np-form')"), 5000, '手機選單 › 新增專案');
-  await js("document.querySelector('#modal-root [data-close]')?.click(); true"); await sleep(200);
+  await js("document.querySelector('#modal-root [data-close]')?.click(); true"); await until(() => js("!document.querySelector('#modal-root [data-close]')"), 5000, '視窗關掉');
   assert.ok(!(await js('document.documentElement.scrollWidth > innerWidth + 1')), '375 沒有橫向捲動');
   await cdp('Emulation.clearDeviceMetricsOverride');
 
   // 7. leader：預設專案有 ⚙（只有成員與本專案角色）、第二專案沒有；清單沒有新增；頭像只有成員管理；管理頁沒有切換鈕
   await login(wang.token, '/p/main/messages');
   await openGear();
-  assert.equal(await menuItems(), 'rename,repo,members,kbai', 'leader 跟管理員一樣：改名、程式庫、成員與本專案角色（PLAT-381）');
+  assert.equal(await menuItems(), 'rename,repo,visibility,members,kbai', 'leader 跟管理員一樣：改名、程式庫、成員與本專案角色（PLAT-381）');
   await click('#pset-menu [data-pset-act="members"]');
   await until(() => js("!!document.querySelector('.pm-tabs')"), 8000, 'leader 成員管理');
   assert.ok(!(await js("!!document.querySelector('.work-title [data-adm]')")), 'leader 沒有管理員設定連結');
@@ -123,7 +126,13 @@ try {
   await login(wang.token, '/p/second/messages');
   await until(() => js("!!document.querySelector('.proj-switch .ph-card')"), 8000, '第二專案');
   assert.ok(!(await js("!!document.querySelector('.proj-switch [data-pset]')")), '不是 leader 的專案沒有齒輪');
-  await click('.proj-switch .ps-btn'); await sleep(100);
+  await openSwitch();
+  // 工作區設定「所有成員」（新安裝預設）：清單有新增專案，但沒有管理專案（只有管理員）
+  assert.equal(await js("[...document.querySelectorAll('.proj-switch:not(.sheet-proj) .ps-list [data-ps-act]')].map(b => b.textContent.trim()).join('|')"), '＋ 新增專案', '所有成員能建專案：leader 清單只有新增專案');
+  assert.equal((await kit.call(liu.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' })).status, 200, '工作區設定改成只有管理員能建立專案');
+  await login(wang.token, '/p/second/messages');
+  await until(() => js("!!document.querySelector('.proj-switch .ph-card')"), 8000, '第二專案（只有管理員能建專案）');
+  await openSwitch();
   assert.ok(!(await js("!!document.querySelector('.proj-switch [data-ps-act]')")), 'leader 的清單沒有新增專案');
   // 一般成員：沒有齒輪、手機選單沒有新增專案
   await login(chen.token, '/p/main/messages');
@@ -137,15 +146,15 @@ try {
   await until(() => js("document.documentElement.lang === 'en' && !!document.querySelector('.proj-switch [data-pset]')"), 15000, '英文介面');
   await openGear();
   const enMenu = await text('#pset-menu');
-  assert.match(enMenu, /Project settings[\s\S]*Rename[\s\S]*Repository and branch[\s\S]*Members and roles in this project/, '英文齒輪選單：' + enMenu);
+  assert.match(enMenu, /Project settings[\s\S]*Rename[\s\S]*Repository and branch[\s\S]*Members and project roles/, '英文齒輪選單：' + enMenu);
   await js("document.body.click(); true");
   av = await avItems();
   assert.match(av, /admin=⚙️Admin settingsprojects, invites, accounts/, '英文頭像選單：' + av);
   assert.match(av, /pm-projects=📁Project managementadd, rename, archive/, '英文頭像選單：' + av);
-  assert.match(av, /perm=👥Member managementmembers, roles, skills/, '英文頭像選單：' + av);
+  assert.match(av, /perm=👥Member managementmembers, AI duties, skills/, '英文頭像選單：' + av);
   await click('#av-menu [data-av="pm-projects"]');
   await until(() => js("!!document.querySelector('.adm-main .pm-ptable')"), 8000, '英文管理員設定 › 專案');
-  assert.match(await text('.adm-nav'), /To do[\s\S]*Group settings[\s\S]*Accounts & recovery[\s\S]*Audit & storage[\s\S]*System & backup/, '英文左側目錄：' + await text('.adm-nav'));
+  assert.match(await text('.adm-nav'), /To do[\s\S]*Workspace settings[\s\S]*Accounts & recovery[\s\S]*Audit & storage[\s\S]*Platform settings/, '英文左側目錄：' + await text('.adm-nav'));
   assert.match(await crumbs(), /Admin settings/, '英文麵包屑：' + await crumbs());
   console.log('project-entry-ui-test：全部通過');
 } catch (e) {

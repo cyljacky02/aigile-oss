@@ -1,7 +1,7 @@
 // 畫面測試：訊息附件保存時間由管理員調整，全站文字照實際設定顯示
-// A. 管理員設定 › 稽核與儲存：「訊息附件保存時間」下拉（1、6、24 小時、3、7、30 天，標預設）＋儲存＋說明「只影響之後上傳的檔」
+// A. 管理員設定 › 平台設定（平台預設；從稽核與儲存搬過來）：「訊息附件保存時間」下拉（1、6、24 小時、3、7、30 天，標預設）＋儲存＋說明「只影響之後上傳的檔」
 //    ＋說明 FILE_TTL_HOURS 只是初始值、改過以這裡為準；異動紀錄
-// B. 改了之後：儲存空間那列、輸入框下的提示、上傳視窗（截圖、單一文件）、文件頁「訊息附件」分頁都寫實際的值（一般成員也一樣）
+// B. 改了之後：稽核與儲存的儲存空間那列、輸入框下的提示、上傳視窗（截圖、單一文件）、文件頁「訊息附件」分頁都寫實際的值（一般成員也一樣）
 // C. 已上傳的舊檔照原本的到期時間；文件頁寫明「設定改了只影響之後上傳的檔」
 // D. 網頁、index.html 沒有寫死「1 小時後自動刪除」
 // E. 1280、375 不橫向捲動
@@ -46,8 +46,12 @@ try {
     if (l === 'en') await until(() => js("document.documentElement.lang === 'en'"), 8000, '英文');
   };
   const admin = async (l = 'zh') => {
+    await go(wang.token, '/admin/system', l);
+    await until(() => js("!!document.querySelector('#adm-ttl')"), 15000, '平台設定的保存時間設定');
+  };
+  const audit = async (l = 'zh') => {
     await go(wang.token, '/admin/audit', l);
-    await until(() => js("!!document.querySelector('#adm-ttl') && !!document.querySelector('.adm-store')"), 15000, '稽核與儲存的保存時間設定');
+    await until(() => js("!!document.querySelector('.adm-store')"), 15000, '稽核與儲存的儲存空間');
   };
   const save = async v => {
     await js(`(() => { const s = document.querySelector('#adm-ttl'); s.value = '${v}'; s.dispatchEvent(new Event('change', { bubbles: true })); document.querySelector('[data-pp="filettl"]').click(); return true; })()`);
@@ -65,27 +69,29 @@ try {
   await admin();
   const initial = await until(() => J(`(() => {
     const select = document.querySelector('#adm-ttl');
-    const storage = document.querySelector('.adm-store');
-    if (!select || !storage) return null;
+    if (!select) return null;
     const read = selector => document.querySelector(selector)?.innerText.trim();
     return {
       label: read('.adm-ttl label[for="adm-ttl"]'), options: [...select.options].map(o => o.value + '=' + o.textContent),
-      value: select.value, hint: read('#adm-ttl-hint'), source: read('.adm-ttl-src'), storage: storage.innerText
+      value: select.value, hint: read('#adm-ttl-hint'), source: read('.adm-ttl-src')
     };
-  })()`), 10000, '讀取同一次重畫的保存設定與儲存資訊');
+  })()`), 10000, '讀取同一次重畫的保存設定');
   assert.equal(initial.label, '訊息附件保存時間', 'A 標籤');
   assert.deepEqual(initial.options,
     ['1=1 小時', '6=6 小時', '24=24 小時（預設）', '72=3 天', '168=7 天', '720=30 天'], 'A 六個選項、標預設 24 小時');
   assert.equal(initial.value, '24', 'A 目前 24 小時');
   assert.match(initial.hint, /改了只影響之後上傳的檔；已經上傳的照上傳當時的設定到期，不會提早或延後刪除。存好立即生效/, 'A 說明只影響之後上傳的檔');
   assert.match(initial.source, /^目前是預設的 24 小時（主機沒設 FILE_TTL_HOURS）。主機設了 FILE_TTL_HOURS 會改用它當初始值；在這裡改過之後就以這裡為準。$/, 'A 說明 FILE_TTL_HOURS 與這裡誰為準：' + initial.source);
-  assert.match(initial.storage, /上傳 24 小時後自動刪除/, 'A 儲存空間那列寫目前的 24 小時');
   assert.ok(!(await hscroll()), 'E 1280 沒有橫向捲動');
-  await shot('01-電腦1280-管理員設定-稽核與儲存-訊息附件保存時間-預設24小時');
+  await shot('01-電腦1280-管理員設定-平台設定-訊息附件保存時間-預設24小時');
+  await audit();
+  assert.match(await text('.adm-store'), /上傳 24 小時後自動刪除/, 'A 儲存空間那列寫目前的 24 小時');
+  assert.ok(!(await js("!!document.querySelector('#adm-ttl')")), 'A 稽核與儲存不再有保存時間設定（搬到平台設定）');
+  await admin();
 
   // ---------- B 改成 6 小時 ----------
   await save(6);
-  await until(async () => /上傳 6 小時後自動刪除/.test(await text('.adm-store')), 8000, '儲存後儲存空間那列寫 6 小時');
+  await until(async () => /已儲存/.test(await text('#toast')), 8000, '儲存後提示');
   assert.match(await text('#toast'), /已儲存：之後上傳的訊息附件保存 6 小時；已上傳的照原本的到期時間/, 'B 提示訊息：' + await text('#toast'));
   assert.equal(await js("document.querySelector('#adm-ttl').value"), '6', 'B 下拉停在 6 小時');
   assert.equal((await call(wang.token, '/api/file-ttl')).body.hours, 6, 'B 存進資料庫');
@@ -95,6 +101,8 @@ try {
   assert.match(await text('.adm-ttl-log'), /王小美 把保存時間從 24 小時 改成 6 小時/, 'A 異動紀錄');
   await js("document.querySelector('.adm-ttl').scrollIntoView({ block: 'center' }); true");
   await shot('02-電腦1280-管理員設定-改成6小時後-含異動紀錄');
+  await audit();
+  await until(async () => /上傳 6 小時後自動刪除/.test(await text('.adm-store')), 8000, 'B 稽核與儲存的儲存空間那列寫 6 小時');
 
   // ---------- E 手機 375 ----------
   await size(375, 812);
@@ -155,7 +163,7 @@ try {
   await size(1280, 900);
   await admin('en');
   await save(72);
-  await until(async () => /deleted automatically 3 days after upload/.test(await text('.adm-store')), 8000, 'F 英文儲存空間那列寫 3 days');
+  await until(async () => /^Saved/.test(await text('#toast')), 8000, 'F 英文儲存後提示');
   assert.equal(await text('.adm-ttl label[for="adm-ttl"]'), 'Attachment retention', 'F 英文標籤');
   assert.deepEqual(await J("[...document.querySelectorAll('#adm-ttl option')].map(o => o.textContent)"), ['1 hour', '6 hours', '24 hours (default)', '3 days', '7 days', '30 days'], 'F 英文選項分單複數');
   assert.match(await text('#toast'), /^Saved: attachments uploaded from now on are kept for 3 days; files already uploaded keep their original expiry$/, 'F 英文提示');
@@ -164,11 +172,16 @@ try {
   await js("document.querySelector('.adm-ttl-log').open = true; true");
   assert.match(await text('.adm-ttl-log'), /王小美 changed retention from 6 hours to 3 days[\s\S]*王小美 changed retention from 24 hours to 6 hours/, 'F 英文異動紀錄');
   assert.match(await text('.adm-ttl-log summary'), /^Change log$/, 'F 英文異動紀錄標題');
-  const han = await js("(document.querySelector('.adm-ttl').innerText + document.querySelector('.adm-store').innerText).replace(/王小美/g, '').match(/[\\u3400-\\u9fff]+/g)?.join(' ') || ''");
+  const han = await js("document.querySelector('.adm-ttl').innerText.replace(/王小美/g, '').match(/[\\u3400-\\u9fff]+/g)?.join(' ') || ''");
   assert.equal(han, '', 'F 英文管理員設定沒有留中文：' + han);
   assert.ok(!(await hscroll()), 'F 英文 1280 沒有橫向捲動');
   await js("document.querySelector('.adm-ttl').scrollIntoView({ block: 'center' }); true");
   await shot('07-英文-電腦1280-管理員設定-訊息附件保存時間-3天');
+  await audit('en');
+  await until(async () => /deleted automatically 3 days after upload/.test(await text('.adm-store')), 8000, 'F 英文儲存空間那列寫 3 days');
+  const hanStore = await js("document.querySelector('.adm-store').innerText.match(/[\\u3400-\\u9fff]+/g)?.join(' ') || ''");
+  assert.equal(hanStore, '', 'F 英文儲存空間沒有留中文：' + hanStore);
+  await admin('en');
   await size(375, 812);
   await admin('en');
   assert.ok(!(await hscroll()), 'F 英文 375 沒有橫向捲動');
@@ -177,7 +190,7 @@ try {
   await shot('08-英文-手機375-管理員設定-訊息附件保存時間-3天');
 
   // ---------- F 英文介面：一般成員（改成 1 小時，看單數） ----------
-  assert.equal((await call(wang.token, '/api/file-ttl', 'PUT', { hours: 1 })).body.hours, 1);
+  assert.equal((await call(wang.token, '/api/platform/settings', 'PUT', { fileTtlHours: 1 })).body.fileTtl.hours, 1);
   await size(1280, 900);
   await go(chen.token, '/p/main/messages', 'en');
   await until(async () => /^Enter to send · Shift\+Enter for new line · type @ to mention · uploaded files are deleted after 1 hour$/.test(await text('#composer-hint')), 8000, 'F 英文輸入框提示 1 hour：' + await text('#composer-hint'));

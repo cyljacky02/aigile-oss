@@ -1817,6 +1817,8 @@ span.pm-star.on-true { display: inline-flex; width: 32px; justify-content: cente
 .pm-table .c-lead { width: 96px; text-align: center; }
 .pm-table .c-act { width: 72px; text-align: center; }
 .pm-table .role-sel { width: 140px; min-width: 0; height: 36px; min-height: 36px; }
+.pm-table .c-prole { width: 132px; white-space: nowrap; } /* 專案角色：專案管理員／專案成員／唯讀成員 */
+.pm-prole { width: 120px; height: 36px; padding: 0 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
 .pm-table .pm-tr.chg { background: rgba(245, 158, 11, .07); }
 .pm-grp-tr td { height: 30px; background: var(--surface-2); font-size: 12px; color: var(--muted); }
 .pm-sub { font-size: 12px; color: var(--muted); }
@@ -1873,6 +1875,11 @@ span.pm-star.on-true { display: inline-flex; width: 32px; justify-content: cente
 .pm-repo-url { min-width: 0; overflow-wrap: anywhere; }
 .pm-repo .link { min-height: 36px; }
 .repo-hints { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+/* 專案可見度：開放／審核／私人（單選，說明換行） */
+.vis-list { display: grid; gap: 6px; }
+.vis-opt { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.vis-opt input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
+.vis-opt > span { display: grid; gap: 2px; min-width: 0; }
 .ai-grants { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; display: grid; gap: 6px; }
 .ai-grants p { margin: 0; }
 .ai-grants-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -2460,7 +2467,8 @@ html:not(.gn-ready) [data-group-name] { visibility: hidden; }
 .pm-ro-btn.on { border-style: solid; background: var(--surface-2); color: var(--text); font-weight: 600; }
 .ro-tag { margin-left: 6px; }
 .pm-pick-ro { margin: 8px 0 0; font-size: .85rem; }
-.inv-ro { margin: 0 8px; font-size: .8rem; }
+.inv-prole { margin: 0 8px; height: 36px; padding: 0 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: .8rem; }
+.inv-prole:disabled { opacity: .5; }
 
 /* 第一批：總覽側欄列專案、選單分組、專案卡清爽化 */
 .hub-side { display: flex; flex-direction: column; gap: 2px; }
@@ -3731,3 +3739,10 @@ body.viewer-open .confirm-root:not(.under-viewer) .overlay { z-index: 1001; } /*
 .kb-skill-warn .link { color: inherit; font-weight: 600; text-decoration: underline; }
 /* 英文介面：手機文件頁三個分頁字比較長，允許換行，不被裁掉 */
 @media (max-width: 899px) { #files-pane .modal-actions .seg-scope button { white-space: normal; height: auto; min-height: 30px; line-height: 1.2; padding: 4px 6px; } }
+/* 成員名冊：篩選、搜尋同一列，窄畫面換行；每個專案一顆小標籤 */
+.rs-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rs-head #rs-q { min-width: 0; flex: 1 1 180px; max-width: 280px; }
+.rs-filter button { white-space: nowrap; }
+.rs-pjs { line-height: 1.7; }
+.rs-pj { display: inline-block; margin: 0 10px 0 0; white-space: nowrap; }
+.rs-table .adm-acts { justify-content: flex-start; }

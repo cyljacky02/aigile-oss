@@ -52,7 +52,7 @@ try {
   const qNone = await msg('q2', '[需確認] 要換主機嗎？\n選項：\nA. 換\nB. 不換');
   // 同仁（人類）發的 [需確認] 也有選項按鈕；自己發的不給自己按
   const mate = (await kit.call(null, '/api/join', 'POST', { name: '陳美玲', role: 'UX' })).body;
-  await kit.call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: mate.participant.participantId, projects: ['預設專案'] }] });
+  await kit.call(boss.token, `/api/participants/${mate.participant.participantId}/projects`, 'PUT', { projects: ['預設專案'] });
   const qHuman = (await kit.call(mate.token, '/api/messages', 'POST', { requestId: 'q3', project: '預設專案', text: '[需確認] 首頁要用哪一版？\n選項：\nA. 藍色版\nB. 橘色版\n建議：A', recipientIds: [L], replyFrom: [L] })).body.messageId;
   const qMine = (await kit.call(boss.token, '/api/messages', 'POST', { requestId: 'q4', project: '預設專案', text: '[需確認] 下週要開會嗎？\n選項：\nA. 開\nB. 不開', recipientIds: [mate.participant.participantId], replyFrom: [mate.participant.participantId] })).body.messageId;
   assert.ok(qHuman && qMine, '同仁與自己的 [需確認] 發送成功');

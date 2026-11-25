@@ -3,6 +3,8 @@
 // 標記：建了什麼記在 app_settings 的 demo_data；訊息與卡片的 request_id 一律以 demo: 開頭
 // 清除只刪這些（含它們的通知、收件人、卡片紀錄）；示範專案裡如果有你們自己發的訊息或建的卡，專案保留、只刪示範的部分
 // 內容是虛構的通用情境（活動報名網站），不含任何真實人名；示範成員不能登入（沒有密碼、登入碼已過期）
+import { DEFAULT_WORKSPACE } from './membership.js';
+
 export const DEMO_KEY = 'demo_data';
 const TAG = 'demo:';
 // 示範內容的文字：網頁是英文介面時（lang=en）用英文。協定標籤（[接單]、[需確認]、選項：、建議：）、卡片狀態與類型是 AI／程式在解析的值，兩種語言都照原文
@@ -55,8 +57,8 @@ const TEXT = {
   },
 };
 
-export function registerDemo({ route, db, ApiError, randId, nowIso, requireAdmin, requireHuman, newCode, newToken, afterChange }) {
-  const adminOnly = async (ctx, me) => { requireHuman(me); await requireAdmin(ctx, me, '載入或清除示範資料'); };
+export function registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership, afterChange }) {
+  const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '載入或清除示範資料' }); };
   const loadMark = async () => { try { return JSON.parse((await db.get('SELECT value FROM app_settings WHERE key = ?', DEMO_KEY))?.value || 'null'); } catch { return null; } };
   const freeName = async base => { for (let i = 0; ; i++) { const n = i ? `${base}${i + 1}` : base; if (!(await db.get('SELECT 1 AS x FROM participants WHERE name = ?', n))) return n; } };
 
@@ -84,7 +86,7 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, requireAdmin
     // 加入時間一定要是現在：管理員＝最早加入的人類，示範成員比你早就會變成管理員
     const joinedAt = new Date(now + 1000).toISOString();
     const stmts = [
-      ['INSERT INTO projects (id, name, archived, created_by, created_at) VALUES (?,?,0,?,?)', [pj, pname, me.id, iso(6 * H)]],
+      ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at) VALUES (?,?,0,?,?,?)', [pj, pname, DEFAULT_WORKSPACE, me.id, iso(6 * H)]],
       ['INSERT INTO project_events (project_id, at, actor_id, text) VALUES (?,?,?,?)', [pj, iso(6 * H), me.id, T.loaded(me.name)]],
     ];
     const slugUsed = await db.get("SELECT 1 AS x FROM app_settings WHERE key >= 'slug:' AND key < 'slug;' AND value = 'demo'");
@@ -92,13 +94,13 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, requireAdmin
     if (!slugUsed) stmts.push(['INSERT INTO app_settings (key, value) VALUES (?, ?)', ['slug:' + pj, 'demo']]);
     if (!codeUsed) stmts.push(['INSERT INTO app_settings (key, value) VALUES (?, ?)', ['pcode:' + pj, 'DEMO']]);
     for (const p of people) {
-      stmts.push([`INSERT INTO participants (id, kind, name, role, role_key, code, owner_id, duties, token, token_expires_at, status, created_at, updated_at, projects)
-        VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?,?)`, [p.id, p.kind, p.name, p.role, p.role_key, p.code, p.owner_id, p.duties, 'demo_' + newToken(), joinedAt, joinedAt, pj]]); // token_expires_at=1：AI 顯示「Token 已過期」；人類沒有密碼、沒有裝置，登入碼是沒人拿得到的亂數
+      stmts.push([`INSERT INTO participants (id, kind, name, role, role_key, code, owner_id, duties, token, token_expires_at, status, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?)`, [p.id, p.kind, p.name, p.role, p.role_key, p.code, p.owner_id, p.duties, 'demo_' + newToken(), joinedAt, joinedAt]], // token_expires_at=1：AI 顯示「Token 已過期」；人類沒有密碼、沒有裝置，登入碼是沒人拿得到的亂數
+        ...membership.enterWorkspaceStmts(p.id, joinedAt), ...membership.setProjectsStmts(p.id, [pj], null));
     }
     // 你（管理員）加進示範專案，才看得到
-    const mine = String((await db.get('SELECT projects FROM participants WHERE id = ?', me.id))?.projects || '').split(',').filter(Boolean);
-    const addedMe = !mine.includes(pj);
-    if (addedMe) stmts.push(['UPDATE participants SET projects = ? WHERE id = ?', [[...mine, pj].join(','), me.id]]);
+    // 你是工作區管理員：靠隱含權限就看得到示範專案，不加入（加入了反而列在成員裡）
+    const addedMe = false;
 
     // 卡片：不同狀態＋一張等你決定的決策卡
     let no = 0;
@@ -171,6 +173,7 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, requireAdmin
       ['DELETE FROM message_recipients WHERE participant_id IN (SELECT value FROM json_each(?))', [ids]],
       ['DELETE FROM ai_state WHERE participant_id IN (SELECT value FROM json_each(?))', [ids]],
       ['DELETE FROM dms WHERE human_id IN (SELECT value FROM json_each(?)) OR ai_id IN (SELECT value FROM json_each(?))', [ids, ids]],
+      ...membership.forgetStmts(JSON.parse(ids)), // 專案成員資格、帳號
       ['DELETE FROM participants WHERE id IN (SELECT value FROM json_each(?))', [ids]],
       ['DELETE FROM app_settings WHERE key = ?', [DEMO_KEY]],
     ];
@@ -184,9 +187,9 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, requireAdmin
         ['DELETE FROM app_settings WHERE key IN (?, ?, ?)', ['slug:' + m.project, 'pcode:' + m.project, 'pnomax:' + m.project]]];
       // 誰被加進示範專案（含你）都移出
       const fallback = (await db.get('SELECT id FROM projects WHERE id != ? AND archived = 0 ORDER BY created_at, id LIMIT 1', m.project))?.id || '';
-      for (const p of await db.all("SELECT id, projects FROM participants WHERE ',' || projects || ',' LIKE ?", `%,${m.project},%`)) {
-        const left = p.projects.split(',').filter(x => x && x !== m.project);
-        rm.push(['UPDATE participants SET projects = ? WHERE id = ?', [(left.length ? left : [fallback]).filter(Boolean).join(','), p.id]]); // 至少留一個專案
+      for (const p of await membership.fetchMembersOf(m.project)) {
+        const left = p.projects.filter(x => x !== m.project);
+        rm.push(...membership.setProjectsStmts(p.id, (left.length ? left : [fallback]).filter(Boolean), null)); // 至少留一個專案
       }
       let js = {}; try { js = JSON.parse((await db.get("SELECT value FROM app_settings WHERE key = 'join_settings'"))?.value || '{}') || {}; } catch {}
       if (js[m.project]) { delete js[m.project]; rm.push(["UPDATE app_settings SET value = ? WHERE key = 'join_settings'", [JSON.stringify(js)]]); }

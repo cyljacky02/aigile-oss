@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { parseArgs } from './sqlite-to-pg.js';
+import { parseArgs, seededTables } from './sqlite-to-pg.js';
 import { openNodeDb } from '../src/db-node.js';
 import { createApp } from '../src/core.js';
 
@@ -19,6 +19,9 @@ assert.equal(parseArgs(['--from', 'a.db'], { DATABASE_URL: 'postgresql://x@y/z' 
 assert.throws(() => parseArgs(['--to', 'postgres://u@h/d']), /--from/);
 assert.throws(() => parseArgs(['--from', 'a.db']), /--to/);
 assert.throws(() => parseArgs(['--from', 'a.db', '--to', 'mysql://u@h/d']), /postgres/);
+
+// 建表時就寫進預設資料的表（schema.sql 的 INSERT OR IGNORE）：搬的時候先清掉、用來源的，不然新的目標會撞主鍵
+assert.deepEqual(seededTables(), ['app_settings', 'workspaces'], '建表時寫預設資料的表');
 
 const PG_URL = process.env.AIGILE_TEST_PG_URL;
 if (!PG_URL) {
@@ -46,6 +49,7 @@ const ai = (await call(boss.token, '/api/my-ais', 'POST', { projects: ['預設�
 for (let i = 1; i <= 7; i++) assert.equal((await call(boss.token, '/api/messages', 'POST', { requestId: 'm' + i, project: '預設專案', text: `第 ${i} 則` })).status, 201);
 const card = (await call(boss.token, '/api/cards', 'POST', { requestId: 'c1', project: '預設專案', title: '搬家測試卡', ownerId: ai.participantId })).body;
 assert.ok(card.cardId, '建卡：' + JSON.stringify(card));
+await lite.run("UPDATE workspaces SET name = '搬家的工作區', create_projects = 'admins' WHERE id = 'default'"); // 跟建表時的預設值不一樣
 await lite.run("INSERT INTO avatars (participant_id, mime, data, updated_at) VALUES (?, 'image/png', ?, 't')", boss.participant.participantId, new Uint8Array([137, 80, 78, 71, 0, 255]));
 await lite.close();
 
@@ -71,6 +75,7 @@ try {
   const maxSeq = Math.max(...msgs.map(m => m.seq));
   await pgdb.run("INSERT INTO messages (id, author_id, text, created_at) VALUES ('msg_after', ?, '搬家後', 't')", boss.participant.participantId);
   assert.equal((await pgdb.get("SELECT seq FROM messages WHERE id = 'msg_after'")).seq, maxSeq + 1, '流水號從最大號之後接');
+  assert.deepEqual(await pgdb.all('SELECT id, name, create_projects FROM workspaces'), [{ id: 'default', name: '搬家的工作區', create_projects: 'admins' }], '工作區用來源的（建表時寫的預設那列不留）');
   assert.equal((await pgdb.get("SELECT value FROM app_settings WHERE key = 'isolation_since'")).value, src.prepare("SELECT value FROM app_settings WHERE key = 'isolation_since'").get().value, '設定用來源的');
 } finally { await pgdb.close(); src.close(); }
 

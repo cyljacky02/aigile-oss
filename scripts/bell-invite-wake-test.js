@@ -21,13 +21,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-t1-'));
 const raw = await openTestDb(path.join(dataDir, 'switch.db'));
 let raceName = null; // B8：設了就在建人前一刻讓別人先用掉這個名稱
-const db = { ...raw, run: async (sql, ...a) => {
-  if (raceName && /^INSERT INTO participants/.test(sql.trim())) {
+const race = async sql => {
+  if (raceName && /^INSERT INTO participants/.test(String(sql).trim())) {
     const n = raceName; raceName = null;
     await raw.run('INSERT INTO participants (id, kind, name, code, token, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'p_racer', 'human', n, 'RACE', 'tok_racer', new Date().toISOString(), new Date().toISOString());
   }
-  return raw.run(sql, ...a);
-} };
+};
+// 建人可能是單句，也可能跟專案歸屬一起一批寫（第一句建人）
+const db = { ...raw, run: async (sql, ...a) => { await race(sql); return raw.run(sql, ...a); }, batch: async stmts => { await race(stmts[0]?.[0] || ''); return raw.batch(stmts); } };
 // 門鈴打到假的 Supabase：記下來，故意慢一點（模擬網路）
 const bells = [];
 const realFetch = globalThis.fetch;

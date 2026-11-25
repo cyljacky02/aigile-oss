@@ -30,6 +30,10 @@ export function parseArgs(argv, env = {}) {
 }
 
 const q = name => `"${name.replace(/"/g, '""')}"`;
+// 建表時就寫進預設資料的表（schema.sql 裡的 INSERT OR IGNORE，例：預設工作區、隔離起算時間）：搬之前先清掉，用來源的（不然主鍵撞在一起）
+export function seededTables(schemaText = fs.readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8')) {
+  return [...new Set([...schemaText.replace(/--[^\n]*/g, '').matchAll(/INSERT\s+OR\s+IGNORE\s+INTO\s+(\w+)/gi)].map(m => m[1]))].sort();
+}
 
 export async function migrate({ from, to, schema, log = console.log }) {
   if (!fs.existsSync(from)) throw new Error('找不到來源資料庫：' + from);
@@ -62,6 +66,7 @@ export async function migrate({ from, to, schema, log = console.log }) {
       }
 
       // 3. 一個交易搬完
+      const seeded = new Set(seededTables());
       await client.query('BEGIN');
       const counts = [];
       for (const t of tables) {
@@ -70,7 +75,7 @@ export async function migrate({ from, to, schema, log = console.log }) {
         const cols = src.prepare(`PRAGMA table_info(${q(t)})`).all().map(c => c.name);
         const extra = cols.filter(c => !dest.cols.has(c));
         if (extra.length) throw new Error(`目標的 ${t} 表少了欄位：${extra.join('、')}`);
-        if (t === 'app_settings') await client.query('DELETE FROM app_settings'); // 建表時寫的預設值，用來源的蓋掉
+        if (seeded.has(t)) await client.query(`DELETE FROM ${q(t)}`); // 建表時寫的預設值，用來源的蓋掉
         let after = -Number.MAX_SAFE_INTEGER, copied = 0;
         for (;;) {
           const rows = src.prepare(`SELECT rowid AS __rowid, * FROM ${q(t)} WHERE rowid > ? ORDER BY rowid LIMIT ${PAGE}`).all(after);

@@ -58,7 +58,7 @@ try {
   await cdp('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
   await login(boss.token, '/members');
   await until(() => js("!!document.querySelector('.pm-split')"), 10000, '成員與權限');
-  await js("[...document.querySelectorAll('button')].find(b => b.textContent.trim() === '角色').click(); true");
+  await js("[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'AI 職務').click(); true");
   await until(() => js("!!document.querySelector('.pr-note')"), 8000, '角色分頁');
   assert.ok(await js("document.querySelector('.pr-note').getBoundingClientRect().left - document.querySelector('.pm-panel').getBoundingClientRect().left >= 8"), '角色分頁說明不貼邊');
   console.log('perm-narrow-ui-test：全部通過');

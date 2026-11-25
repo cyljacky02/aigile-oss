@@ -30,9 +30,10 @@ const rid = () => 'req_s' + (++n);
 (async () => {
   await ready;
   try {
+    const adm = (await call(null, '/api/join', 'POST', { name: '管理者', role: 'PO' })).body; // 第一位＝工作區管理員（所有專案靠隱含權限，所以另外一位當測試主角）
     const boss = (await call(null, '/api/join', 'POST', { name: '林志明', role: 'UX' })).body;
     const bossId = boss.participant.participantId;
-    await call(boss.token, `/api/participants/${bossId}/projects`, 'PUT', { projects: ['預設專案'] });
+    await call(adm.token, `/api/participants/${bossId}/projects`, 'PUT', { projects: ['預設專案'] });
     const r = ROLES.find(x => x.key === 'PG');
     const mk = name => call(boss.token, '/api/my-ais', 'POST', { roleKey: 'PG', role: r.role, name, duties: r.duties, style: r.style, autonomy: r.autonomy, mustConfirm: r.mustConfirm, handoff: r.handoff }).then(x => x.body);
     const pg = await mk('PG助手'), qa = await mk('QA助手');

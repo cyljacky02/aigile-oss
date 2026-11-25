@@ -174,7 +174,7 @@ http.createServer(async (req, res) => {
   process.exit(1);
 }).listen(PORT, ...(HOST ? [HOST] : []), () => {
   for (const l of startupLines(PORT, HOST)) console.log(l);
-  if (process.env.ROOM_CODE) console.log('已啟用群組密碼 (ROOM_CODE)');
+  if (process.env.ROOM_CODE) console.log('已啟用房間碼 (ROOM_CODE)');
   if (!process.env.ADMIN_PASSWORD && process.env.AIGILE_TEST_PROJECTS !== '1') console.warn('⚠ 沒有設 ADMIN_PASSWORD：新站的管理員帳號密碼是 admin／admin。放到網路上之前一定要先設（例：.env 寫 ADMIN_PASSWORD=你的密碼），否則誰先打開網址誰就拿到管理員。');
   if (!TRUST_PROXY && !process.env.APP_URL) console.log('提示：放在反向代理（nginx、Caddy、Cloudflare Tunnel…）後面時，請設 TRUST_PROXY=1 與 APP_URL=https://你的網址');
 });

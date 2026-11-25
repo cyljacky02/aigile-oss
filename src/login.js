@@ -3,8 +3,10 @@
 // 成功後一律由 issueDevice 發這台裝置的登入（dv_ 開頭，資料庫只存雜湊）。之後要接公司 SSO（OIDC／SAML），
 // 加一個 provider（例如 sso: { verify }）就好，裝置清單、登出、重設登入都不用改。
 // AI 的 Token 不經過這裡，維持原樣。
-// 再加帳號密碼（人類自己設）與主機救援連結（只救管理員，只能在主機用 npm run admin-rescue 產生）。
+// 再加帳號密碼（人類自己設）與主機救援連結（只救平台管理員，只能在主機用 npm run admin-rescue 產生）。
 import { hashPassword, verifyPassword, normUsername, validUsername, USERNAME_RULE, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
+import { ACCESS_ROLE } from './access.js';
+import { PROJECT_ROLE, readProjectRole as readRoleOf } from './membership.js';
 
 // 邀請連結有效時間可選（預設 24 小時）；照舊只能用一次
 export const INVITE_TTLS = { '15m': 15 * 60_000, '1h': 3_600_000, '24h': 86_400_000, '7d': 7 * 86_400_000 };
@@ -33,8 +35,8 @@ export function deviceLabelAs(prefix, ua = '') {
 }
 
 export function registerLogin(d) {
-  const { route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, setInitialReadOnly,
-    adminOf, requireAdmin, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
+  const { route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, addMemberStmts, loadMembers, enterWorkspaceStmts, projectListOf,
+    adminOf, access, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
     groupName, humanTtlMs, failLimit = 10, captcha = { on: false } } = d;
 
   // ---------- 嘗試失敗的限流（配對碼只有 6 位數，要擋猜測） ----------
@@ -225,7 +227,7 @@ export function registerLogin(d) {
   // authenticate 用：把 Bearer 換成成員；回傳 { p, dev }，找不到回 null
   // 一次查完（每次查詢都可能要跨洲來回）：裝置＋成員 JOIN；AI 的所屬人類狀態一起帶回（owner_status）
   // 登入碼／AI Token：資料庫只存雜湊（h: 開頭），比對雜湊。還沒轉成雜湊的舊資料（原文）也認，認到就順手轉
-  const PERSON_SQL = 'SELECT p.*, o.status AS owner_status FROM participants p LEFT JOIN participants o ON o.id = p.owner_id WHERE p.token = ?';
+  const PERSON_SQL = 'SELECT p.*, o.status AS owner_status, o.workspace_status AS owner_ws_status FROM participants p LEFT JOIN participants o ON o.id = p.owner_id WHERE p.token = ?';
   async function byToken(token) {
     const key = await tokenKey(token), row = await db.get(PERSON_SQL, key);
     if (row || token.startsWith('h:')) return row || null; // 拿雜湊本身來登入不算數
@@ -250,25 +252,43 @@ export function registerLogin(d) {
 
   // ---------- 邀請 ----------
   const listOf = s => String(s || '').split(',').map(x => x.trim()).filter(x => PROJECTS.includes(x));
+  const readProjectRole = v => readRoleOf(v, invalid);
   const inviteStatus = (iv, now = Date.now()) => (iv.used_at ? '已使用' : iv.revoked_at ? '已取消' : iv.expires_at <= now ? '已過期' : '有效');
+  // 邀請種類：new＝新的人（接受時建帳號）、rejoin＝已移出工作區的人用原本的帳號回來、reset＝管理員「重設登入」給的新連結
+  const inviteKind = iv => (!iv.participant_id ? 'new' : roleJson(iv.role)?.__rejoin ? 'rejoin' : 'reset');
   const inviteView = (iv, people) => ({
-    id: iv.id, kind: iv.participant_id ? 'reset' : 'new', name: iv.name, role: roleText(iv.role), roles: rolesOf(iv.role), readOnly: roOf(iv.role), projects: listOf(iv.projects),
+    id: iv.id, kind: inviteKind(iv), name: iv.name, role: roleText(iv.role), roles: rolesOf(iv.role), readOnly: roOf(iv.role), projects: listOf(iv.projects), presets: presetsOf(iv),
     status: inviteStatus(iv), createdAt: iso(iv.created_at), expiresAt: iso(iv.expires_at), usedAt: iso(iv.used_at),
     ttl: Object.keys(INVITE_TTLS).find(k => INVITE_TTLS[k] === iv.expires_at - iv.created_at) || null,
     usedByName: iv.used_by ? people.get(iv.used_by)?.name ?? null : null, createdByName: people.get(iv.created_by)?.name ?? null,
   });
   const inviteUrl = (base, token) => `${base}/invite/${token}`;
-  // 邀請的角色欄存 { 專案: 角色 } 的 JSON；舊資料是單一字串
-  function rolesOf(raw) { const s = String(raw || ''); if (!s.startsWith('{')) return null; try { const r = JSON.parse(s); delete r.__ro; return r; } catch { return null; } }
-  // 邀請時勾的唯讀專案也存在角色欄的 JSON（__ro）
-  function roOf(raw) { const s = String(raw || ''); if (!s.startsWith('{')) return []; try { return JSON.parse(s).__ro || []; } catch { return []; } }
+  // 邀請的角色欄存 { 專案: 職稱 } 的 JSON；舊資料是單一字串（每個勾的專案都用這個職稱）
+  const roleJson = raw => { const s = String(raw || ''); if (!s.startsWith('{')) return null; try { return JSON.parse(s) || null; } catch { return null; } };
+  function rolesOf(raw) { const r = roleJson(raw); if (!r) return null; for (const k of Object.keys(r)) if (k.startsWith('__')) delete r[k]; return r; }
+  // 預設的專案角色也存在角色欄的 JSON：__ro＝唯讀成員的專案、__admin＝專案管理員的專案；其他勾的專案是專案成員
+  const roOf = raw => roleJson(raw)?.__ro || [];
+  const projectAdminsOf = raw => roleJson(raw)?.__admin || [];
+  // 邀請預設的專案（還在、未封存的）：[{ project, role: admin|member|viewer, title }]
+  function presetsOf(iv) {
+    const ro = roOf(iv.role), pa = projectAdminsOf(iv.role), titles = rolesOf(iv.role);
+    return listOf(iv.projects).map(project => ({ project, role: pa.includes(project) ? PROJECT_ROLE.ADMIN : ro.includes(project) ? PROJECT_ROLE.VIEWER : PROJECT_ROLE.MEMBER,
+      title: titles ? titles[project] || '' : String(iv.role || '') }));
+  }
   const roleText = raw => { const r = rolesOf(raw); return r ? Object.entries(r).map(([k, v]) => `${nameOf(k)} ${v}`).join('、') : String(raw || ''); };
+  // projects：專案 id，或 { project, role?（admin｜member｜viewer，預設 member）, title? }。回 { projects（照專案順序）, roles: {專案: 專案角色}, titles: {專案: 職稱} }
   function readInviteProjects(raw) {
-    if (raw === undefined || raw === null) return [];
+    if (raw === undefined || raw === null) return { projects: [], roles: {}, titles: {} };
     if (!Array.isArray(raw)) throw invalid('projects 需為陣列，例如 ["預設專案"]');
-    const list = [...new Set(raw.map(x => String(x).trim()))];
-    if (list.some(x => !PROJECTS.includes(x))) throw invalid(`projects 只能是（專案編號）：${PROJECTS.join('、')}`);
-    return PROJECTS.filter(x => list.includes(x));
+    const roles = {}, titles = {};
+    for (const x of raw) {
+      const o = x && typeof x === 'object' ? x : { project: x };
+      const pj = String(o.project ?? '').trim();
+      if (!PROJECTS.includes(pj)) throw invalid(`projects 只能是（專案編號）：${PROJECTS.join('、')}`);
+      roles[pj] = o.role === undefined || o.role === null || o.role === '' ? PROJECT_ROLE.MEMBER : readProjectRole(o.role);
+      if (o.title !== undefined && o.title !== null) { const t = readRole(o.title); if (t) titles[pj] = t; }
+    }
+    return { projects: PROJECTS.filter(x => x in roles), roles, titles };
   }
   async function validInvite(token) {
     if (!token || typeof token !== 'string') return null;
@@ -293,44 +313,53 @@ export function registerLogin(d) {
 
   route('POST', '/api/invites', async ({ me, ctx, req, base }) => {
     requireHuman(me);
-    await requireAdmin(ctx, me, '邀請新成員');
+    await access.check(ctx, me, 'invite', 'workspace', { what: '邀請新成員' });
     const body = await readJson(req);
     const name = validateName(body.name);
-    await assertNameFree(name);
+    // 已移出工作區的人（帳號沒停用）：邀請他用原本的帳號回來；其他人在用的名字不能邀請
+    const taken = await db.get('SELECT id, kind, status, workspace_status FROM participants WHERE name = ?', name);
+    const rejoin = taken && taken.kind === 'human' && taken.status === 'active' && taken.workspace_status === 'removed' ? taken.id : null;
+    if (!rejoin) await assertNameFree(name);
     const now = Date.now();
-    const dup = await db.get('SELECT id FROM invites WHERE name = ? COLLATE NOCASE AND participant_id IS NULL AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?', name, now);
+    const dup = rejoin
+      ? await db.get('SELECT id FROM invites WHERE participant_id = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?', rejoin, now)
+      : await db.get('SELECT id FROM invites WHERE name = ? COLLATE NOCASE AND participant_id IS NULL AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?', name, now);
     if (dup) throw new ApiError(409, 'INVITE_EXISTS', `已經有給「${name}」的有效邀請，可以在「邀請」清單重新產生`);
-    const projects = readInviteProjects(body.projects);
+    const { projects, roles: projRoles, titles } = readInviteProjects(body.projects);
     const ttlMs = readTtl(body.ttl);
-    // roles＝{ 專案: 角色 }（勾的每個專案各一個）；舊的 role 字串照舊收
-    let role;
+    // 職稱：projects 裡的 title，或舊的 roles＝{ 專案: 職稱 }；舊的 role 字串照舊收（每個勾的專案都用它）
     if (body.roles && typeof body.roles === 'object' && !Array.isArray(body.roles)) {
-      const r = {};
-      for (const [k, v] of Object.entries(body.roles)) { if (!projects.includes(k)) throw invalid(`「${nameOf(k)}」沒有勾選，不能設角色`); const x = readRole(v); if (x) r[k] = x; }
-      role = Object.keys(r).length ? JSON.stringify(r) : '';
-    } else {
-      role = String(body.role ?? '').trim();
-      if (role.length > 30) throw invalid('角色最多 30 字');
+      for (const [k, v] of Object.entries(body.roles)) { if (!projects.includes(k)) throw invalid(`「${nameOf(k)}」沒有勾選，不能設角色`); const x = readRole(v); if (x) titles[k] = x; }
     }
+    let role = String(body.role ?? '').trim();
+    if (role.length > 30) throw invalid('角色最多 30 字');
+    // 舊的 readOnly＝[專案]：那些專案是唯讀成員
     if (Array.isArray(body.readOnly) && body.readOnly.length) {
       const ro = [...new Set(body.readOnly.map(String))];
       const out = ro.filter(x => !projects.includes(x));
       if (out.length) throw invalid(`唯讀的專案要先勾選：${out.map(nameOf).join('、')}`);
-      role = JSON.stringify({ ...(rolesOf(role) || {}), __ro: ro });
+      for (const pj of ro) if (projRoles[pj] !== PROJECT_ROLE.ADMIN) projRoles[pj] = PROJECT_ROLE.VIEWER;
+    }
+    const ro = projects.filter(pj => projRoles[pj] === PROJECT_ROLE.VIEWER), pa = projects.filter(pj => projRoles[pj] === PROJECT_ROLE.ADMIN);
+    if (Object.keys(titles).length || ro.length || pa.length || rejoin) {
+      const t = Object.keys(titles).length || !role ? titles : Object.fromEntries(projects.map(pj => [pj, role.slice(0, 10)]));
+      role = JSON.stringify({ ...t, ...(ro.length ? { __ro: ro } : {}), ...(pa.length ? { __admin: pa } : {}), ...(rejoin ? { __rejoin: 1 } : {}) });
     }
     const id = randId('inv'), token = newToken();
     await db.run('INSERT INTO invites (id, token_hash, name, role, projects, participant_id, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)',
-      id, await sha256(token), name, role, projects.join(','), null, me.id, now, now + ttlMs);
+      id, await sha256(token), name, role, projects.join(','), rejoin, me.id, now, now + ttlMs);
     return { __status: 201, ...(await inviteOut(ctx, base, id, token)) };
   });
-  route('GET', '/api/invites', async ({ me, ctx }) => {
-    await requireAdmin(ctx, me, '查看邀請');
+  // 邀請清單（最近 7 天）；?status=pending 只回待接受的：還有效、要加入工作區的（new、rejoin；不含重設登入）
+  route('GET', '/api/invites', async ({ me, ctx, url }) => {
+    await access.check(ctx, me, 'invite', 'workspace', { what: '查看邀請' });
     const rows = await db.all('SELECT * FROM invites WHERE created_at > ? ORDER BY created_at DESC LIMIT 100', Date.now() - INVITE_LIST_MS);
     const people = await peopleMap(ctx);
-    return { items: rows.map(iv => inviteView(iv, people)) };
+    const pending = url.searchParams.get('status') === 'pending';
+    return { items: rows.filter(iv => !pending || (inviteStatus(iv) === '有效' && inviteKind(iv) !== 'reset')).map(iv => inviteView(iv, people)) };
   });
   async function myInvite(ctx, me, id) {
-    await requireAdmin(ctx, me, '管理邀請');
+    await access.check(ctx, me, 'invite', 'workspace', { what: '管理邀請' });
     const iv = await db.get('SELECT * FROM invites WHERE id = ?', id);
     if (!iv) throw new ApiError(404, 'NOT_FOUND', '找不到這個邀請');
     return iv;
@@ -341,9 +370,15 @@ export function registerLogin(d) {
     const prevTtl = Object.values(INVITE_TTLS).find(v => v === iv.expires_at - iv.created_at) || INVITE_TTLS[INVITE_TTL_DEFAULT];
     const ttlMs = readTtl((await readJson(req).catch(() => ({}))).ttl, prevTtl);
     if (iv.used_at) throw new ApiError(400, 'INVITE_USED', `${iv.name} 已經用這個邀請加入，不需要重發`);
-    if (!iv.participant_id) {
-      const taken = await db.get('SELECT id FROM participants WHERE name = ?', iv.name);
-      if (taken) throw new ApiError(409, 'NAME_TAKEN', `「${iv.name}」已經是成員了，不需要邀請`);
+    const kind = inviteKind(iv);
+    // 重設登入的連結重發＝再重設一次：跟第一次發一樣不能動對方的上層管理權（平台管理員的連結要平台管理員才能重發）
+    if (kind === 'reset') {
+      const t = (await peopleMap(ctx)).get(iv.participant_id);
+      if (t) await access.check(ctx, me, 'reset_login', { target: t }, { what: '重設成員登入' });
+    }
+    if (kind !== 'reset') {
+      const taken = await db.get('SELECT id, workspace_status FROM participants WHERE name = ?', iv.name);
+      if (taken && !(kind === 'rejoin' && taken.id === iv.participant_id && taken.workspace_status === 'removed')) throw new ApiError(409, 'NAME_TAKEN', `「${iv.name}」已經是成員了，不需要邀請`);
     }
     return inviteOut(ctx, base, iv.id, await newInviteToken(iv.id, ttlMs));
   });
@@ -362,18 +397,19 @@ export function registerLogin(d) {
     const people = await peopleMap(ctx);
     const admin = adminOf(people);
     if (!iv) { failed(req); return { valid: false }; } // 失效連結不回管理員姓名
-    return { valid: true, kind: iv.participant_id ? 'reset' : 'new', inviterName: people.get(iv.created_by)?.name || admin?.name || null,
+    return { valid: true, kind: inviteKind(iv), inviterName: people.get(iv.created_by)?.name || admin?.name || null,
       groupName: await groupName(), name: iv.participant_id ? people.get(iv.participant_id)?.name ?? iv.name : iv.name,
-      role: roleText(iv.role), projects: listOf(iv.projects).map(id => ({ id, name: nameOf(id) })), expiresAt: iso(iv.expires_at) };
+      role: roleText(iv.role), projects: listOf(iv.projects).map(id => ({ id, name: nameOf(id) })), presets: presetsOf(iv).map(x => ({ ...x, name: nameOf(x.project) })), expiresAt: iso(iv.expires_at) };
   }, { open: true });
 
   // 管理員「重設登入」：作廢舊登入碼、登出該人所有裝置，產生給他的新邀請連結
   route('POST', '/api/participants/:id/reset-login', async ({ me, ctx, params, base, req }) => {
     requireHuman(me);
-    await requireAdmin(ctx, me, '重設成員登入');
+    await access.check(ctx, me, 'reset_login', 'workspace', { what: '重設成員登入' });
     const t = (await peopleMap(ctx)).get(params.id);
     if (!t || t.kind !== 'human' || t.status !== 'active') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員');
     if (t.id === me.id) throw new ApiError(400, 'RESET_SELF', '要換自己的登入碼，請到「API 資訊與登入碼」按「換一組登入碼」');
+    await access.check(ctx, me, 'reset_login', { target: t }); // 不能動上層管理權：重設平台管理員的登入要是平台管理員
     const ttlMs = readTtl((await readJson(req).catch(() => ({}))).ttl);
     const now = Date.now(), id = randId('inv'), token = newToken();
     invalidatePeople();
@@ -385,7 +421,7 @@ export function registerLogin(d) {
       ['DELETE FROM credentials WHERE participant_id = ?', [t.id]], // 密碼一起清掉，用新邀請連結重設
       ['UPDATE invites SET revoked_at = ? WHERE participant_id = ? AND used_at IS NULL AND revoked_at IS NULL', [now, t.id]],
       ['INSERT INTO invites (id, token_hash, name, role, projects, participant_id, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?)',
-        [id, await sha256(token), t.name, t.role || '', String(t.projects || ''), t.id, me.id, now, now + ttlMs]],
+        [id, await sha256(token), t.name, t.role || '', projectListOf(t).join(','), t.id, me.id, now, now + ttlMs]],
     ]);
     return inviteOut({}, base, id, token);
   });
@@ -444,24 +480,26 @@ export function registerLogin(d) {
   // ---------- 身分來源（可替換的一層） ----------
   const gone = (msg = '這個邀請連結已失效') => new ApiError(400, 'INVITE_INVALID', msg);
   const PROVIDERS = {
-    // 邀請連結：新成員加入，或「重設登入」後回到原本的身分
+    // 邀請連結：新成員加入（順便建帳號）、已有帳號的人回到工作區（要先用原本的帳號登入），或「重設登入」後回到原本的身分
     invite: {
       label: '邀請連結',
-      async verify(body, ctx) {
+      async verify(body, ctx, req) {
         const iv = await validInvite(body.token);
         if (!iv) return null;
         const now = Date.now();
         let pid = iv.participant_id, name = iv.name, created = false;
+        const rejoin = inviteKind(iv) === 'rejoin';
         if (!pid) {
           name = validateName(body.name ?? iv.name);
           await assertNameFree(name);
         } else {
           const t = await db.get("SELECT * FROM participants WHERE id = ? AND status = 'active'", pid);
-          if (!t) throw gone();
+          if (!t || (rejoin && t.workspace_status !== 'removed')) throw gone(); // 重新加入的連結只給還在「已移出」的人用
           name = t.name;
+          if (rejoin) await signInAs(t, body, req); // 已有帳號：連結本身不讓人登入，要用原本的帳號登入後才接受
         }
-        // 選填帳號密碼；三格都空＝不設，填了就要都對（在佔用邀請前檢查，錯了連結還能用）
-        const any = [body.username, body.password, body.passwordAgain].some(x => x !== undefined && x !== null && x !== '');
+        // 選填帳號密碼（新帳號、重設登入）；三格都空＝不設，填了就要都對（在佔用邀請前檢查，錯了連結還能用）
+        const any = !rejoin && [body.username, body.password, body.passwordAgain].some(x => x !== undefined && x !== null && x !== '');
         let cred = null;
         if (any) {
           cred = await newCred(body, pid);
@@ -475,16 +513,26 @@ export function registerLogin(d) {
           invalidatePeople();
           const roles = rolesOf(iv.role);
           try {
-            await db.run(`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, projects)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?)`, pid, 'human', name, roles ? Object.values(roles)[0] || '' : iv.role || '', await newCode(), await tokenKey(newToken()), 0, ts, ts, now, listOf(iv.projects).join(','));
+            // 新的工作區成員（帳號一起建），依邀請預設的專案與專案角色加入；同一批，一起成功或一起失敗
+            await db.batch([[`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?)`, [pid, 'human', name, roles ? Object.values(roles)[0] || '' : iv.role || '', await newCode(), await tokenKey(newToken()), 0, ts, ts, now]],
+            ...enterWorkspaceStmts(pid, ts), ...presetsOf(iv).flatMap(x => addMemberStmts(pid, x.project, x.role))]);
           } catch (e) {
             // 檢查名稱到建人之間，名稱被別人用掉（UNIQUE 失敗）→ 把邀請還回去，換個名稱就能重試（原本邀請已用掉、人沒建、回 500）
             await db.run('UPDATE invites SET used_at = NULL WHERE id = ? AND used_at = ? AND used_by IS NULL', iv.id, now);
             await assertNameFree(name);
             throw e;
           }
+          await loadMembers(true);
           await setInitialRoles(pid, roles || Object.fromEntries(listOf(iv.projects).map(pj => [pj, iv.role || ''])));
-          if (roOf(iv.role).length) await setInitialReadOnly(pid, roOf(iv.role));
+          created = true;
+        } else if (rejoin) {
+          // 已移出的人用原本的帳號回到工作區（工作區成員），依邀請預設的專案與專案角色加入；帳密、歷史紀錄照舊，他的 AI 維持停用
+          invalidatePeople();
+          await db.batch([["UPDATE participants SET workspace_status = 'active', workspace_role = 'member', updated_at = ? WHERE id = ? AND workspace_status = 'removed'", [nowIso(), pid]],
+            ...presetsOf(iv).flatMap(x => addMemberStmts(pid, x.project, x.role))]);
+          await loadMembers(true);
+          await setInitialRoles(pid, rolesOf(iv.role) || {});
           created = true;
         }
         await db.run('UPDATE invites SET used_by = ? WHERE id = ?', pid, iv.id);
@@ -549,7 +597,7 @@ export function registerLogin(d) {
         return p;
       },
     },
-    // 主機救援連結：一次性、15 分鐘、只給管理員
+    // 主機救援連結：一次性、15 分鐘、只給平台管理員（產生後才被降級或停用的也不放行）
     rescue: {
       label: '主機救援連結',
       device: RESCUE_DEVICE,
@@ -559,14 +607,27 @@ export function registerLogin(d) {
         const now = Date.now();
         const row = await db.get('SELECT * FROM rescue_links WHERE token_hash = ?', await sha256(body.token));
         if (!row || row.used_at || row.expires_at <= now) return null;
-        const admin = adminOf(await peopleMap(ctx));
-        if (!admin || admin.id !== row.participant_id) return null;
+        const v = await access.load(ctx); // 救援連結只給平台管理員
+        if (v.roleIn(v.people.get(row.participant_id), 'platform') !== ACCESS_ROLE.PLATFORM_ADMIN) return null;
         const r = await db.run('UPDATE rescue_links SET used_at = ?, used_device = ? WHERE id = ? AND used_at IS NULL', now, deviceLabelAs(RESCUE_DEVICE, req.headers.get('user-agent') || ''), row.id);
         if (!r.changes) return null;
         return db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human' AND status = 'active'", row.participant_id);
       },
     },
   };
+  // 接受給已有帳號的人的邀請：body 帶原本的帳號密碼（username、password）或登入碼（code），登入的要是邀請的那個帳號。
+  // 沒帶、不對、是別人的帳號都不佔用邀請（連結照樣能用）
+  async function signInAs(t, body, req) {
+    const has = x => x !== undefined && x !== null && x !== '';
+    if (!has(body.code) && !has(body.username) && !has(body.password)) {
+      throw new ApiError(400, 'INVITE_LOGIN_REQUIRED', `${t.name} 已經有帳號：請用原本的帳號密碼或登入碼登入，才能接受這個邀請回到工作區。`);
+    }
+    const p = has(body.code) ? await PROVIDERS.code.verify({ code: body.code }) : await PROVIDERS.password.verify({ username: body.username, password: body.password });
+    if (!p || p.id !== t.id) {
+      failed(req);
+      throw new ApiError(400, 'LOGIN_FAILED', '帳號密碼或登入碼不對，或不是這個邀請的帳號。', { captchaRequired: needCaptcha(req) });
+    }
+  }
   const FAIL_MSG = {
     password: '帳號或密碼不對。',
     rescue: '這個救援連結已失效（15 分鐘、只能用一次）。請聯絡管理員。',
@@ -582,6 +643,8 @@ export function registerLogin(d) {
     if (needCaptcha(req)) await captcha.verify(body.turnstileToken, req);
     const p = await prov.verify(body, ctx, req);
     if (!p) { failed(req); throw new ApiError(400, params.method === 'invite' ? 'INVITE_INVALID' : params.method === 'rescue' ? 'RESCUE_INVALID' : 'LOGIN_FAILED', FAIL_MSG[params.method], { captchaRequired: needCaptcha(req) }); }
+    // 已移出工作區：帳號還在（沒停用），但進不了這個工作區（平台管理員除外）
+    if (access.shutOut(p)) throw new ApiError(403, 'NOT_WORKSPACE_MEMBER', '你已不是這個工作區的成員，要回來請找工作區管理員重新邀請你。');
     if (params.method === 'rescue') await signOutOthers(p.id, null); // 救援＝帳號可能被別人拿走：先把別人的登入全部收掉
     const label = prov.device ? deviceLabelAs(prov.device, req.headers.get('user-agent') || '') : undefined;
     const token = await issueDevice(p.id, req, label);

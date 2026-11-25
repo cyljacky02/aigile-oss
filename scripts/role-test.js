@@ -7,6 +7,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
+import { makeProjectAdmin } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-role-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -58,7 +59,7 @@ try {
   r = await call(chen.token, `/api/dm?aiId=${pgC.participantId}`);
   assert.equal(r.body.items.find(x => x.roleProposal?.proposalId === PC).roleProposal.canCreate, false, '一般成員看到不能建');
   assert.equal((await call(chen.token, `/api/role-proposals/${PC}/create`, 'POST', {})).status, 403, '一般成員不能建');
-  await call(boss.token, '/api/members/matrix', 'PUT', { changes: [{ id: Cn, leaderOf: ['預設專案'] }] });
+  await makeProjectAdmin(call, boss.token, Cn, ['預設專案']);
   assert.equal((await call(chen.token, `/api/role-proposals/${PC}/create`, 'POST', { role: '營養顧問' })).status, 200, '變成 leader 就能建');
 
   // 管理員建立（可以改字）
@@ -96,7 +97,7 @@ try {
   await call(boss.token, `/api/my-ais/${nutAi.participantId}`, 'PATCH', { roleKey: 'PG', role: '程式開發' });
   assert.equal((await call(boss.token, '/api/projects/預設專案/roles/NUT', 'DELETE')).status, 200, '沒人用就能刪');
   const ev = (await call(boss.token, '/api/projects/預設專案/events?limit=10')).body.items || [];
-  assert.ok(ev.some(e => /建立本專案角色「營養師」/.test(e.text)) && ev.some(e => /刪除本專案角色/.test(e.text)), '記在專案異動紀錄');
+  assert.ok(ev.some(e => /建立 AI 職務「營養師」/.test(e.text)) && ev.some(e => /刪除 AI 職務/.test(e.text)), '記在專案異動紀錄');
   // 短版接入：一次性連結（15 分鐘、只能讀一次、重產讓舊的失效、只有所屬人類能產）
   const raw = async p => { const res = await app(new Request(BASE + p), BASE); return { status: res.status, text: await res.text(), cc: res.headers.get('cache-control') }; };
   assert.equal((await call(chen.token, `/api/my-ais/${pgL.participantId}/onboarding-link`, 'POST', {})).status, 404, '別人不能產');

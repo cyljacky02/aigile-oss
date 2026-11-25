@@ -1,7 +1,7 @@
 // 新站第一次流程端到端（真的瀏覽器，正式啟動：不開測試模式、全新資料夾，有預設管理員）
 // A. admin/admin 登入 → 改帳密（亂填看到錯誤）→ 引導四步全部照預設 → 主畫面；預填值都合法
 // B. 引導每步亂填：看到看得懂的錯誤、打的字留著、改正後能繼續；自己註冊第二個人（帳密）
-// C. 設了群組密碼（ROOM_CODE）時註冊：錯的被擋、對的能進
+// C. 設了房間碼（ROOM_CODE）時註冊：錯的被擋、對的能進
 // 用法：node scripts/first-run-e2e-ui-test.js（找不到 Chrome／Edge 就略過）
 import assert from 'node:assert';
 import { startKit, findBrowser, until, sleep } from './browser-kit.js';
@@ -41,7 +41,7 @@ try {
   {
     const h = await site('e2ea');
     await h.fresh();
-    assert.ok(await h.visible('#self-join'), '新站預設開放自己註冊');
+    assert.ok(await h.visible('#self-join'), '新站預設開放自行註冊');
     await h.type('#pwd-form [name=username]', 'admin'); await h.type('#pwd-form [name=password]', 'admin');
     await h.click('#pwd-form [type=submit]');
     await until(() => h.visible('#mc-form'), 15000, '先改帳密');
@@ -93,8 +93,8 @@ try {
     // 第 1 步：空白
     await h.type('#sw-group', '   ');
     await h.click('[data-sw="group"]');
-    assert.match(await h.swErr(), /請輸入群組名稱/);
-    assert.match(await h.fieldErr('#sw-group'), /請輸入群組名稱/, '錯誤在欄位下、紅框');
+    assert.match(await h.swErr(), /請輸入工作區名稱/);
+    assert.match(await h.fieldErr('#sw-group'), /請輸入工作區名稱/, '錯誤在欄位下、紅框');
     await h.type('#sw-group', '我們的團隊');
     await h.click('[data-sw="group"]');
     await until(() => h.js("!!document.querySelector('#sw-pj-name')"), 8000, '改正後到第 2 步');
@@ -159,22 +159,22 @@ try {
     await until(h.loggedIn, 15000, '第二人用帳密登入');
   }
 
-  // ---------- C. 群組密碼（ROOM_CODE） ----------
+  // ---------- C. 房間碼（ROOM_CODE） ----------
   {
     const h = await site('e2ec', { ROOM_CODE: 'garden-77' });
     await h.fresh();
     await h.click('#self-join');
-    await until(() => h.visible('#room-code-field'), 15000, '註冊表單有群組密碼欄');
+    await until(() => h.visible('#room-code-field'), 15000, '註冊表單有房間碼欄');
     await h.type('#join-form [name=name]', '張美玲'); await h.type('#jn-user', 'mei.ling'); await h.type('#jn-pwd', 'pass-word-4'); await h.type('#jn-again', 'pass-word-4');
-    await h.click('#join-submit'); // 沒填群組密碼：送出前就擋，不說「錯誤」
-    await until(async () => (await h.text('#join-error')) === '請輸入群組密碼', 5000, '沒填群組密碼先擋');
+    await h.click('#join-submit'); // 沒填房間碼：送出前就擋，不說「錯誤」
+    await until(async () => (await h.text('#join-error')) === '請輸入房間碼', 5000, '沒填房間碼先擋');
     await h.type('#join-form [name=roomCode]', 'wrong-code');
     await h.click('#join-submit');
-    await until(async () => /群組密碼錯誤/.test(await h.text('#join-error')), 8000, '群組密碼錯被擋');
+    await until(async () => /房間碼錯誤/.test(await h.text('#join-error')), 8000, '房間碼錯被擋');
     assert.equal(await h.val('#jn-user'), 'mei.ling', '打的字留著');
     await h.type('#join-form [name=roomCode]', 'garden-77');
     await h.click('#join-submit');
-    await until(h.loggedIn, 15000, '群組密碼對就能註冊');
+    await until(h.loggedIn, 15000, '房間碼對就能註冊');
   }
   console.log('first-run-e2e-ui-test：全部通過');
 } catch (e) {

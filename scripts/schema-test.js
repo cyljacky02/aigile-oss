@@ -15,10 +15,13 @@ try {
   const miss = [];
   const dropped = new Set();
   for (const f of fs.readdirSync(new URL('migrations/', root)).filter(f => f.endsWith('.sql'))) for (const [, n] of fs.readFileSync(new URL('migrations/' + f, root), 'utf8').replace(/--.*$/gm, '').matchAll(/DROP INDEX\s+(?:IF EXISTS\s+)?(\w+)/gi)) dropped.add(n);
+  // 之後的升級拿掉的欄位（例：009 拿掉 001 加的 is_admin）不必在 schema.sql
+  const droppedCols = new Set();
+  for (const f of fs.readdirSync(new URL('migrations/', root)).filter(f => f.endsWith('.sql'))) for (const [, t, c] of fs.readFileSync(new URL('migrations/' + f, root), 'utf8').replace(/--.*$/gm, '').matchAll(/ALTER TABLE\s+(\w+)\s+DROP COLUMN\s+(\w+)/gi)) droppedCols.add(`${t}.${c}`);
   for (const f of fs.readdirSync(new URL('migrations/', root)).filter(f => f.endsWith('.sql')).sort()) {
     const sql = fs.readFileSync(new URL('migrations/' + f, root), 'utf8').replace(/--.*$/gm, '');
     for (const [, t, c] of sql.matchAll(/ALTER TABLE\s+(\w+)\s+ADD COLUMN\s+(\w+)/gi)) {
-      if (!cols(t).has(c)) miss.push(`${f}: ${t}.${c}`);
+      if (!cols(t).has(c) && !droppedCols.has(`${t}.${c}`)) miss.push(`${f}: ${t}.${c}`);
     }
     for (const [, t] of sql.matchAll(/CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(\w+)/gi)) {
       if (!cols(t).size) miss.push(`${f}: 表 ${t}`);

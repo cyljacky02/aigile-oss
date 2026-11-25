@@ -36,14 +36,14 @@ docker compose up -d     # http://localhost:3000, username admin, password admin
 
 > ⚠ **Set `ADMIN_PASSWORD` before putting it on the internet** (put `ADMIN_PASSWORD=your-password` in a `.env` file in this folder). Without it the admin login is admin / admin, and **whoever opens the URL first becomes the admin**. For a trial on your own computer or office network you can skip it, but change the username and password on first login (the app forces you to).
 >
-> **A public deployment also needs:** an HTTPS reverse proxy in front (Caddy, nginx, Cloudflare Tunnel…) with `TRUST_PROXY=1` and `APP_URL=https://your-site`; with open sign-up, set a group password or turn on human verification (see "How people join" and "Human verification"). Full checklist: [SECURITY.md](SECURITY.md).
+> **A public deployment also needs:** an HTTPS reverse proxy in front (Caddy, nginx, Cloudflare Tunnel…) with `TRUST_PROXY=1` and `APP_URL=https://your-site`; with open sign-up, set a room code or turn on human verification (see "How people join" and "Human verification"). Full checklist: [SECURITY.md](SECURITY.md).
 
 First visit: log in with **admin / admin** → you are asked to change the username and password → the first-time setup guide opens (group name, first project, invite members, first AI; every step can be skipped).
 
 <details>
 <summary><b>Without cloning: run the published image</b></summary>
 
-Every release has a ready-made image at `ghcr.io/alansid/aigile-oss` (amd64 and arm64; `latest` is the newest release, or pin a version such as `1.0.7`). Always mount a volume at `/data`, otherwise your data is gone when the container is removed.
+Every release has a ready-made image at `ghcr.io/alansid/aigile-oss` (amd64 and arm64; `latest` is the newest release, or pin a version such as `1.1.0`). Always mount a volume at `/data`, otherwise your data is gone when the container is removed.
 
 With `docker run`:
 
@@ -123,7 +123,7 @@ Full protocol: [docs/ai-integration.md](docs/ai-integration.md) (Chinese). Every
 | <img alt="Team status" src="docs/images/readme/team.en.png"><br>**Team status**: who is online and which card each AI is on; assignments unread for 20+ minutes are listed as "Not responded" | <img alt="Skill library" src="docs/images/readme/skills.en.png"><br>**Skill library**: upload skills or skill packs and choose which roles or AIs get them |
 | <img alt="Mobile" src="docs/images/readme/mobile.en.png"><br>**Works on your phone**: messages, "Needs your attention", one-click answers | <img alt="First-time setup" src="docs/images/readme/wizard.en.png"><br>**First-time setup**: group name, project, invite members, first AI — four steps |
 
-Want to see it in use first? After logging in, click "Load demo data" in the setup guide or under "Admin settings › System & backup", and clear it with one click when you're done.
+Want to see it in use first? After logging in, click "Load demo data" in the setup guide or under "Admin settings › Platform settings", and clear it with one click when you're done.
 
 <details>
 <summary><b>All features</b></summary>
@@ -131,13 +131,14 @@ Want to see it in use first? After logging in, click "Load demo data" in the set
 | Feature | Description |
 |---|---|
 | Group messages | `@mentions`, quoted replies, option buttons for `[需確認]` questions, isolated per project |
-| Projects | Multiple projects with their own members and project leads; card numbers per project (e.g. `MAIN-12`) |
+| Projects | Multiple projects, each with its project admins, project members and viewers; open, approval or private visibility; card numbers per project (e.g. `MAIN-12`) |
+| Members & access | Several platform admins and workspace admins, the last one protected; a member directory of everyone and every AI in the workspace; removing someone from the workspace is separate from disabling their account |
 | Cards | Work cards, decision cards, handover, verification, send back; an AI can only change cards it owns, otherwise it suggests |
 | Needs your attention | Everything that needs you, awaits your verification or your decision, in one place |
 | Team status | Online state, current work and token expiry of every member, plus how many times each AI was woken today (flagged above 15); assignments unread for 20+ minutes are flagged "no response yet" |
 | My AIs | 15 role templates pre-fill the six setup questions; copy the onboarding text for each tool, reissue tokens, standing permissions (deploys) |
-| Skills | Upload skills (`SKILL.md`) or skill packs (Claude Code plugins), target roles or specific AIs; packs with scripts need approval and the owner's consent. Admins and project leads can select **+ Add skill** to choose a project, preview one of the seven built-in bilingual templates, and apply it. When a template changes, the app prompts users to review the update before applying it to the project skill |
-| Docs | Message attachments (deleted after 24 hours by default; the admin can change this in Admin settings › Audit & storage) and a long-term project docs area (stored in R2) |
+| Skills | Upload skills (`SKILL.md`) or skill packs (Claude Code plugins), target roles or specific AIs; packs with scripts need approval and the owner's consent. Workspace admins and project admins can select **+ Add skill** to choose a project, preview one of the seven built-in bilingual templates, and apply it. When a template changes, the app prompts users to review the update before applying it to the project skill |
+| Docs | Message attachments (deleted after 24 hours by default; a platform admin sets the default in Admin settings › Platform settings, and a workspace admin can override it in Workspace settings) and a long-term project docs area (stored in R2) |
 | Knowledge base | You choose which docs go in: their text is extracted so people and AIs can search the originals, and a curator AI turns them into knowledge pages with sources. See "Knowledge base" below |
 | Direct messages | Humans can DM their own AIs |
 | Demo data | Load a fictional demo project (cards, human–AI conversation, a decision card) in one click, and clear it in one click without touching real data |
@@ -155,14 +156,14 @@ Want to see it in use first? After logging in, click "Load demo data" in the set
 
 The knowledge base holds only the docs you put in it. People use "Docs › 📚 Knowledge base"; AIs use the MCP tools. Regular project docs are stored as originals only: no text extraction, no organizing, not searchable; an AI that needs one downloads the original with `aigile_doc_read` and reads it itself.
 
-**First-time setup** is in help chapter 6 ("? Help" at the top right): add an AI to do the organizing (PO or BA works best) → apply the "📚 Knowledge base curation" template in the skill library and send it to that AI; its owner clicks "Sync" until it shows "Installed" → pick it under the project ⚙ › "Knowledge base curator AI" → a leader clicks "Upload to knowledge base" on the knowledge base tab, or selects project docs and clicks "Add to knowledge base" → answer the [需確認] questions it posts → spot-check a few pages and send back what's wrong. Without the skill the AI still organizes but writes far fewer pages; the setup window shows a yellow warning.
+**First-time setup** is in help chapter 6 ("? Help" at the top right): add an AI to do the organizing (PO or BA works best) → apply the "📚 Knowledge base curation" template in the skill library and send it to that AI; its owner clicks "Sync" until it shows "Installed" → pick it under the project ⚙ › "Knowledge base curator AI" → a project admin clicks "Upload to knowledge base" on the knowledge base tab, or selects project docs and clicks "Add to knowledge base" → answer the [需確認] questions it posts → spot-check a few pages and send back what's wrong. Without the skill the AI still organizes but writes far fewer pages; the setup window shows a yellow warning.
 
 
-- **Putting docs in**: only leaders and the admin can add docs to or remove them from the knowledge base; other members see the buttons but can't use them. Removing a doc deletes its extracted text (the original stays), and pages that cite it are marked "Source removed from the knowledge base" so a leader can decide whether to delete them.
+- **Putting docs in**: only project admins (and workspace admins) can add docs to or remove them from the knowledge base; other members see the buttons but can't use them. Removing a doc deletes its extracted text (the original stays), and pages that cite it are marked "Source removed from the knowledge base" so a project admin can decide whether to delete them.
 - **Text extraction**: md, txt, docx, pptx (including speaker notes) and xlsx files in the knowledge base are extracted in the background and split by heading, so the original text is searchable. PDFs and images are kept as original files only; the curator AI downloads and reads them itself. Docs that look like they contain a secret (token, private key, password in a connection string) are not indexed.
 - **Knowledge pages**: pick a curator AI under the project ⚙ menu › "Knowledge base curator AI". Docs put in the knowledge base are queued on an organizing card for it (up to 10 docs per card). It writes one "doc summary" page per doc and "topic" pages for subjects spread across docs, citing a source for each point.
-- **No approval step**: pages take effect as soon as they're written. When two docs conflict, the curator AI posts a [需確認] to the leader and the page shows that the leader was asked. Leaders can send pages back or delete them. When a source doc is replaced or deleted, the page is marked "May be outdated"; "Ask AI to update" opens an update card.
-- **AI tools**: `aigile_kb_read` (index, read a page), `aigile_kb_search` (search pages and original text), `aigile_doc_read` (read a doc section by section; original-only files and docs outside the knowledge base are downloaded locally), `aigile_doc_upload` (`kb=true` puts the doc in the knowledge base, leaders and the admin only; by default it's a regular project doc), `aigile_kb_write` (the curator AI writes pages). Apply the "📚 Knowledge base curation" template in the skill library for the curator AI to keep pages consistent.
+- **No approval step**: pages take effect as soon as they're written. When two docs conflict, the curator AI posts a [需確認] to the project admin and the page shows that they were asked. Project admins can send pages back or delete them. When a source doc is replaced or deleted, the page is marked "May be outdated"; "Ask AI to update" opens an update card.
+- **AI tools**: `aigile_kb_read` (index, read a page), `aigile_kb_search` (search pages and original text), `aigile_doc_read` (read a doc section by section; original-only files and docs outside the knowledge base are downloaded locally), `aigile_doc_upload` (`kb=true` puts the doc in the knowledge base, project admins only; by default it's a regular project doc), `aigile_kb_write` (the curator AI writes pages). Apply the "📚 Knowledge base curation" template in the skill library for the curator AI to keep pages consistent.
 - **Limits**: search has no rate limit. A project with more than `KB_MAX_PROJECT_CHUNKS` sections (default 20,000) can't be searched; delete docs you no longer need or raise the limit. `KB_MAX_TOTAL_CHARS` (default 50 million characters) caps extracted text for the whole site; after that, new docs are stored as originals only. Up to 200,000 characters are extracted per doc.
 - Search matches words exactly (it is not semantic search). The "Common ways to ask" section on knowledge pages lets other wording find them.
 
@@ -209,17 +210,19 @@ First login and setup are the same as above.
 <details>
 <summary><b>Show details</b></summary>
 
-- **Sign up**: open the site, click "First time here? Sign up" on the login page, enter a display name, username and password, then log in with that username and password from now on. New members are regular members (the admin is the default account above). The entry is hidden when open sign-up is off.
-- **Request to join projects**: new members have no projects yet; the home screen lists projects open for requests. Click "Request to join", add a line about what you want to do, and send. The project lead (or the admin if there is none) is notified and approves or declines on "Needs your attention" or in "Member management"; after approval the requester's page loads the project within a minute.
-- **Projects accept requests by default**: the default project, projects created in setup and later projects are open by default. To stop requests, a project lead or admin turns off "New members can request to join this project" in "Member management" (or setup step 3); then only the admin can add people. The demo project never accepts requests.
-- **Invite links**: admins can also send one-time invite links (valid 24 hours by default, adjustable) with projects and role preset; invited people also set a username and password when they open the link.
+- **Sign up**: open the site, click "First time here? Sign up" on the login page, enter a display name, username and password, then log in with that username and password from now on. New members are workspace members with no projects yet (the admin is the default account above; only when the platform has no platform admin yet does the first person to sign up become platform admin and workspace admin). The entry is hidden when open sign-up is off.
+- **Join projects**: new members have no projects yet; the home screen lists the projects they can see. For an **open** project, click "Join" to become a project member right away. For an **approval** project, click "Request to join", add a line about what you want to do, and send; the project's project admins (or the workspace admins if there are none) are notified and approve or decline on "Needs your attention" or in "Member management", and after approval the requester's page loads the project within a minute. **Private** projects aren't listed; only a project admin can add people. Project admins switch between the three under the project ⚙ › "Project visibility".
+- **Projects default to approval with requests open**: the default project, projects created in setup and later projects all start that way. To stop requests, a project admin turns off "New members can request to join this project" in "Member management" (or setup step 3); then only project admins can add people. The demo project never accepts requests.
+- **Member directory** ("📇 Member directory" in the avatar menu, `/roster`): everyone sees all the people and AIs in the workspace, including people who aren't in any project yet; each person's projects show only the ones you can see. Workspace admins promote and demote workspace admins and remove people from the workspace here, and also see removed people and pending invites; platform admins also promote and demote platform admins, disable and restore accounts, and see every account. Each level can have several admins; to hand over, promote the other person first and then demote yourself. The last admin's demote button is disabled.
+- **Project admins** add workspace members to their projects in "Member management", make them project members or viewers, and remove them; they also rename, archive and set the repository, direct messages, board statuses, AI duties, join requests and visibility. Workspace admins have the same rights on every project without joining it.
+- **Invite links**: workspace admins can also send one-time invite links (valid 24 hours by default, adjustable). Each checked project gets a preset project role (project member, viewer or project admin) and title, joined on accept; new people set a username and password when they open the link, which creates their account. Project admins can't invite. People removed from the workspace can be invited back: they open the link and sign in with their original password or login code to return, without setting new credentials.
 - **Login**: the login page defaults to username and password; on a new device you can also use "Other ways to sign in" — pair a device (6 digits generated on a signed-in device) or a login code. Usernames are 4–30 characters (letters, digits, `. _ -`), passwords at least 8; `admin` is reserved for the default admin.
-- **Set a group password for public deployments**: once set, everyone must enter it to sign up. To allow invite links only, turn off open sign-up.
-- **Change it on the admin page, no redeploy**: "Admin settings › Group settings" toggles open sign-up, sets or clears the group password and renames the group. Changes are stored in the database, take effect immediately and are recorded in the group change log. The group password is stored only as a hash; you can't see it after saving — just reset it if forgotten.
-- **Admin settings**: everything only the admin can do is under "⚙️ Admin settings" in the avatar menu (`/admin`): To do (join requests, skills awaiting approval, invites about to expire), Group settings, Projects, Invites, Accounts & recovery, Audit & storage (including attachment retention), and System & backup. On a computer it has a sidebar; on a phone it is a list you tap into. "👥 Member management" keeps only members, roles and skills; old links such as `/members?tab=projects` redirect automatically.
-- **Turn off AI tools that cannot run here**: some computers block certain CLIs. Under "Admin settings › Group settings", "Allowed AI tools" turns Claude Code, Codex, Antigravity CLI, Copilot CLI and Other on or off one by one (one setting for the whole site; at least one stays on). A tool that is off is hidden from "My AIs › Connect", and the API will not hand out its onboarding text or one-line start; AIs already connected with it keep working. Changes are recorded in the group change log.
+- **Set a room code for public deployments**: once set, everyone must enter it to sign up. To allow invite links only, turn off open sign-up.
+- **Change it on the admin page, no redeploy**: "Admin settings › Workspace settings" renames the workspace, sets who can create projects (all members or workspace admins only; whoever creates a project becomes its project admin; new installs default to all members, sites upgraded from an older version default to workspace admins only), toggles open sign-up, sets or clears the room code and changes attachment retention. Changes are stored in the database, take effect immediately and are recorded in the workspace change log. The room code is stored only as a hash; you can't see it after saving — just reset it if forgotten.
+- **Admin settings**: everything only workspace admins can do is under "⚙️ Admin settings" in the avatar menu (`/admin`): To do (join requests, skills awaiting approval, invites about to expire), Workspace settings, Projects, Invites, Accounts & recovery, Audit & storage, and Platform settings (platform admins only: updates, backup and import, the default attachment retention, demo data). Workspace settings can override the attachment retention. On a computer it has a sidebar; on a phone it is a list you tap into. "👥 Member management" keeps only project members, AI duties and skills; old links such as `/members?tab=projects` redirect automatically.
+- **Turn off AI tools that cannot run here**: some computers block certain CLIs. Under "Admin settings › Workspace settings", "AI tools that can connect" turns Claude Code, Codex, Antigravity CLI, Copilot CLI and Other on or off one by one (one setting for the whole site; at least one stays on). A tool that is off is hidden from "My AIs › Connect", and the API will not hand out its onboarding text or one-line start; AIs already connected with it keep working. Changes are recorded in the workspace change log.
 - **`OPEN_JOIN` and `ROOM_CODE` are only initial values**: they apply until changed on the admin page; after that (including clearing the password) the admin page wins, and changing the environment variables won't override it.
-- A site that already has members never creates `admin` again. Forgot your password but still signed in on one device? On that device, open "Personal settings › Account & sign-in" and click "Forgot current password?" to set a new one (all other devices are signed out). If you cannot sign in at all, members ask an admin to "Reset sign-in"; admins use `npm run admin-rescue` (below).
+- A site that already has members never creates `admin` again. Forgot your password but still signed in on one device? On that device, open "Personal settings › Account & sign-in" and click "Forgot current password?" to set a new one (all other devices are signed out). If you cannot sign in at all, members ask an admin to "Reset sign-in"; platform admins use `npm run admin-rescue` (below).
 
 </details>
 
@@ -237,7 +240,7 @@ First login and setup are the same as above.
 | `DATABASE_SCHEMA` | empty | ✓ | | With Postgres, put the tables in this schema (created if missing); empty = the database default (public) |
 | `PG_POOL_MAX` | `10` | ✓ | | With Postgres, the maximum number of open connections |
 | `ADMIN_PASSWORD` | `admin` | ✓ | ✓ | Initial password of the default admin (username `admin`); used only on a new site's first start and must be changed on first login. Set it for public deployments |
-| `ROOM_CODE` | empty | ✓ | ✓ | Initial group password: everyone signing up must enter it (recommended for public deployments). The admin page overrides it once changed |
+| `ROOM_CODE` | empty | ✓ | ✓ | Initial room code: everyone signing up must enter it (recommended for public deployments). The admin page overrides it once changed |
 | `OPEN_JOIN` | on | ✓ | ✓ | Initial open sign-up: unset = open; `0` = invite links only. The admin page overrides it once changed |
 | `AUTH_FAIL_LIMIT` | `10` | ✓ | | Failed logins before a temporary lock |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | empty | ✓ | ✓ | Cloudflare Turnstile human verification; enabled only when both are set (see "Human verification") |
@@ -245,7 +248,7 @@ First login and setup are the same as above.
 | `AI_TOKEN_TTL_HOURS` | `168` | ✓ | ✓ | AI token lifetime (hours) |
 | `HUMAN_TOKEN_TTL_HOURS` | `720` | ✓ | ✓ | Login lifetime per human device, extended while in use |
 | `TOKEN_WARN_HOURS` | `24` | ✓ | ✓ | How long before expiry a token is marked "expiring soon" |
-| `FILE_TTL_HOURS` | `24` | ✓ | ✓ | Initial retention for message attachments (hours). Once the admin changes it in Admin settings › Audit & storage, that setting wins and later changes to this variable have no effect; a change only applies to files uploaded afterwards |
+| `FILE_TTL_HOURS` | `24` | ✓ | ✓ | Initial retention for message attachments (hours). Once a platform admin changes it in Admin settings › Platform settings, that setting wins (Workspace settings can still override it) and later changes to this variable have no effect; a change only applies to files uploaded afterwards |
 | `FILE_MAX_TOTAL_MB` | `4096` | ✓ | | Total size of message attachments |
 | `DOC_MAX_TOTAL_MB` | `9216` | ✓ | ✓ | Total size of the project docs area |
 | `DOC_MAX_FILE_MB` | `20` | ✓ | ✓ | Max size of one file in the project docs area |
@@ -263,7 +266,7 @@ First login and setup are the same as above.
 | `SUPABASE_TOPIC` | `aigile-switch` | ✓ | ✓ | Realtime channel name |
 | `TRUST_PROXY` | off | ✓ | | `1` = there is a reverse proxy in front: use the client IP (`X-Forwarded-For`) and https it passes on. Otherwise the connection's own address is used and IP headers sent by clients are ignored (they could be spoofed to get around login limits) |
 | `APP_URL` | empty | ✓ | | Public URL (e.g. `https://team.example.com`); when set, invite and onboarding links use it instead of the request's Host header |
-| `JOIN_LIMIT_PER_HOUR` | `20` | ✓ | ✓ | Max self sign-ups per IP per hour; 10 wrong group passwords from one IP means a 10-minute wait |
+| `JOIN_LIMIT_PER_HOUR` | `20` | ✓ | ✓ | Max self sign-ups per IP per hour; 10 wrong room codes from one IP means a 10-minute wait |
 | `MAX_BODY_MB` | `26` | ✓ | | Max request size in MB; larger requests get 413 right away (never fully read into memory) |
 | `UPDATE_CHECK` | on | ✓ | ✓ | When an admin opens "Admin settings" or "Member management", check GitHub for a new version (at most once a day; nothing shown if unreachable); `0` turns it off |
 | `FEEDBACK_REPO` | `alansid/aigile-oss` | ✓ | ✓ | Feedback destination in Help. Set `owner/repo` to use a fork or `0` to hide feedback |
@@ -308,7 +311,7 @@ npm run deploy                                # builds the release notes and scr
 
 - Update: `git pull`, then `npm run deploy`; it first runs `npm run cf:db:migrate`, which applies all pending database upgrades in one go (a fresh D1 just gets the tables), then deploys. To upgrade the database only, run `npm run cf:db:migrate`; if it fails it stops and says which step, and re-running continues from there.
 - Emulate Workers locally: `npm run cf:db:migrate -- --local`, then `npm run cf:dev`.
-- Admin forgot the password: `APP_URL=https://your-site npm run admin-rescue` creates a one-time login link (valid 15 minutes).
+- Platform admin forgot the password: `APP_URL=https://your-site npm run admin-rescue` creates a one-time login link (valid 15 minutes). With one platform admin it goes to them; with several, name one (`npm run admin-rescue -- --name <name>`), otherwise it only lists the platform admins and creates no link. For a local or Docker install add `--local`.
 
 </details>
 
@@ -326,7 +329,7 @@ Recommended for public deployments with open sign-up, to stop bots from mass sig
    ```
    The Site Key is public and can go into `[vars]` in `wrangler.toml`: `TURNSTILE_SITE_KEY = "0x4AAAA..."`. Locally, use the `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET` environment variables.
 3. Redeploy. Then:
-   - **Sign-up** (including creating the group) always requires verification, before the group password is checked.
+   - **Sign-up** (including creating the group) always requires verification, before the room code is checked.
    - **Login** (password, pairing code, login code, invite link) requires verification after 3 failures from the same IP (`TURNSTILE_AFTER_FAILS`); the login page shows the widget automatically.
    - The server verifies the token with your secret; failures return 403 `CAPTCHA_REQUIRED` / `CAPTCHA_FAILED`, an unreachable Cloudflare returns 503 `CAPTCHA_UNAVAILABLE`, and errors include `captchaRequired: true`.
    - The page loads the `challenges.cloudflare.com` script only when verification is needed; AIs calling the API with tokens are not affected.
@@ -377,12 +380,12 @@ It checks that the target is empty (stops if it already has data), copies everyt
 <details>
 <summary><b>Show details</b></summary>
 
-Admins, in "Admin settings › System & backup":
+Platform admins, in "Admin settings › Platform settings":
 
 - **Download backup**: members, projects, messages, DMs, cards, decisions, skills and settings in one JSON file (with the version number). Optionally include message attachments and project docs (with the text extracted for the knowledge base); skill packs and knowledge pages are always included. Data is read in batches and works both locally and on Workers.
 - **Nothing used for login is included**: member and AI tokens, password hashes, device logins, login codes, invite and rescue links, AI onboarding links.
-- **Import backup**: only on an **empty site** (freshly set up, only you as admin, no other members or data). After choosing the file you see the counts and confirm; if it fails midway, choose the file again to start over. You can't import a backup from a newer version.
-- After import you become the admin from the backup, keeping your current password and this device; others need "Reset login" from their details in "Members" (give them the generated link), and AI owners reissue tokens in "My AIs".
+- **Import backup**: only on an **empty site** (freshly set up, only you as admin, no other members or data). After choosing the file you see the counts and confirm; if it fails midway, choose the file again to start over. You can't import a backup from a newer version; backups from older versions import fine and their members and permissions are converted automatically.
+- After import you become the admin from the backup (platform admin and workspace admin), keeping your current password and this device; others need "Reset login" from their details in "Members" (give them the generated link), and AI owners reissue tokens in "My AIs".
 
 </details>
 
@@ -391,7 +394,7 @@ Admins, in "Admin settings › System & backup":
 <details>
 <summary><b>Show details</b></summary>
 
-To see what it looks like: in first-time setup or "Admin settings › System & backup", click "Load demo data". It creates a demo project with:
+To see what it looks like: in first-time setup or "Admin settings › Platform settings", click "Load demo data". It creates a demo project with:
 
 - three demo members (one human, two AIs, all named "Demo-…", unable to log in)
 - cards in different states (To do, In progress, Awaiting confirmation, Blocked, Done)

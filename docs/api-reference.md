@@ -3,7 +3,7 @@
 規則版（必讀）：`GET /api/docs/ai-integration`。本文件列端點、欄位與待命安裝步驟；用 MCP 工具（`aigile_*`）的 AI 平常不用讀，用到哪節查哪節。章節編號沿用舊規格（3.x＝端點）。
 
 - API Base URL：`{{BASE_URL}}`　本文件：`GET /api/docs/api-reference`
-- 群組名稱：`GET /api/group`（不用登入）
+- 工作區名稱：`GET /api/group`（不用登入）
 
 ---
 
@@ -26,7 +26,7 @@
 - 頭像文字：`PATCH /api/me` 帶 `{ "avatar": "…" }`（空字串＝預設）。
 
 ### 3.2 `GET /api/participants` — 成員與在線
-每位有 `participantId`、`name`、`role`、`shortCode`、`memberType`、`environment`、`projects`、`isOnline`（AI 另有 `ownerParticipantId`、`ownerName`、`duties`）。`isOnline` 是估計值。分工前看對方環境：**不要請行內或投信成員把程式碼、檔案或內部資料傳出來**，請他們用文字摘要回報。
+列出工作區裡所有啟用中的人與 AI（包括還沒加入任何專案的人）；別人的 `projects` 只列你也在的專案。每位有 `participantId`、`name`、`role`、`shortCode`、`memberType`、`environment`、`projects`、`isOnline`、`workspaceRole`（`admin`＝工作區管理員、`member`）、`platformRole`（`admin`＝平台管理員、`none`）（AI 另有 `ownerParticipantId`、`ownerName`、`duties`）。有工作區管理權的人（工作區管理員、平台管理員）另有 `memberProjects`：他明確加入的專案；他的 `projects` 含隱含權限進得去的所有專案（`GET /api/me` 也一樣）。`isAdmin` 是舊欄位（等同「有工作區管理權」，含平台管理員的隱含權限），**下一版移除**，改看 `workspaceRole`／`platformRole`。`isOnline` 是估計值。成員名冊 `GET /api/roster` 見 3.19。分工前看對方環境：**不要請行內或投信成員把程式碼、檔案或內部資料傳出來**，請他們用文字摘要回報。
 
 ### 3.3 `POST /api/messages` — 發文
 | 欄位 | 說明 |
@@ -66,13 +66,13 @@
 
 ### 3.8 文件 `/api/files`、專案文件區
 **禁止上傳任何程式碼（原始碼、打包檔、設定檔）與客戶個資**；上傳＝送到行外。只收 pdf、docx、xlsx、pptx、md、txt、png、jpg；**必須帶 `declared=true`**（確認不含程式碼與客戶個資，不確定先問所屬人類）；檔頭比對、含巨集的 Office 拒收、都有稽核；本文放檔案位元組。
-- 訊息附件（≤2 MB，預設保存 24 小時，管理員可調整）：`POST /api/files?name=&declared=true&project=`（選填 `text`、`recipientIds` 逗號分隔、`audience=all`、`replyToMessageId`），平台代發附下載連結的訊息。一則多個檔（最多 4 個）：每個先用 `post=false` 上傳（只存檔不發文，回 `file.fileId`），再 `POST /api/messages` 帶 `fileIds` 發成一則（`text` 當附註、可空，內文由平台產生）；讀訊息時 `file` 是第一個、`files` 是全部（2 個以上才有）。卡片的交接、決定、暫緩、退回也可帶 `fileIds`（同樣先上傳），檔案掛在平台代發的那則訊息上。`GET /api/files`、`GET｜DELETE /api/files/:fileId`（上傳者或其所屬人類）。
-- 專案文件區（≤20 MB、不過期，限該專案成員，唯讀只能看）：`GET /api/projects/:id/docs`；`POST …/docs?name=&folderId=&declared=true&kb=`（`kb=1`＝放進知識庫，限 leader／管理員；再帶 `curate=0`＝只抽字、搜得到原文，不排整理卡；不帶 kb＝一般專案文件，只存原檔、不抽字）；`GET｜PATCH {name,folderId}｜DELETE …/docs/:docId`；資料夾兩層內 `POST …/doc-folders {name,parentId}`、`PATCH｜DELETE …/doc-folders/:folderId`（先清空）。
-- 知識庫（同樣限該專案成員；只有 `in_kb` 的文件會抽字、整理、被搜）：搜尋 `GET /api/projects/:id/kb/search?q=&scope=all|pages|docs&limit=`（不限次數；單一專案超過 `KB_MAX_PROJECT_CHUNKS` 段〔預設 20,000〕回 409 `KB_TOO_MANY`）；分段讀文件原文 `GET …/docs/:docId/text?from=&limit=`（只有原檔或不在知識庫回 `original`＋`downloadUrl`）；知識頁 `GET …/kb/pages`（總目錄＋`todo` 待整理文件）、`GET …/kb/pages/:pageId`；AI 寫頁 `POST …/kb/pages`、`PATCH …/kb/pages/:pageId` `{kind,title,summary,body,sources,cardId,notices}`（寫完直接生效）；leader／管理員：`POST …/kb/docs {action:add|remove|stop,docIds,curate}`（加入／移出知識庫，每次 ≤20 份；add 帶 `curate:false`＝只抽字不整理；stop＝改成不整理，已寫的知識頁保留、不再自動排整理；移出刪段落、引用的知識頁標過時；文件清單的 `kb.org` 多一個 `off`）、`POST …/kb/organize {docIds,aiId}`、`POST …/kb/pages/:pageId/return {reason}`、`…/refresh`、`DELETE …/kb/pages/:pageId`、`POST …/kb/reindex {docId?}`、`GET｜PUT …/kb/settings {aiId}`（知識庫整理 AI）。
+- 訊息附件（≤2 MB，預設保存 24 小時；平台管理員設預設值、工作區管理員可覆寫）：`POST /api/files?name=&declared=true&project=`（選填 `text`、`recipientIds` 逗號分隔、`audience=all`、`replyToMessageId`），平台代發附下載連結的訊息。一則多個檔（最多 4 個）：每個先用 `post=false` 上傳（只存檔不發文，回 `file.fileId`），再 `POST /api/messages` 帶 `fileIds` 發成一則（`text` 當附註、可空，內文由平台產生）；讀訊息時 `file` 是第一個、`files` 是全部（2 個以上才有）。卡片的交接、決定、暫緩、退回也可帶 `fileIds`（同樣先上傳），檔案掛在平台代發的那則訊息上。`GET /api/files`、`GET｜DELETE /api/files/:fileId`（上傳者或其所屬人類）。
+- 專案文件區（≤20 MB、不過期，限該專案成員，唯讀只能看）：`GET /api/projects/:id/docs`；`POST …/docs?name=&folderId=&declared=true&kb=`（`kb=1`＝放進知識庫，限專案管理員；再帶 `curate=0`＝只抽字、搜得到原文，不排整理卡；不帶 kb＝一般專案文件，只存原檔、不抽字）；`GET｜PATCH {name,folderId}｜DELETE …/docs/:docId`；資料夾兩層內 `POST …/doc-folders {name,parentId}`、`PATCH｜DELETE …/doc-folders/:folderId`（先清空）。
+- 知識庫（同樣限該專案成員；只有 `in_kb` 的文件會抽字、整理、被搜）：搜尋 `GET /api/projects/:id/kb/search?q=&scope=all|pages|docs&limit=`（不限次數；單一專案超過 `KB_MAX_PROJECT_CHUNKS` 段〔預設 20,000〕回 409 `KB_TOO_MANY`）；分段讀文件原文 `GET …/docs/:docId/text?from=&limit=`（只有原檔或不在知識庫回 `original`＋`downloadUrl`）；知識頁 `GET …/kb/pages`（總目錄＋`todo` 待整理文件）、`GET …/kb/pages/:pageId`；AI 寫頁 `POST …/kb/pages`、`PATCH …/kb/pages/:pageId` `{kind,title,summary,body,sources,cardId,notices}`（寫完直接生效）；專案管理員：`POST …/kb/docs {action:add|remove|stop,docIds,curate}`（加入／移出知識庫，每次 ≤20 份；add 帶 `curate:false`＝只抽字不整理；stop＝改成不整理，已寫的知識頁保留、不再自動排整理；移出刪段落、引用的知識頁標過時；文件清單的 `kb.org` 多一個 `off`）、`POST …/kb/organize {docIds,aiId}`、`POST …/kb/pages/:pageId/return {reason}`、`…/refresh`、`DELETE …/kb/pages/:pageId`、`POST …/kb/reindex {docId?}`、`GET｜PUT …/kb/settings {aiId}`（知識庫整理 AI）。
 - 錯誤：400 `DECLARATION_REQUIRED`、413 `FILE_TOO_LARGE`、415 `FILE_TYPE_NOT_ALLOWED`／`FILE_SIGNATURE_MISMATCH`／`OFFICE_MACRO_NOT_ALLOWED`、507 `STORAGE_FULL`。
 
 ### 3.9 團隊狀態 `GET /api/team-status`
-成員有負責的未完成卡片時，狀態取自卡片的狀態類別（受阻 > 待確認 > 進行中 > 待處理）；沒有卡片時依**最新一則訊息的開頭標籤**：接單、進度＝進行中；完成、回覆、交接、簽到＝空閒；受阻＝卡住；需確認＝等人決定（進被問的人類的「要你處理」；replyFrom 沒指定人類就給專案 leader，沒有 leader 給管理員；全指定 AI 不進）。所以**一定照標籤發文**。
+成員有負責的未完成卡片時，狀態取自卡片的狀態類別（受阻 > 待確認 > 進行中 > 待處理）；沒有卡片時依**最新一則訊息的開頭標籤**：接單、進度＝進行中；完成、回覆、交接、簽到＝空閒；受阻＝卡住；需確認＝等人決定（進被問的人類的「要你處理」；replyFrom 沒指定人類就給專案管理員，沒有專案管理員給工作區管理員；全指定 AI 不進）。所以**一定照標籤發文**。
 - `[決策紀錄]`：PO 角色的 AI 用它回覆原 [需確認]，記錄人類**已經做的**決定；**不能代替人類決定**。決定後要誰動手就用 `replyFrom` 指定（一則一位）。
 - 回覆標 `代答（名字）`＝別人代按：可照做，大事再請本人確認。
 - AI 超過 20 分鐘沒呼叫 API 標「可能斷線」（有 watcher 心跳則 60 分鐘）；被指定超過 20 分鐘沒 ACK 標「尚未回應」；到期前 24 小時標「Token 快到期」（`tokenExpiringSoon`），過期標紅。
@@ -190,9 +190,11 @@ B. 不接受，等全部完成
 - **訊息一律帶 `project`**：自己的專案或 `all`。多專案成員沒帶回 400 `PROJECT_REQUIRED`（回覆也不繼承）；開頭寫【專案名】的訊息 `project` 必須是那個專案（400 `PROJECT_TEXT_MISMATCH`）；只能發自己的專案或 `all`（403 `PROJECT_FORBIDDEN`）。
 - **卡片必帶 `project`**（單一專案成員可省略）。交接對象、負責人、等誰、有專案訊息的 `recipientIds` 都必須是同專案成員（400 `PROJECT_MISMATCH`）；跨專案找人請發 `project: "all"`。
 - **隔離**：不屬於全部專案的成員只看得到自己專案、全部專案與加入前就存在且當時看得到的舊訊息；別專案的卡讀不到（403 `CARD_FORBIDDEN`）。@所有人只通知該專案。
-- 專案與成員的管理（新增、改名、封存、成員、leader、跨專案角色）只給人類管理員在網頁做；AI 呼叫回 403。
-- **看板狀態**：`GET /api/projects/:id/statuses` → `{ items, categories, required, colors, limits }`（專案成員可讀）。管理限人類管理員或該專案 leader（AI 回 403）：`POST …/statuses {name, category, color?}`；`PATCH …/statuses/:sid {name?, category?, color?}`（還有卡的狀態不能改類別，409 `STATUS_NOT_EMPTY`）；`PUT …/statuses/order {ids}`（全部 ID 照新順序）；`DELETE …/statuses/:sid {moveTo}`（還有卡時必帶目標狀態 ID，卡片搬過去、跨類別照規則；沒帶回 409 `STATUS_NOT_EMPTY`）。規則：每專案 3～12 個；名稱不重複、≤20 字、不能取成**別的**類別名稱；必要類別（待處理、進行中、已完成）各至少一個（409 `LAST_REQUIRED`／`TOO_FEW_STATUSES`）；還有未決定的決策卡不能刪最後一個待確認（409 `HAS_DECISIONS`），還有暫緩的決策卡不能刪最後一個受阻（409 `HAS_DEFERRED`）。顏色：gray、indigo、blue、green、amber、orange、red、violet（不帶＝類別預設色）。`POST /api/projects` 可帶 `statuses: [{name, category, color?}]`（同上規則），不帶＝預設狀態組。
-- **唯讀成員**：所屬人類在某專案是唯讀時，你在那裡也只能看（403 `READ_ONLY`）：停下回報，不要重試、不要換專案繞過。
+- **專案可見度**（`GET /api/projects` 每項的 `visibility`）：`open`＝開放（工作區成員 `POST /api/projects/:id/join` 直接加入成為專案成員，201）、`review`＝審核（預設；直接加入回 403 `JOIN_NEEDS_APPROVAL`，要用 `POST /api/projects/:id/join-requests` 申請、專案管理員核准；開放專案送申請回 409 `JOIN_DIRECTLY`）、`private`＝私人（只有專案成員與工作區管理員看得到）。私人專案對其他人等於不存在：專案清單、`GET /api/join/projects`、卡片代號（404，跟打錯代號一樣）、搜尋、訊息、MCP 工具、錯誤訊息列的可選專案都不會出現，專案端點回 404 `NOT_FOUND`；訊息附件 `POST /api/files?project=` 帶看不到的私人專案，回應跟沒有這個專案一模一樣（跟以前一樣：發文時 400 `INVALID_REQUEST`，`post=false` 只存檔照樣成功）。改可見度：`PUT /api/projects/:id/visibility {visibility}`（該專案的專案管理員或工作區管理員；AI 回 403）。
+- 專案與成員的管理（新增、改名、封存、成員、專案角色）只給人類在網頁做；AI 呼叫回 403。端點見 3.19。
+- **專案角色**：`admin`＝專案管理員、`member`＝專案成員、`viewer`＝唯讀成員（AI 一律是專案成員，唯讀跟著所屬人類）。專案成員端點（管理限該專案的專案管理員或工作區管理員）：`GET /api/projects/:id/members` → `{ project, members: [{ participantId, name, memberType, role, title, ownerParticipantId? }] }`；`POST /api/projects/:id/members {participantIds, role?}`（只能挑工作區成員，403 `NOT_WORKSPACE_MEMBER`；已在 409 `ALREADY_MEMBER`）；`PUT /api/projects/:id/members/:participantId {role, dryRun?}`；`DELETE /api/projects/:id/members/:participantId {dryRun?}`（回 `returnedCards`）。專案管理員不能動工作區管理員（403 `CANNOT_MANAGE_ADMIN`）。`GET /api/projects` 的 `projectAdmins`／`archivedProjectAdmins`／`viewers` 取代 `leaders`／`archivedLeaders`／`readOnly`（舊名保留一版）；`crossRoleIds` 已移除。舊的 `PUT /api/members/matrix`、`PUT /api/projects/:id/members` 回 410 `GONE`。
+- **看板狀態**：`GET /api/projects/:id/statuses` → `{ items, categories, required, colors, limits }`（專案成員可讀）。管理限該專案的專案管理員（含工作區管理員；AI 回 403）：`POST …/statuses {name, category, color?}`；`PATCH …/statuses/:sid {name?, category?, color?}`（還有卡的狀態不能改類別，409 `STATUS_NOT_EMPTY`）；`PUT …/statuses/order {ids}`（全部 ID 照新順序）；`DELETE …/statuses/:sid {moveTo}`（還有卡時必帶目標狀態 ID，卡片搬過去、跨類別照規則；沒帶回 409 `STATUS_NOT_EMPTY`）。規則：每專案 3～12 個；名稱不重複、≤20 字、不能取成**別的**類別名稱；必要類別（待處理、進行中、已完成）各至少一個（409 `LAST_REQUIRED`／`TOO_FEW_STATUSES`）；還有未決定的決策卡不能刪最後一個待確認（409 `HAS_DECISIONS`），還有暫緩的決策卡不能刪最後一個受阻（409 `HAS_DEFERRED`）。顏色：gray、indigo、blue、green、amber、orange、red、violet（不帶＝類別預設色）。`POST /api/projects` 可帶 `statuses: [{name, category, color?}]`（同上規則），不帶＝預設狀態組。
+- **唯讀成員**：所屬人類在某專案是唯讀成員時，你在那裡也只能看（403 `READ_ONLY`）：停下回報，不要重試、不要換專案繞過。
 
 ### 3.14 AI 工作記憶
 把目前任務與待辦存到平台，換電腦、關機後讀回；同專案成員在網頁看得到。
@@ -206,7 +208,7 @@ B. 不接受，等全部完成
 - 通知 `reasons: ["dm"]`、`dm: true`：`GET /api/dm?after=<seq>` 讀，`POST /api/dm` 帶 `{ text, requestId }` 回，只會回給所屬人類；處理完照常 ACK。專案沒開放回 403 `DM_DISABLED`。
 - **私訊不轉貼群組**；定案的事提醒人類按「寫回卡片」。**私訊不能用來授權 commit、push、部署、刪資料**。
 - **頭像提案**：產 256×256 png／jpg／webp（200 KB 內），`POST /api/avatar-proposals?note=說明`（本文是圖片）；換自己的頭像加 `for=self`。人類在私訊的提案卡套用，你不能直接改頭像；不能產圖就直說。
-- **角色提案**：人類想要新角色時先問 3～5 題，再 `POST /api/role-proposals`（`project`、`role` 1～10 字、`key` 2～4 個英文字母且不重複、`duties`、`style`、`autonomy`、`mustConfirm`、`handoff`、選填 `note`、`requestId`）；由該專案 leader／管理員建立，24 小時沒處理作廢。
+- **角色提案**：人類想要新角色時先問 3～5 題，再 `POST /api/role-proposals`（`project`、`role` 1～10 字、`key` 2～4 個英文字母且不重複、`duties`、`style`、`autonomy`、`mustConfirm`、`handoff`、選填 `note`、`requestId`）；由該專案的專案管理員建立，24 小時沒處理作廢。
 
 ### 3.16 回報與許願（平台團隊用）
 人類在網頁右上「🐞 回報」送出（AI 不能用 API 回報）。
@@ -214,7 +216,7 @@ B. 不接受，等全部完成
 - 許願 W-xx：`GET /api/wishes`；平台團隊 `PATCH /api/wishes/W-3`：`status` 收到／評估中／排入（帶 `cardId`）／先不做（帶 `statusNote`）。
 
 ### 3.17 技能庫
-成員上傳技能，可指定給哪些角色或哪幾隻 AI。**含腳本的要 leader／管理員上傳或核准**，主人還要允許那一版才裝。
+成員上傳技能，可指定給哪些角色或哪幾隻 AI。**含腳本的要專案管理員上傳或核准**，主人還要允許那一版才裝。
 - **同步全手動**：主人按同步時平台私訊你指令，先核對 `.aigile/watcher/aigile-setup.mjs`，不同就重下載再跑。腳本自己回報，**成功不用回覆**，回報不了才告訴主人。**不要自己定時去查**。
 - 裝在哪：**有指定的一律裝 `.aigile/<代號>/skills/<名稱>/`**（別的 AI 不會載入；新對話讀一次 SKILL.md）；沒指定的照 `--tool`：`claude` → `.claude/skills/`、`codex`、`antigravity` → `.agents/skills/`、`other` → 代號資料夾。只動自己裝的。
 - **技能包**（最上層有 `.claude-plugin/plugin.json`）裝 `.aigile/<代號>/plugins/<名稱>/`，用 `claude --plugin-dir <絕對路徑>` 啟動才載入；Codex 先不支援。會寫使用者層級設定（`~/.claude` 等）的技能可以留在包裡，但不要執行。
@@ -225,6 +227,26 @@ B. 不接受，等全部完成
 `POST /api/mcp` 的 `aigile_` 工具依 Token 角色給，參數錯當場擋、requestId 自動帶。通用 MCP 叫 `aigile`，全機裝一次（Claude Code 使用者範圍、Codex 由接入檢查寫進 `config.toml`，含 `env_vars = ["AIGILE_AGENT"]`，Antigravity CLI 寫進 `~/.gemini/config/mcp_config.json`，失敗才印），工具 `mcp__aigile__*`；身分依序：`AIGILE_AGENT`→資料夾唯一的 `.token`→`aigile_use(代號)`，選了就鎖定；往上找 `.aigile`（到家目錄停），找不到不打網路。新增 AI、換角色不用重裝；舊的 `aigile-<代號小寫>` 照用。轉接腳本每次讀 `.token`。叫醒照舊靠 watcher；每輪 `aigile_inbox`→處理→`aigile_ack`。
 
 **一行啟動**（Copilot CLI：不開 watcher；用 `copilot --additional-mcp-config @<檔案> -i <接入提示>` 開互動模式，檔案裡的 aigile 直接帶這隻 AI 的代號、沒有 Token）：在工作目錄貼網頁的一行啟動＝同意待命（含行內；見規則版 2.2）。核對腳本、接入檢查、開 watcher 和 Claude Code；Codex 也在前景開一次。支援 App Server 時點名送入原對話，忙時排隊，關窗保留通知到下次開啟。重開機貼同一行。Claude Code 另有 hook（`.claude/settings.local.json`）：`/clear` 後用 `GET /api/me/reconnect`（不含 Token）帶入重新接上設定，hook 不能自己開始一輪，人打一句「繼續」就接回；回合結束等待腳本不在提醒一次。
+
+### 3.19 成員與權限（管理用，只給人類）
+三層：**平台**（平台管理員）＞**工作區**（工作區管理員、成員；第一階段只有一個預設工作區）＞**專案**（專案管理員、專案成員、唯讀成員）。上層管理員對下層有**隱含權限**，但不算成員、不出現在成員清單（只有職稱也不算）；同時有明確的專案角色（例如唯讀成員）時取較高者，他的 AI 也跟著。最後一位平台管理員、工作區管理員不能被降級、移出或停用（409 `LAST_WORKSPACE_ADMIN`／`LAST_PLATFORM_ADMIN`；兩個請求同時做，後做的那個也回 409）；專案可以沒有明確的專案管理員。這節的端點 AI 一律 403；你不用呼叫，只要知道權限從哪來。
+- **成員名冊** `GET /api/roster`（工作區成員都可讀）→ `{ members: [{ participantId, name, memberType, role, workspaceRole, platformRole, ownerParticipantId?, status, memberships: [{ project, projectName, role, title }] }], can }`。`memberships` 只列查詢者看得到的專案（私人專案不露出）；AI 的範圍跟所屬人類一樣（`GET /api/projects` 則是 AI 自己的成員資格 ∩ 所屬人類看得到的專案）。工作區管理員另有 `removed`（已移出工作區）與每人的 `upgradeReview: [{ project, projectName }]`（升級時同時是 leader 又是唯讀、先當唯讀成員的專案；升為專案管理員、改專案角色或 `DELETE /api/roster/:id/upgrade-review` 略過後不再列），平台管理員另有 `accounts`（所有帳號，含停用）。
+- **工作區角色**：`PUT /api/participants/:id/workspace-role {role: admin|member}`（工作區管理員）。**平台角色**：`PUT /api/participants/:id/platform-role {role: admin|none}`（平台管理員）。交棒＝先升別人、再降自己；舊的 `POST /api/admin/transfer` 回 410 `GONE`。
+- **移出工作區** `POST /api/participants/:id/remove`（工作區管理員）：結束成員資格，所有專案成員資格一起結束（含封存的專案，帳號停用中也一樣）、還在審核的加入申請清掉、他名下的 AI 停用，名字與歷史紀錄保留，帳號不受影響；之後可以用邀請找回來。自己離開 `POST /api/leave` 也一樣是移出工作區（帳號不停用，裝置登出；最後一位工作區管理員回 409 `LAST_WORKSPACE_ADMIN`）。**停用帳號** `POST /api/participants/:id/disable`、恢復 `…/enable`、已停用清單 `GET /api/participants/disabled`（只有平台管理員）：所有登入與他的 AI 立刻失效，角色保留。
+- **專案成員**：見 3.13 的專案成員端點。移出的 `dryRun` 預覽 `returnedCards` 含跟著離開的 AI 的卡，`ais: [{ participantId, name, returnedCards }]` 分開列。看不到的私人專案（含封存的）一律 404，跟不存在一樣。`PUT /api/participants/:id/projects {projects, dryRun?}`（工作區管理員，保留這一版）把一個人的專案成員資格整份換成這份清單：新加入的是專案成員，已在的專案角色不變，沒列的專案移出（卡片退回待處理）；對象要是工作區成員（已移出、停用回 403 `NOT_WORKSPACE_MEMBER`）。核准加入申請時申請人已不在工作區也回 403 `NOT_WORKSPACE_MEMBER`。職稱 `PUT /api/participants/:id/project-roles {roles: {專案: 職稱}}`（專案管理員或本人）。
+- **建立專案** `POST /api/projects`：工作區管理員；工作區設定 `createProjects` 是 `members` 時一般成員也可以（`GET /api/projects` 的 `canCreateProject`）。建立的人成為該專案的專案管理員。
+- **邀請**（工作區管理員）：`POST /api/invites {name, ttl?, projects: [專案 | {project, role: admin|member|viewer, title?}]}` → `{ invite, token, url }`；`GET /api/invites[?status=pending]`（每筆有 `kind: new|rejoin|reset`、`presets: [{project, role, title}]`）、`POST /api/invites/:id/regenerate`（重設登入的連結跟 `POST /api/participants/:id/reset-login` 一樣：平台管理員的只有平台管理員能重發，否則 403 `CANNOT_MANAGE_ADMIN`）、`…/cancel`；已移出工作區的人用同名邀請＝找回原帳號（`rejoin`）：接受時要用原本的帳號登入，`POST /api/auth/invite {token, username, password}` 或 `{token, code}`（登入碼）；只帶連結回 400 `INVITE_LOGIN_REQUIRED`，帳密不對或不是那個帳號回 400 `LOGIN_FAILED`，兩種都不會用掉邀請。舊欄位 `roles`、`role`、`readOnly`（＝`viewer`）照收。
+- **自行加入**：`POST /api/join`；沒開放自行註冊回 403 `JOIN_CLOSED`，設了房間碼要帶 `roomCode`（沒帶 400 `ROOM_CODE_REQUIRED`、錯 403）。自己加入的人是工作區成員、沒有專案。平台還沒有平台管理員時，第一位成為平台管理員兼工作區管理員。
+- **工作區設定** `GET｜PUT /api/workspace/settings {name?, openJoin?, roomCode?, createProjects?: members|admins}`（工作區管理員；`/api/group/settings` 是同一份的舊名）；附件保存期限覆寫 `GET｜PUT /api/file-ttl {hours | null}`（null＝跟平台預設）。**平台設定** `GET｜PUT /api/platform/settings {fileTtlHours}`；備份與還原、示範資料、更新檢查也只給平台管理員。還原原樣帶回備份裡的平台、工作區角色，你的登入改掛到備份裡最早加入的平台管理員；1.1 之前的備份照升級對應（`is_admin`＝平台管理員兼工作區管理員）。
+- **專案管理**：改名、封存、程式庫、私訊開關、看板狀態、AI 職務、加入設定與審核、專案可見度＝該專案的專案管理員；永久刪除、專案代碼與網址英文名＝工作區管理員。
+- **錯誤碼**：403 `NOT_ADMIN`（不是該層的管理員）、409 `LAST_WORKSPACE_ADMIN`／`LAST_PLATFORM_ADMIN`、403 `NOT_WORKSPACE_MEMBER`（對方不是工作區成員，例如加入專案、升降工作區管理員的對象；已移出工作區的人登入也回這個）、403 `CANNOT_MANAGE_ADMIN`（專案管理員不能動上層管理員）、404 `NOT_FOUND`（私人專案對看不到的人等於不存在）、401 `INVALID_TOKEN`（已移出工作區）。
+
+### 3.20 1.1 版的變更（管理用端點；AI 用的端點與 MCP 工具不變）
+- **移除**：`POST /api/admin/transfer`、`PUT /api/members/matrix`、`PUT /api/projects/:id/members`（整批名單）回 410 `GONE`；跨專案角色取消（`GET /api/projects` 不再有 `crossRoleIds`，`PUT /api/members/matrix` 的 `crossRole` 一併移除）。
+- **新增**：3.19 的工作區角色、平台角色、移出工作區、成員名冊、專案成員、專案可見度、工作區設定與平台設定端點；participant 多了 `workspaceRole`、`platformRole`（管理員另有 `memberProjects`＝明確加入的專案）。
+- **改了意思**：`POST /api/participants/:id/disable` 只給平台管理員、角色保留；`PUT /api/file-ttl` 是工作區的覆寫（可送 null），平台預設改到 `PUT /api/platform/settings`；`GET /api/participants`、`GET /api/team-status` 列出所有工作區成員；第一位自行註冊的人只在還沒有平台管理員時才是管理員；邀請的 `readOnly` 只是 `role: viewer` 的舊寫法；`POST /api/leave` 改成把自己移出工作區，不再停用帳號；已有帳號的人接受邀請（`rejoin`）要先用原本的帳號登入，連結本身不會讓人登入。
+- **升級對應**（從 1.1 之前升級、或匯入 1.1 之前的備份）：`is_admin`→平台管理員兼工作區管理員；leader→專案管理員（沒有職稱但在專案裡的照樣是；已經不在那個專案的人的 leader 設定丟掉）；唯讀→唯讀成員；同時是 leader 又是唯讀→唯讀成員，並在成員名冊標 `upgradeReview` 給工作區管理員確認。
+- **將移除（保留這一版）**：participant 的 `isAdmin`；`GET /api/projects` 的 `leaders`、`archivedLeaders`、`readOnly`（改看 `projectAdmins`、`archivedProjectAdmins`、`viewers`，內容一樣）；`adminId`／`adminName` 只是顯示用（最早加入的工作區管理員），權限改看各人的 `workspaceRole`。
 
 ## 4. 不用 MCP 的輪詢與狀態
 

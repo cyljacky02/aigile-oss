@@ -59,10 +59,10 @@ try {
   assert.equal(boss.status, 201, '驗證通過才註冊');
   assert.equal(got.at(-1).secret, SECRET, '伺服器帶 secret 去驗證'); assert.equal(got.at(-1).remoteip, '203.0.113.5', '帶使用者 IP');
 
-  // 群組密碼：先驗人機，才比對群組密碼（沒過驗證就不告訴你密碼對不對）
+  // 房間碼：先驗人機，才比對房間碼（沒過驗證就不告訴你密碼對不對）
   await call(boss.body.token, '/api/group/settings', 'PUT', { roomCode: 'room-1234' });
   assert.equal((await call(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', roomCode: 'wrong' })).body.error.code, 'CAPTCHA_REQUIRED');
-  assert.equal((await call(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', roomCode: 'wrong', turnstileToken: 'ok-2' })).body.error.message, '群組密碼錯誤');
+  assert.equal((await call(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', roomCode: 'wrong', turnstileToken: 'ok-2' })).body.error.message, '房間碼錯誤');
   assert.equal((await call(null, '/api/join', 'POST', { name: '陳大文', role: 'QA', roomCode: 'room-1234', turnstileToken: 'ok-3' })).status, 201);
 
   // 登入：前 2 次失敗不用驗證；第 3 次失敗後回 captchaRequired；之後沒 token 擋、token 對才比對帳密
