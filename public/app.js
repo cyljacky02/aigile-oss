@@ -1,7 +1,7 @@
 // Aigile-Switch 網頁端
 (() => {
   const $ = sel => document.querySelector(sel);
-  const APP_VERSION = '1.1.0'; // 要跟 package.json 一樣（version-test 會檢查）
+  const APP_VERSION = '1.2.0'; // 要跟 package.json 一樣（version-test 會檢查）
   const TOKEN_KEY = 'aigile-switch-token';
   const THEME_KEY = 'aigile-switch-theme';
   const FILTER_KEY = 'aigile-switch-only-mine';
@@ -1361,10 +1361,11 @@
   // 被刪除的訊息留一行佔位「此訊息已被 X 於 T 刪除」；可以復原時多「復原」（可復原期內：工作區管理員，或刪自己訊息的作者）
   const msgGone = m => !!m.purged || (!!m.purgeAt && Date.parse(m.purgeAt) <= Date.now());
   const canRestoreMsg = m => !!m.deleted && !msgGone(m) && (isAdmin() || (isMine(m) && m.deletedBy?.participantId === meId() && !meRO(m.project || 'cross')));
+  // 佔位文字：刪除者與刪除時間（訊息串、卡片詳情的相關訊息共用）
+  const goneText = m => { const who = m.deletedBy?.name || '?', t = m.deletedAt ? fmtTime(m.deletedAt) : ''; return L(`此訊息已被 ${who} 於 ${t} 刪除`, `Deleted by ${who} · ${t}`); };
   function deletedHtml(m) {
-    const who = m.deletedBy?.name || '?', t = m.deletedAt ? fmtTime(m.deletedAt) : '';
     return `<article class="msg msg-deleted" id="msg-${esc(m.messageId)}">
-      <p class="msg-gone muted small"><span>${esc(L(`此訊息已被 ${who} 於 ${t} 刪除`, `Deleted by ${who} · ${t}`))}</span>${canRestoreMsg(m) ? ` <button type="button" class="link" data-msg-restore="${esc(m.messageId)}">復原</button>` : ''}</p>
+      <p class="msg-gone muted small"><span>${esc(goneText(m))}</span>${canRestoreMsg(m) ? ` <button type="button" class="link" data-msg-restore="${esc(m.messageId)}">復原</button>` : ''}</p>
     </article>`;
   }
   // 「刪除」按鈕：''＝可以刪；文字＝按了說明為什麼不能刪；null＝不出現（別人的訊息）
@@ -1387,6 +1388,7 @@
     state.byId.set(m.messageId, m);
     const i = state.messages.findIndex(x => x.messageId === m.messageId);
     if (i >= 0) state.messages[i] = m;
+    drawerMsgChanged(m.messageId);
     const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top;
   }
   // 別人刪除、復原、清空了訊息：輪詢回來的 changesVer 跟上次不同就照原位重讀已載入的訊息（Workers 沒有即時通道時靠這個）
@@ -1395,25 +1397,23 @@
     if (state.changesVer && d.changesVer !== state.changesVer) refreshLoaded().catch(() => {});
     state.changesVer = d.changesVer;
   }
-  // 已載入的訊息（最新的一段或前後文）從第一則起重讀，被刪除或復原的換掉；不動捲動位置、不離開前後文
+  // 已載入的訊息（訊息串的最新一段或前後文，加上開著的卡片詳情裡的相關訊息）問伺服器哪些被刪除、復原、永久清除了，只換那幾則
+  // 送上手上每則的狀態（見 GET /api/messages/changed），每次 100 則、載入再多也全部問完；不動捲動位置、不離開前後文
   async function refreshLoaded() {
-    const list = state.messages || [];
-    if (!list.length) return;
-    const first = list[0].sequence, last = list[list.length - 1].sequence, fresh = new Map();
-    let cur = curOf(first - 1);
-    for (let i = 0; i < 5; i++) {
-      const d = await api(`/api/messages?limit=100&after=${encodeURIComponent(cur)}`);
-      for (const m of d.items) if (m.sequence <= last) fresh.set(m.messageId, m);
-      if (!d.hasMore || !d.items.length || d.items[d.items.length - 1].sequence >= last) break;
-      cur = d.nextCursor;
+    const ids = new Set((state.messages || []).map(m => m.messageId));
+    for (const mid of (work.openId && work.detail?.messageIds) || []) if (state.byId?.has(mid)) ids.add(mid);
+    const mark = m => m.messageId + (m.deleted ? '.' + (Date.parse(m.deletedAt) || 0) + (m.purged ? '.p' : '') : '');
+    const have = [...ids].map(id => mark(state.byId.get(id) || state.messages.find(m => m.messageId === id)));
+    const fresh = new Map();
+    for (let i = 0; i < have.length; i += 100) {
+      const d = await api(`/api/messages/changed?have=${encodeURIComponent(have.slice(i, i + 100).join(','))}`);
+      for (const m of d.items) fresh.set(m.messageId, m);
     }
-    let changed = false;
-    state.messages = state.messages.map(m => {
-      const x = fresh.get(m.messageId);
-      if (!x || (!!x.deleted === !!m.deleted && x.text === m.text)) return m;
-      changed = true; state.byId.set(x.messageId, x); return x;
-    });
-    if (changed) { const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top; }
+    if (!fresh.size) return;
+    for (const m of fresh.values()) { state.byId.set(m.messageId, m); drawerMsgChanged(m.messageId); }
+    if (!state.messages.some(m => fresh.has(m.messageId))) return;
+    state.messages = state.messages.map(m => fresh.get(m.messageId) || m);
+    const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top;
   }
   async function reloadMsg(id) {
     if (!state.byId.has(id)) return;
@@ -4601,6 +4601,19 @@
       s.innerHTML = peopleOpts(sel.value, keep ? cur : '', none);
     }
   });
+  // 卡片詳情的一則相關訊息；被刪除的是佔位（刪除者、時間），不顯示原作者與發送時間
+  function dmsgHtml(mid) {
+    const m = state.byId.get(mid), go = `<button type="button" class="link small dmsg-go" data-jump-msg="${esc(mid)}">到訊息</button>`;
+    if (!m) return `<div class="dmsg" data-dmsg="${esc(mid)}"><span class="muted small">訊息載入中…</span></div>`;
+    if (m.deleted) return `<div class="dmsg dmsg-deleted" data-dmsg="${esc(mid)}"><span class="msg-gone muted small">${esc(goneText(m))}</span>${go}</div>`;
+    const open = work.openMsgs?.has(mid), long = m.text.length > 120;
+    return `<div class="dmsg${open ? ' open' : ''}" data-dmsg="${esc(mid)}"><button type="button" class="dmsg-main" data-dmsg-toggle="${esc(mid)}" aria-expanded="${!!open}"><b>${esc(m.author.name)}</b> <span class="muted small">${shortTime(m.createdAt)}</span><span class="dmsg-text">${esc(open || !long ? m.text : m.text.slice(0, 120) + '…')}</span></button>${go}</div>`;
+  }
+  // 卡片詳情開著時，裡面的一則相關訊息被刪除或復原：只換那一則（不重畫整個詳情，正在打的字不會不見）
+  function drawerMsgChanged(mid) {
+    const el = work.openId && document.querySelector(`#card-drawer [data-dmsg="${CSS.escape(mid)}"]`);
+    if (el) el.outerHTML = dmsgHtml(mid);
+  }
   // 在訊息頁的桌面版，抽屜與訊息並排（不遮住訊息）；手機與工作頁維持原本的遮罩／底部面板
   const dockedMode = () => state.page === 'messages' && matchMedia('(min-width: 900px)').matches;
   function renderDrawer(focus) {
@@ -4608,12 +4621,7 @@
     const people = [...state.participants.values()].filter(p => p.status !== 'disabled');
     const opts = (cur, none) => `<option value="">${none}</option>` + people.map(p => `<option value="${esc(p.participantId)}" ${cur === p.participantId ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
     const mine = d.done && isMeRef(d.done.by);
-    const msgs = (d.messageIds || []).map(mid => {
-      const m = state.byId.get(mid);
-      if (!m) return `<div class="dmsg"><span class="muted small">訊息載入中…</span></div>`;
-      const open = work.openMsgs?.has(mid), long = m.text.length > 120;
-      return `<div class="dmsg${open ? ' open' : ''}"><button type="button" class="dmsg-main" data-dmsg-toggle="${esc(mid)}" aria-expanded="${!!open}"><b>${esc(m.author.name)}</b> <span class="muted small">${shortTime(m.createdAt)}</span><span class="dmsg-text">${esc(open || !long ? m.text : m.text.slice(0, 120) + '…')}</span></button><button type="button" class="link small dmsg-go" data-jump-msg="${esc(mid)}">到訊息</button></div>`;
-    }).join('');
+    const msgs = (d.messageIds || []).map(dmsgHtml).join('');
     let host = $('#card-drawer');
     if (!host) {
       host = document.createElement('div');
@@ -7635,9 +7643,11 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     });
   }
   // 整個專案的訊息被清空或整批復原：畫面上有這個專案的訊息就重讀訊息視窗；正在看前後文時照原位重讀（不離開前後文）
+  // 開著的卡片詳情裡的相關訊息也一起更新
   function reloadProjMsgs(pj) {
-    if (!state.messages?.some(m => m.project === pj)) return;
-    (state.ctx ? refreshLoaded() : loadWindow()).catch(() => {});
+    const inView = state.messages?.some(m => m.project === pj);
+    if (!inView && !work.openId) return;
+    (inView && !state.ctx ? loadWindow().then(refreshLoaded) : refreshLoaded()).catch(() => {});
   }
 
   // 角色範本：常用的排前面，其餘收進「其他角色」群組（只是選單分組，角色定義不變；既有成員的角色照常顯示已選）

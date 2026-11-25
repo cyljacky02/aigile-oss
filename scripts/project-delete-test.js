@@ -65,7 +65,7 @@ try {
   const upload = async (project, name, n) => (await call(liu.token, `/api/files?${new URLSearchParams({ name, declared: 'true', project, post: 'false' })}`, 'POST', png(n), true)).body.file.fileId;
   const fileDel = await upload(pid, '這個專案的圖.png', 1), fileKeep = await upload('預設專案', '別的專案的圖.png', 2);
   const m1 = (await post(pid, '[需確認] 這個專案的問題\n選項：\nA. 好\nB. 不好', { fileIds: [fileDel] })).body;
-  const m2 = (await post(pid, '第二則', { recipientIds: [id(wang), id(lin)] })).body; // 林工作是工作區管理員（不受隔離），封存專案的通知照樣看得到
+  const m2 = (await post(pid, '第二則', { recipientIds: [id(wang), id(lin)] })).body; // 收件人含工作區管理員（不受隔離）：封存專案的通知照樣看得到
   const keepPlat = (await post('預設專案', '另一個專案的訊息', { fileIds: [fileKeep] })).body, keepAll = (await post('all', '跨專案頻道的訊息')).body;
   // AI 的草稿格式不對被擋兩次、第 3 次照送（擋的時候記下草稿開頭）
   const draft = { project: pid, text: '[通知] 只在這個專案的草稿開頭', recipientIds: [id(liu), id(wang)], replyFrom: [id(liu), id(wang)] };

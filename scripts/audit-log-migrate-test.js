@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert';
 import { createApp } from '../src/core.js';
+import { appCaller } from './test-call.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb, tableNames } from './test-db.js';
 import { adminSession, reauth } from './test-admin.js';
@@ -29,11 +30,7 @@ const OLD = [
 const open = async () => {
   const db = await openTestDb(file);
   const app = createApp({ db, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0' } });
-  const call = async (token, p, method = 'GET', body) => {
-    const r = await app(new Request('http://localhost' + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
-    return { status: r.status, body: await r.json().catch(() => ({})) };
-  };
-  return { db, call };
+  return { db, call: appCaller(app) };
 };
 const pdelKeys = async db => (await db.all("SELECT key FROM app_settings WHERE key >= 'pdel:' AND key < 'pdel;'")).map(r => r.key);
 

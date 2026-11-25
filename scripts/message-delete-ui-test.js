@@ -2,6 +2,7 @@
 // A. 作者在自己的訊息按「刪除」→ 確認後變成一行佔位「此訊息已被 X 於 T 刪除」，有「復原」；按「復原」回到原文
 // B. 管理員刪的佔位，作者看不到「復原」；別人的訊息沒有「刪除」
 // C. 開著的頁面即時更新：管理員刪除時，作者的畫面不重新整理就換成佔位
+// D. 開著的卡片詳情：關聯訊息被刪時即時換成佔位（刪除者、時間，不是原作者與發送時間）；復原後回到原文
 // 權限、佔位形狀、稽核紀錄由 message-delete-test.js 驗
 // 本機暫存資料庫＋無頭 Chrome／Edge。用法：node scripts/message-delete-ui-test.js（找不到瀏覽器就略過）
 import './test-home.mjs';
@@ -48,6 +49,25 @@ try {
   // C 即時更新
   assert.equal((await call(lin.token, `/api/messages/${later}`, 'DELETE')).status, 200);
   await until(() => js(`!!${q(later)}?.classList.contains('msg-deleted')`), 15000, 'C 管理員刪除，畫面即時換成佔位');
+
+  // D 卡片詳情裡的相關訊息
+  const linked = await post(chen.token, '卡片關聯的訊息 DRW');
+  const card = (await call(chen.token, '/api/cards', 'POST', { title: '關聯訊息會被刪', type: '工作', project: PJ, requestId: 'md_card', messageIds: [linked] })).body;
+  assert.ok(card.cardId, JSON.stringify(card));
+  await login(chen.token, '/p/main/work');
+  await until(() => js(`!!document.querySelector('[data-card="${card.cardId}"]')`), 20000, 'D 看板上的卡');
+  await js(`document.querySelector('[data-card="${card.cardId}"]').click(); true`);
+  const dq = `document.querySelector('#card-drawer [data-dmsg="${linked}"]')`;
+  await until(() => js(`${dq}?.textContent.includes('DRW')`), 15000, 'D 詳情裡的相關訊息');
+  assert.equal((await call(lin.token, `/api/messages/${linked}`, 'DELETE')).status, 200, 'D 管理員刪關聯訊息');
+  await until(() => js(`/此訊息已被 林志明 於 .+ 刪除/.test(${dq}?.textContent || '')`), 15000, 'D 詳情裡即時換成佔位（刪除者、時間）');
+  assert.equal(await js(`/DRW|陳大文/.test(${dq}.textContent)`), false, 'D 佔位不顯示原文與原作者');
+  // 重新打開詳情（重畫）也一樣是佔位
+  await js("document.querySelector('#card-drawer [data-close-drawer]').click(); true");
+  await js(`document.querySelector('[data-card="${card.cardId}"]').click(); true`);
+  await until(() => js(`/此訊息已被 林志明 於 .+ 刪除/.test(${dq}?.textContent || '')`), 15000, 'D 重新打開也是佔位');
+  assert.equal((await call(lin.token, `/api/messages/${linked}/restore`, 'POST')).status, 200, 'D 管理員復原');
+  await until(() => js(`${dq}?.textContent.includes('DRW')`), 15000, 'D 復原後詳情裡回到原文');
   console.log('message-delete-ui-test：全部通過');
 } catch (e) {
   console.error('message-delete-ui-test 失敗：', e.message);

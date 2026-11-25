@@ -77,7 +77,7 @@ try {
   const up = await setPlat(boss.token, Wg, 'admin');
   assert.equal(up.status, 200, JSON.stringify(up.body));
   assert.equal(up.body.participant.platformRole, 'admin');
-  wang.token = (await adminSession(call, wang.token)).token; // 王小美接著要任免平台管理員
+  wang.token = (await adminSession(call, wang.token)).token; // 接著要任免平台管理員：換成剛再驗證過的裝置登入
   const w1 = await me(wang.token);
   assert.deepEqual([w1.platformRole, w1.workspaceRole, w1.isAdmin], ['admin', 'member', true], '平台管理員：明確的工作區角色仍是成員，isAdmin（含隱含）是 true');
   assert.equal((await call(wang.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' })).status, 200, '平台管理員能改工作區設定');

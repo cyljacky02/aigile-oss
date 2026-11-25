@@ -73,7 +73,7 @@ try {
   assert.equal(up.status, 200, JSON.stringify(up.body));
   assert.equal(up.body.participant.workspaceRole, 'admin');
   assert.equal((await me(chen.token)).workspaceRole, 'admin', '陳昭宇升為工作區管理員');
-  chen.token = (await adminSession(call, chen.token)).token; // 陳昭宇接著要任免管理員
+  chen.token = (await adminSession(call, chen.token)).token; // 新的工作區管理員接著要任免管理員：換成剛再驗證過的裝置登入
   assert.deepEqual((await call(boss.token, '/api/participants')).body.items.filter(p => p.workspaceRole === 'admin').map(p => p.participantId).sort(), [Bo, Cn].sort(), '名單上兩位管理員');
   for (const [tok, who] of [[boss.token, '林志明'], [chen.token, '陳昭宇']]) {
     assert.equal((await call(tok, '/api/invites')).status, 200, `${who} 能看邀請`);

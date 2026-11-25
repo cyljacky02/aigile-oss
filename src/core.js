@@ -3498,6 +3498,17 @@ ${ending}`;
     const rows = await db.all(`SELECT * FROM messages WHERE seq > ? AND text LIKE ? ESCAPE '\\' AND deleted_at IS NULL${where} ORDER BY seq DESC LIMIT ?`, top - 5000, like, ...args, limit + 1);
     return { items: await serializeMessages(ctx, rows.slice(0, limit)), hasMore: rows.length > limit, scanned: Math.min(top, 5000) };
   }
+  // 已載入的訊息哪些被刪除、復原、永久清除了：網頁看到 changesVer 換新時，送上手上每則的狀態，只回狀態不同的（目前的樣子）
+  // have：逗號分隔，沒刪除＝id；已刪除＝id.刪除時間（毫秒）；已永久清除再加 .p。一次最多 100 則，載入更多就分批問；看不到的不回
+  route('GET', '/api/messages/changed', async ({ ctx, me, url }) => {
+    onlyParams(url, ['have'], 'GET /api/messages/changed');
+    const have = new Map((url.searchParams.get('have') || '').split(',').filter(Boolean).map(s => { const [id, at = '', p = ''] = s.split('.'); return [id, at + (p === 'p' ? '.p' : '')]; }));
+    if (!have.size || have.size > 100) throw invalid('have 需為 1～100 則訊息');
+    const scope = await messageScope(me);
+    const rows = await db.all(`SELECT * FROM messages WHERE id IN (SELECT value FROM json_each(?))${scope ? ` AND ${scope.sql}` : ''} ORDER BY seq`, JSON.stringify([...have.keys()]), ...(scope ? scope.args : []));
+    const now = m => (m.deleted_at ? String(Date.parse(m.deleted_at)) + (m.purged_at ? '.p' : '') : '');
+    return { items: await serializeMessages(ctx, rows.filter(m => have.get(m.id) !== now(m))) };
+  });
   route('GET', '/api/messages/:id/around', async ({ ctx, me, params, url }) => {
     const m = await db.get('SELECT * FROM messages WHERE id = ?', params.id);
     if (!m || !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到訊息');

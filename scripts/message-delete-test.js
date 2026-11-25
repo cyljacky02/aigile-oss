@@ -14,6 +14,7 @@
 // L. 即時通道推送刪除與復原
 // M. 已刪除（可復原期內）的專案裡的訊息：刪除、復原都當它不存在（404）；專案復原後照常
 // N. 沒有即時通道（Workers）也會更新：網頁輪詢的訊息列表給人類多帶 changesVer，有訊息被刪除、復原、清空就換新（網頁據此重讀已載入的訊息）；給 AI 的形狀不變
+//    重讀靠 GET /api/messages/changed：送上已載入的訊息與畫面上的狀態，只回狀態不同的（不算游標、載入再多則都問得到）
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres
 // 本機暫存資料庫，不連任何站。用法：node scripts/message-delete-test.js
 import './test-home.mjs'; // 不寫到真的家目錄
@@ -290,6 +291,33 @@ try {
   assert.equal((await restore(lin.token, pn.messageId)).status, 200);
   assert.notEqual((await poll(chen.token)).changesVer, v1, 'N 復原後也換新');
   assert.equal('changesVer' in (await poll(wangAi.token)), false, 'N 給 AI 的列表沒有 changesVer');
+  // N2 已載入的訊息哪些變了：網頁送上手上每則的狀態（沒刪除＝只給 id；已刪除＝id.刪除時間毫秒；已永久清除再加 .p），只回狀態不同的那幾則（目前的樣子）
+  const stay = await post(chen.token, '一直都在');
+  const goneNow = await post(chen.token, '之後被刪');
+  const backNow = await post(chen.token, '刪了又復原');
+  assert.equal((await del(lin.token, backNow.messageId)).status, 200);
+  const shownDel = await read(chen.token, backNow.messageId);
+  const shownMark = `${backNow.messageId}.${Date.parse(shownDel.deletedAt)}`;
+  const changed = async (token, have) => call(token, `/api/messages/changed?have=${encodeURIComponent(have.join(','))}`);
+  assert.deepEqual((await changed(chen.token, [stay.messageId, goneNow.messageId, shownMark])).body.items, [], 'N2 都跟畫面上一樣：什麼都不回');
+  assert.equal((await del(lin.token, goneNow.messageId)).status, 200);
+  assert.equal((await restore(lin.token, backNow.messageId)).status, 200);
+  r = await changed(chen.token, [stay.messageId, goneNow.messageId, shownMark]);
+  assert.equal(r.status, 200, 'N2 ' + JSON.stringify(r.body));
+  const byId = new Map(r.body.items.map(x => [x.messageId, x]));
+  assert.deepEqual([...byId.keys()].sort(), [goneNow.messageId, backNow.messageId].sort(), 'N2 只回被刪除、被復原的那兩則');
+  assert.equal(byId.get(goneNow.messageId).deleted, true, 'N2 被刪的回佔位');
+  assert.equal(byId.get(goneNow.messageId).deletedBy?.participantId, lin.id, 'N2 佔位帶刪除者');
+  assert.equal(byId.get(backNow.messageId).text, '刪了又復原', 'N2 被復原的回原文');
+  // 畫面上是舊的刪除（刪除時間不同）：復原後又被刪了一次，也算變了
+  assert.equal((await del(lin.token, backNow.messageId)).status, 200);
+  assert.deepEqual((await changed(chen.token, [shownMark])).body.items.map(x => x.messageId), [backNow.messageId], 'N2 又被刪一次也回');
+  // 看不到的訊息不回（別的專案、不存在）
+  const outsider = (await call(null, '/api/join', 'POST', { name: '專案外的人', role: 'PG' })).body;
+  assert.deepEqual((await changed(outsider.token, [goneNow.messageId, 'msg_nope'])).body.items, [], 'N2 看不到的不回');
+  // 一次最多 100 則；不認得的參數 400
+  assert.equal(code(await changed(chen.token, Array.from({ length: 101 }, (_, i) => 'msg_x' + i))), '400 INVALID_REQUEST', 'N2 超過 100 則 400');
+  assert.equal(code(await call(chen.token, `/api/messages/changed?have=${stay.messageId}&after=x`)), '400 UNKNOWN_PARAM', 'N2 不認得的參數 400');
 
   console.log('message-delete-test：全部通過');
 } finally {

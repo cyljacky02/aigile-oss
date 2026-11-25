@@ -2689,6 +2689,7 @@ window.AIGILE_EN = {
     "name「{0}」只能用小寫英數與連字號": "name \"{0}\" may only use lowercase letters, digits and hyphens",
     "name「{0}」只能用小寫英數與單一連字號（1～64 字），也是資料夾名": "name \"{0}\" can only use lowercase letters, numbers and single hyphens (1-64 characters); it's also the folder name",
     "notificationIds 需為 1～100 筆字串陣列": "notificationIds must be an array of 1-100 strings",
+    "have 需為 1～100 則訊息": "have must list 1-100 messages",
     "on 需為 true 或 false": "on must be true or false",
     "openJoin 需為 true 或 false": "openJoin must be true or false",
     "plugin.json 的 name「{0}」只能用小寫英數與單一連字號（1～64 字），也是資料夾名": "The name \"{0}\" in plugin.json can only use lowercase letters, numbers and single hyphens (1-64 characters); it's also the folder name",
