@@ -3696,6 +3696,7 @@ window.AIGILE_EN = {
     "復原別人的訊息": "restore other people's messages",
 
     // #32 訊息永久清除
+    "隨訊息永久清除": "Purged with its message",
 
     // #33 清空專案訊息
 

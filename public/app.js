@@ -9068,7 +9068,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <p class="muted small">會產生一次性的救援登入連結（15 分鐘內、只能用一次），只救平台管理員。平台管理員不只一位時要指定名字：<code>npm run admin-rescue -- --name 名字</code>（沒指定只列出名單、不產生連結）。本機或 Docker 版（node server.js）改用 <code>npm run admin-rescue -- --local</code>，有設 <code>DATABASE_URL</code> 就照同一組設定連 Postgres。</p></div></div>`;
   }
   // 稽核與儲存：全站稽核紀錄（只有管理員拿得到全站）＋儲存空間狀態；點進來才讀
-  const auditLabel = { upload: '上傳', download: '下載', delete: '刪除', reject: '拒絕', expire: '到期清除', rename: '改名', move: '搬移' };
+  const auditLabel = { upload: '上傳', download: '下載', delete: '刪除', reject: '拒絕', expire: '到期清除', purge: '隨訊息永久清除', rename: '改名', move: '搬移' };
   const auditTableHtml = items => (items.length ? `<div class="table-scroll"><table class="audit-table"><thead><tr><th>時間</th><th>動作</th><th>操作者</th><th>檔名</th><th>大小</th><th>SHA-256</th><th>聲明</th><th>備註</th></tr></thead><tbody>${
     items.map(x => `<tr><td>${fmtTime(x.at)}</td><td>${auditLabel[x.action] || x.action}</td>
       <td>${esc(x.actor.name || x.actor.participantId || '')}${x.actor.memberType === 'ai' ? L('（AI）', ' (AI)') : x.actor.memberType === 'human' ? L('（人類）', ' (human)') : ''}</td>
