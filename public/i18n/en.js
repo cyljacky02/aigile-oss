@@ -3656,6 +3656,19 @@ window.AIGILE_EN = {
     "before 要用上一頁回傳的 next": "before must be the next value returned by the previous page",
 
     // #28 管理員異動通知
+    "某位管理員": "An admin",
+    "{0} 把 {1} 升為平台管理員 · {2}。": "{0} made {1} a platform admin · {2}.",
+    "{0} 把 {1} 降為一般帳號（不再是平台管理員）· {2}。": "{0} changed {1} to a regular account (no longer a platform admin) · {2}.",
+    "{0} 把 {1} 升為工作區管理員 · {2}。": "{0} made {1} a workspace admin · {2}.",
+    "{0} 把 {1} 降為成員（不再是工作區管理員）· {2}。": "{0} changed {1} to a member (no longer a workspace admin) · {2}.",
+    "{0} 停用了 {1} 的帳號 · {2}。": "{0} disabled {1}'s account · {2}.",
+    "{0} 恢復了 {1} 的帳號 · {2}。": "{0} re-enabled {1}'s account · {2}.",
+    "{0} 清空了專案「{1}」的訊息 · {2}。": "{0} cleared the messages of project \"{1}\" · {2}.",
+    "{0} 復原了專案「{1}」被清空的訊息 · {2}。": "{0} restored the cleared messages of project \"{1}\" · {2}.",
+    "{0} 刪除了專案「{1}」· {2}。": "{0} deleted project \"{1}\" · {2}.",
+    "{0} 復原了專案「{1}」· {2}。": "{0} restored project \"{1}\" · {2}.",
+    "{0} 做了一項管理操作 · {1}。": "{0} made an admin change · {1}.",
+    "管理權或重大異動都會通知相關管理員。不是預期的變動？請跟其他管理員確認，必要時聯絡站長。": "Admin changes and major changes are sent to the admins involved. Not expected? Check with the other admins, and contact the server operator if needed.",
 
     // #29 再驗證身分
 

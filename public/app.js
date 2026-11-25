@@ -3662,6 +3662,7 @@
       <div class="sec-main"><span>${esc(n.detail)} · ${esc(when)}</span><span class="small">${hint}</span></div>
       <div class="sec-acts">${act}<button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(n.detail)} 知道了">知道了</button></div></div>`;
     }
+    if (/^admin_/.test(n.kind)) return adminSecHtml(n, when);
     const [text, hint] = n.kind === 'password_login' ? [`有新裝置用你的帳號密碼登入：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它並改密碼。']
       : n.kind === 'rescue_login' ? [`有裝置用主機救援連結登入你的帳號：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並檢查誰有主機部署權限。']
       : n.kind === 'login_code_read' ? [`有裝置讀取了你的登入碼：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並換一組登入碼（舊的會失效）。']
@@ -3670,6 +3671,27 @@
     return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🔐</span>
       <div class="sec-main"><span>${esc(text)}</span><span class="small">${esc(hint)}</span></div>
       <div class="sec-acts">${n.kind === 'rescue_link' ? '' : '<button type="button" class="btn small" data-sec-devices>我的裝置</button>'}<button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
+  }
+  // 管理員異動通知：細節是 JSON { a: 操作者, t: 對象, p?: 專案 }，這裡組成句子（英文介面照字典換）；沒有「我的裝置」按鈕
+  function adminSecHtml(n, when) {
+    let d = {};
+    try { d = JSON.parse(n.detail) || {}; } catch {}
+    const a = d.a || '某位管理員', t = d.t || '', p = d.p || d.t || '';
+    const text = n.kind === 'admin_platform_grant' ? `${a} 把 ${t} 升為平台管理員 · ${when}。`
+      : n.kind === 'admin_platform_revoke' ? `${a} 把 ${t} 降為一般帳號（不再是平台管理員）· ${when}。`
+      : n.kind === 'admin_workspace_grant' ? `${a} 把 ${t} 升為工作區管理員 · ${when}。`
+      : n.kind === 'admin_workspace_revoke' ? `${a} 把 ${t} 降為成員（不再是工作區管理員）· ${when}。`
+      : n.kind === 'admin_account_disable' ? `${a} 停用了 ${t} 的帳號 · ${when}。`
+      : n.kind === 'admin_account_enable' ? `${a} 恢復了 ${t} 的帳號 · ${when}。`
+      : n.kind === 'admin_project_messages_clear' ? `${a} 清空了專案「${p}」的訊息 · ${when}。`
+      : n.kind === 'admin_project_messages_restore' ? `${a} 復原了專案「${p}」被清空的訊息 · ${when}。`
+      : n.kind === 'admin_project_delete' ? `${a} 刪除了專案「${p}」· ${when}。`
+      : n.kind === 'admin_project_restore' ? `${a} 復原了專案「${p}」· ${when}。`
+      : `${a} 做了一項管理操作 · ${when}。`;
+    const hint = '管理權或重大異動都會通知相關管理員。不是預期的變動？請跟其他管理員確認，必要時聯絡站長。';
+    return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🛡️</span>
+      <div class="sec-main"><span>${esc(text)}</span><span class="small">${esc(hint)}</span></div>
+      <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
   }
   document.addEventListener('click', async e => {
     if (!e.target.closest?.('#page-work')) return;
