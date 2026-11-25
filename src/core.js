@@ -390,6 +390,14 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 卡號（MAIN-12 或舊的 C-xxx）→ seq；找不到回 null
   const seqOfCardId = async id => { const m = /^C-(\d+)$/i.exec(String(id || '').trim()); return m ? Number(m[1]) - 100 : cardSeqByKey(id); };
   const invalidateProjects = () => { projectsAt = 0; };
+  // 刪除狀態的版本（app_settings 的 msg_ver：訊息與專案的刪除、復原、永久清除都換新，見 messagesChanged）。
+  // 每個請求讀這 1 列；別份程式剛刪了或復原了，這份的專案清單、團隊狀態、待處理通知快取馬上重讀（不等 60／180 秒過期）
+  let deletionVer = null;
+  async function syncDeletions() {
+    const v = (await db.get("SELECT value FROM app_settings WHERE key = 'msg_ver'").catch(() => null))?.value || '0';
+    if (deletionVer !== null && v !== deletionVer) { projectsAt = 0; pendCache = { at: 0, rows: null }; teamCache = { at: 0, data: null }; }
+    deletionVer = v;
+  }
   // 成員資格（誰在哪些專案、專案角色）的讀寫都走 src/membership.js；這裡沿用原本的名字
   // projectsOf＝目前所屬（未封存）專案；listOf＝含封存專案的原始清單
   const membership = createMembership({ db, PROJECTS, nowIso, onChange: () => invalidatePeople() });
@@ -2881,6 +2889,7 @@ ${ending}`;
     if (!done) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
     invalidateProjects();
     invalidatePeople();
+    await messagesChanged(); // 這個專案的訊息不見了：別份程式、開著的頁面跟著重讀
     await loadProjects(true);
     const purged = days === 0 ? await purgeProject({ ...row, deleted_at: at, purge_at: purgeAt, paused_ais: JSON.stringify(paused.map(p => p.id)) }) : null;
     return projectsSeenBy(ctx, me, { deleted: { projectId: id, name: row.name, code, counts, recoveryDays: days, purgeAt: iso(purgeAt), aisPaused: paused.map(p => p.name), purged: !!purged } });
@@ -2940,6 +2949,7 @@ ${ending}`;
     }
     invalidateProjects();
     invalidatePeople();
+    await messagesChanged(); // 訊息回來了：別份程式、開著的頁面跟著重讀
     await loadProjects(true);
     await membership.loadMembers(true);
     return projectsSeenBy(ctx, me, { restored: { projectId: row.id, name: row.name } });
@@ -3027,6 +3037,7 @@ ${ending}`;
       detail: { code, counts, aisDeleted } })]);
     titlesAt = 0;
     invalidatePeople(); invalidateProjects();
+    await messagesChanged();
     await membership.loadMembers(true);
     return { projectId: id, name: row.name, code, counts, aisDeleted };
   }
@@ -3513,8 +3524,8 @@ ${ending}`;
     if (!m || !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到訊息');
     return m;
   }
-  // 訊息被刪除、復原、永久清除：團隊狀態與待處理通知的快取重讀；msg_ver 換新（網頁輪詢時比對，有變就重讀已載入的訊息；
-  // Workers 沒有即時通道，開著的頁面靠這個換成佔位或復原）
+  // 訊息被刪除、復原、永久清除（專案的刪除、復原、永久清除也是）：團隊狀態與待處理通知的快取重讀；msg_ver 換新（網頁輪詢時比對，有變就重讀已載入的訊息；
+  // Workers 沒有即時通道，開著的頁面靠這個換成佔位或復原；別份程式每個請求比對，見 syncDeletions）
   async function messagesChanged() {
     pendCache = { at: 0, rows: null };
     teamCache = { at: 0, data: null };
@@ -4146,13 +4157,13 @@ ${ending}`;
   const headline = text => String(text).trimStart().split('\n')[0].replace(/^\[[^\]]*\]\s*/, '').slice(0, 80);
 
   // 團隊狀態用的最近 200 則訊息與 [需確認] 的回覆：保留在記憶體，之後只補讀新訊息
-  // 被刪除的訊息不算（不露出原文）：每次另查這段範圍裡被刪的（別份程式剛刪的也算）
+  // 被刪除的訊息不算（不露出原文）：每次另查這段範圍裡被刪的（別份程式剛刪的也算）；可復原期內的專案裡的也不算
   let recentCache = { rows: null, maxSeq: 0, replies: new Map() }; // replies: [需確認] id → 回覆列
   async function recentMessages() {
-    const rows = await recentRows();
+    const [rows] = await Promise.all([recentRows(), loadProjects()]);
     if (!rows.length) return rows;
     const gone = new Set((await db.all('SELECT id FROM messages WHERE seq >= ? AND deleted_at IS NOT NULL', rows[rows.length - 1].seq)).map(r => r.id));
-    return gone.size ? rows.filter(m => !gone.has(m.id)) : rows;
+    return rows.filter(m => !gone.has(m.id) && !deletedProjects.has(m.project));
   }
   async function recentRows() {
     const cols = 'SELECT id, seq, author_id, text, reply_to, reply_from, created_at, project FROM messages';
@@ -4586,6 +4597,7 @@ ${ending}`;
         if (!m) continue;
         let params; try { params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])])); } catch { throw invalid('網址參數編碼不對'); } // 壞的 % 編碼回 400，不是 500
         const ctx = {};
+        await syncDeletions(); // 別份程式剛刪除或復原了：快取重讀
         await loadProjects();
         if (!tokensHashed) await hashOldTokens();
         await migrateMembers(); // 舊資料轉到新的成員資料表（要在「有沒有管理員」之前）
