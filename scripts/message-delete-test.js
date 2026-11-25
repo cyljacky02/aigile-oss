@@ -26,6 +26,7 @@ import { openTestDb } from './test-db.js';
 import { adminSession, reauth } from './test-admin.js';
 import { dbStorage } from '../src/storage-db.js';
 import { scriptHashes } from './script-hashes.mjs';
+import { appCaller } from './test-call.js';
 import { testToken } from './test-token.js';
 
 const PJ = '預設專案';
@@ -39,12 +40,7 @@ try {
   const events = [];
   const live = { connectedIds: () => connected, has: id => connected.includes(id), toPeople: (ids, type, data) => { for (const id of ids) events.push({ to: id, type, data }); } };
   const app = createApp({ db, storage: dbStorage(db), docText: '', scriptHashes: scriptHashes(), live, config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0' } });
-  const call = async (token, p, method = 'GET', body, raw = false) => {
-    const r = await app(new Request('http://localhost' + p, { method, headers: { ...(raw ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: raw ? body : body ? JSON.stringify(body) : undefined }), 'http://localhost');
-    const text = await r.text();
-    let json = null; try { json = JSON.parse(text); } catch { /* 下載是檔案內容 */ }
-    return { status: r.status, body: json, text };
-  };
+  const call = appCaller(app);
   const code = r => `${r.status} ${r.body?.error?.code || ''}`;
   let rq = 0;
   const post = async (token, text, extra = {}) => {

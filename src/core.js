@@ -204,13 +204,15 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (rec.length) live.toPeople(rec, 'notify', { messageId: m.id });
   }
   // 訊息被刪除或復原（message_deleted／message_restored）：推給看得到這則的人，網頁重讀這一則
-  async function liveMessageChange(ctx, m, type) {
+  // 推給連著、看得到訊息 m 的人（m 可以只有 project、created_at：等於「看得到這個專案的新訊息」）
+  async function liveToViewers(ctx, m, type, data) {
     const on = live ? live.connectedIds() : [];
     if (!on.length) return;
     const people = await peopleMap(ctx), see = [];
     for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
-    live.toPeople(see, type, { id: m.id, project: m.project || null });
+    live.toPeople(see, type, data);
   }
+  const liveMessageChange = (ctx, m, type) => liveToViewers(ctx, m, type, { id: m.id, project: m.project || null });
   async function liveCard(ctx, cardId, project) {
     const on = live ? live.connectedIds() : [];
     if (!on.length || !project) return;
@@ -3456,6 +3458,11 @@ ${ending}`;
   const msgFileAuditStmt = (action, actor, detail, at, msgSql, args) => [`INSERT INTO file_audit (id, file_id, action, actor_id, actor_kind, at, name, size, sha256, declared, detail)
     SELECT ? || id, id, ?, ?, ?, ?, name, size, sha256, declared, ? FROM files WHERE message_id IN (${msgSql}) OR id IN (SELECT file_id FROM messages WHERE id IN (${msgSql}) AND file_id IS NOT NULL)`,
   [randId('aud') + '_', action, actor.id, actor.kind, at, detail, ...args, ...args]];
+  // 刪除、清空當下的時間與依生效的可復原期算出的永久清除時間（ISO；訊息的時間欄都是 ISO 字串）；days 0＝當下就永久清除
+  async function deleteTiming() {
+    const now = Date.now(), { days, purgeAt } = await purgeAtFor(now);
+    return { at: new Date(now).toISOString(), days, purgeIso: new Date(purgeAt).toISOString() };
+  }
   async function visibleMessage(me, id) {
     const m = await db.get('SELECT * FROM messages WHERE id = ?', id);
     if (!m || !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到訊息');
@@ -3474,7 +3481,7 @@ ${ending}`;
     const m = await visibleMessage(me, params.id);
     await access.check(ctx, me, m.author_id === me.id ? 'delete_own_message' : 'delete_message', msgAccessScope(m), { what: '刪除別人的訊息' });
     if (m.deleted_at) throw new ApiError(410, 'MESSAGE_DELETED', '這則訊息已刪除');
-    const now = Date.now(), at = new Date(now).toISOString(), { days, purgeAt } = await purgeAtFor(now), purgeIso = new Date(purgeAt).toISOString();
+    const { at, days, purgeIso } = await deleteTiming();
     const r = await db.run('UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = NULL WHERE id = ? AND deleted_at IS NULL', at, me.id, purgeIso, m.id);
     if (!r.changes) throw new ApiError(410, 'MESSAGE_DELETED', '這則訊息已刪除'); // 別人剛好先刪了
     const author = (await peopleMap(ctx, [m.author_id])).get(m.author_id);
@@ -3556,13 +3563,7 @@ ${ending}`;
     return row;
   }
   // 推給看得到這個專案新訊息的人（一個專案一則，不逐則推）；網頁重讀訊息
-  async function liveProjectMessages(ctx, project, type, data) {
-    const on = live ? live.connectedIds() : [];
-    if (!on.length) return;
-    const people = await peopleMap(ctx), m = { project, created_at: nowIso() }, see = [];
-    for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
-    live.toPeople(see, type, { project, ...data });
-  }
+  const liveProjectMessages = (ctx, project, type, data) => liveToViewers(ctx, { project, created_at: nowIso() }, type, { project, ...data });
   // 預覽：會刪掉幾則訊息、幾個附件（已刪除的不算）、照現在生效的可復原期算出的預計永久清除時間（不用再驗證）
   route('GET', '/api/projects/:id/messages/clear-preview', async ({ ctx, me, params }) => {
     const row = await clearableProject(ctx, me, params.id, 'preview_messages_clear');
@@ -3577,7 +3578,7 @@ ${ending}`;
     const body = await readJson(req);
     if (String(body.confirmName ?? '').trim() !== row.name) throw invalid(`請輸入專案名稱「${row.name}」確認`);
     const pj = { id: row.id, name: row.name }, clearId = randId('clr');
-    const now = Date.now(), at = new Date(now).toISOString(), { days, purgeAt } = await purgeAtFor(now), purgeIso = new Date(purgeAt).toISOString();
+    const { at, days, purgeIso } = await deleteTiming();
     const r = await db.run('UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = ? WHERE project = ? AND deleted_at IS NULL', at, me.id, purgeIso, clearId, row.id);
     if (!r.changes) return { ok: true, clear: { clearId: null, projectId: row.id, name: row.name, messages: 0, files: 0 } };
     const files = await msgClearFiles('clear_id = ?', clearId);
