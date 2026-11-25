@@ -204,13 +204,15 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (rec.length) live.toPeople(rec, 'notify', { messageId: m.id });
   }
   // 訊息被刪除或復原（message_deleted／message_restored）：推給看得到這則的人，網頁重讀這一則
-  async function liveMessageChange(ctx, m, type) {
+  // 推給連著、看得到訊息 m 的人（m 可以只有 project、created_at：等於「看得到這個專案的新訊息」）
+  async function liveToViewers(ctx, m, type, data) {
     const on = live ? live.connectedIds() : [];
     if (!on.length) return;
     const people = await peopleMap(ctx), see = [];
     for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
-    live.toPeople(see, type, { id: m.id, project: m.project || null });
+    live.toPeople(see, type, data);
   }
+  const liveMessageChange = (ctx, m, type) => liveToViewers(ctx, m, type, { id: m.id, project: m.project || null });
   async function liveCard(ctx, cardId, project) {
     const on = live ? live.connectedIds() : [];
     if (!on.length || !project) return;
@@ -459,6 +461,10 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (!since) return true;
     return m.created_at >= since ? !m.project : m.created_at >= (me.created_at || '') && (!m.project || discovers(me, m.project));
   }
+  // 私訊屬於可復原期內的專案：對話、最後一句、通知都當它不存在（c：資料表別名加點）
+  const dmScope = (c = '') => { const del = [...deletedProjects]; return del.length ? { sql: ` AND (${c}project IS NULL OR ${c}project NOT IN (${del.map(() => '?').join(',')}))`, args: del } : { sql: '', args: [] }; };
+  // 通知查詢裡「私訊通知」的條件（n：notifications 別名）
+  const dmNotifScope = () => { const h = dmScope('d.'); return h.args.length ? { sql: `(n.reasons = '["dm"]' AND EXISTS (SELECT 1 FROM dms d WHERE d.id = n.message_id${h.sql}))`, args: h.args } : { sql: `n.reasons = '["dm"]'`, args: [] }; };
   function identity(p, people) {
     const out = { participantId: p.id, name: p.status === 'deleted' ? p.name + '（已刪除）' : p.name, role: p.role, roleKey: p.role_key || null, avatar: p.avatar || null, avatarImg: p.avatar_v || null, shortCode: p.code, memberType: p.kind, projects: projectsOf(p) };
     if (p.status === 'deleted') out.deleted = true; // 已刪除成員的舊訊息仍顯示原名稱，前端加註（已刪除）
@@ -513,17 +519,19 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const resRows = waitIds.length ? await db.all('SELECT message_id, resolved_by, resolved_at FROM decision_resolutions WHERE message_id IN (SELECT value FROM json_each(?))', JSON.stringify(waitIds)) : [];
     const resBy = new Map(resRows.map(r => [r.message_id, r]));
     const people = await peopleMap(ctx, [...rows.map(m => m.author_id), ...recRows.map(r => r.participant_id), ...resRows.map(r => r.resolved_by), ...rows.map(m => m.deleted_by).filter(Boolean)]);
-    const fileIds = rows.filter(m => !m.deleted_at).map(m => m.file_id).filter(Boolean); // 被刪的訊息不露出附件
+    const fileIds = rows.map(m => m.file_id).filter(Boolean);
     const fileRows = fileIds.length
       ? await db.all('SELECT * FROM files WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(fileIds)) : [];
     const filesById = new Map(fileRows.map(x => [x.id, x]));
     // 一則訊息可掛多個檔（files.message_id）；file＝第一個（舊版照讀），files＝全部、照上傳順序
-    const withFile = rows.filter(m => m.file_id && !m.deleted_at).map(m => m.id);
+    const withFile = rows.filter(m => m.file_id).map(m => m.id);
     const moreRows = withFile.length
       ? await db.all('SELECT * FROM files WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, rowid', JSON.stringify(withFile)) : [];
     const filesByMsg = new Map();
     for (const x of moreRows) { if (!filesByMsg.has(x.message_id)) filesByMsg.set(x.message_id, []); filesByMsg.get(x.message_id).push(x); }
-    const filesOf = m => filesByMsg.get(m.id).map(x => fileView(x));
+    // 被刪的訊息：附件形狀不變（file、files 照舊），但 available: false、下載回 MESSAGE_DELETED
+    const gone = (m, v) => (m.deleted_at ? { ...v, available: false } : v);
+    const filesOf = m => filesByMsg.get(m.id).map(x => gone(m, fileView(x)));
     const byMsg = new Map();
     for (const r of recRows) {
       if (!byMsg.has(r.message_id)) byMsg.set(r.message_id, []);
@@ -541,7 +549,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       replyFrom: ask ? [...ask] : null, // null＝沒標（舊訊息、多人沒指定）
       replyToMessageId: m.reply_to,
       project: m.project || null,
-      file: m.file_id ? fileView(filesById.get(m.file_id), m.file_id) : null,
+      file: m.file_id ? gone(m, fileView(filesById.get(m.file_id), m.file_id)) : null,
       ...(filesByMsg.get(m.id)?.length > 1 ? { files: filesOf(m) } : {}), // 只有多個檔才帶（單檔跟 file 一樣，不重複佔 AI 的上下文）
       createdAt: m.created_at,
       ...(AUTO_MSG_RE.test(m.request_id || '') ? { auto: true } : {}), // 平台自動組的通知（卡片異動、退回、交接…）：網頁英文介面照固定句型翻，內容不動
@@ -549,11 +557,11 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       ...(m.deleted_at ? deletedView(ctx, m, people) : {}),
     }; });
   }
-  // 被刪除的訊息：留佔位（回覆串、卡片關聯、決策結果的參照不斷），text 換成固定文字、多 deleted: true，附件只留 fileId（available: false）。
+  // 被刪除的訊息：留佔位（回覆串、卡片關聯、決策結果的參照不斷），text 換成固定文字、多 deleted: true，附件形狀不變但 available: false（serializeMessages）。
   // 人類另外看得到刪除者、時間、預計永久清除時間（畫面的「此訊息已被 X 於 T 刪除」）；給 AI 的形狀不變，只多 deleted
   const DELETED_TEXT = '（此訊息已刪除）';
   function deletedView(ctx, m, people) {
-    const out = { text: DELETED_TEXT, deleted: true, ...(m.file_id ? { file: fileView(undefined, m.file_id) } : {}) };
+    const out = { text: DELETED_TEXT, deleted: true };
     if (ctx.viewerKind === 'ai') return out;
     const p = people.get(m.deleted_by);
     return { ...out, deletedBy: { participantId: m.deleted_by, name: p ? p.name : '?' }, deletedAt: m.deleted_at, purgeAt: m.purge_at || null, ...(m.purged_at ? { purged: true } : {}) };
@@ -583,7 +591,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const msgs = new Map((await db.all('SELECT * FROM messages WHERE id IN (SELECT value FROM json_each(?))',
       JSON.stringify(rows.filter(n => n.reasons !== '["dm"]').map(n => n.message_id)))).map(m => [m.id, m]));
     // 私訊通知（只有收件的本人看得到自己的通知）
-    if (dmIds.length) for (const d of await db.all('SELECT * FROM dms WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(dmIds)))
+    const dmHid = dmScope();
+    if (dmIds.length) for (const d of await db.all(`SELECT * FROM dms WHERE id IN (SELECT value FROM json_each(?))${dmHid.sql}`, JSON.stringify(dmIds), ...dmHid.args))
       msgs.set(d.id, { id: d.id, author_id: d.from_id, ai_id: d.ai_id, reply_to: null, project: d.project, text: d.text, dm: true });
     const people = await peopleMap(ctx, [...msgs.values()].map(m => m.author_id).filter(id => id !== 'system')); // 平台通知不是成員，別為它重讀成員表
     return rows.filter(n => msgs.has(n.message_id)).map(n => {
@@ -906,7 +915,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       olderCursor = hasMore ? encodeCursor(oldest) : null;
       nextCursor = encodeCursor(maxSeq);
       const items = await serializeMessages(ctx, rows);
-      return { items, nextCursor, olderCursor, hasMore, from: (!beforeId && !before) ? from : (rows[0]?.created_at ?? null) };
+      return { items, nextCursor, olderCursor, hasMore, from: (!beforeId && !before) ? from : (rows[0]?.created_at ?? null), ...(await changesVerOf(ctx)) };
     }
 
     if (after) {
@@ -940,8 +949,10 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
         return { ...m, text: m.text.slice(0, BRIEF_CHARS) + '…', truncated: true, textLength: m.text.length };
       });
     }
-    return { items, nextCursor, olderCursor, hasMore };
+    return { items, nextCursor, olderCursor, hasMore, ...(await changesVerOf(ctx)) };
   }
+  // 給人類的網頁：訊息刪除、復原的版本（messagesChanged 換新）；給 AI 的形狀不變
+  const changesVerOf = async ctx => (ctx.viewerKind === 'human' ? { changesVer: (await db.get("SELECT value FROM app_settings WHERE key = 'msg_ver'"))?.value || '0' } : {});
 
   async function listNotifications(ctx, me, url) {
     onlyParams(url, ['status', 'limit', 'order', 'brief'], 'GET /api/notifications'); // brief：MCP 與規格會帶，收下但沒有作用
@@ -949,14 +960,14 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (!['pending', 'confirmed'].includes(status)) throw invalid('status 需為 pending 或 confirmed');
     const limit = parseLimit(url);
     // 看不到的訊息（例如被移出專案後）的通知不列出
-    const scope = await messageScope(me, 'm');
-    const join = scope ? ` AND (n.reasons = '["dm"]' OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''; // 私訊通知不看專案範圍
+    const scope = await messageScope(me, 'm'), dmN = dmNotifScope();
+    const join = scope ? ` AND (${dmN.sql} OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''; // 私訊通知不看專案範圍（可復原期內的專案除外）
     // order=desc（網頁收件匣用）：先給最新的；預設由舊到新（AI 依序處理）
     const desc = url.searchParams.get('order') === 'desc';
     const sql = status === 'pending'
       ? `SELECT n.* FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${join} ORDER BY ${desc ? 'n.created_at DESC, n.rowid DESC' : 'n.created_at, n.rowid'} LIMIT ?` // rowid 讓索引順序可用，讀到 LIMIT 就停
       : `SELECT n.* FROM notifications n WHERE n.recipient_id = ? AND n.status = 'acked'${join} ORDER BY n.created_at DESC, n.rowid DESC LIMIT ?`; // 依建立時間（走 idx_notif_recipient，讀到 LIMIT 就停）；原依 acked_at 要把整個人的已確認通知讀出來排序
-    let rows = await db.all(sql, me.id, ...(scope ? scope.args : []), limit + 1);
+    let rows = await db.all(sql, me.id, ...(scope ? [...dmN.args, ...scope.args] : []), limit + 1);
     const hasMore = rows.length > limit;
     if (hasMore) rows = rows.slice(0, limit);
     const items = await serializeNotifications(ctx, rows);
@@ -2465,7 +2476,8 @@ ${ending}`;
   // 改版：私訊清單的最後一句（每個 AI 只取最後一則；開頁一次、有私訊通知或打開時才再查）
   route('GET', '/api/dm/summary', async ({ me }) => {
     requireHuman(me);
-    const rows = await db.all('SELECT ai_id, from_id, text, created_at, seq FROM dms WHERE human_id = ? AND seq IN (SELECT MAX(seq) FROM dms WHERE human_id = ? GROUP BY ai_id)', me.id, me.id);
+    const hid = dmScope();
+    const rows = await db.all(`SELECT ai_id, from_id, text, created_at, seq FROM dms WHERE human_id = ? AND seq IN (SELECT MAX(seq) FROM dms WHERE human_id = ?${hid.sql} GROUP BY ai_id)`, me.id, me.id, ...hid.args);
     // 最後一則是頭像提案時，看它還沒處理就寫「🖼 有頭像提案」（只在最後一則是提案時多查那幾張的狀態）
     const propIds = rows.map(r => AP_RE.exec(r.text)?.[1]).filter(Boolean);
     const props = propIds.length ? new Map((await db.all('SELECT id, status, created_at FROM avatar_proposals WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(propIds))).map(p => [p.id, apStatus(p)])) : new Map();
@@ -2477,7 +2489,8 @@ ${ending}`;
     const { human, ai } = await dmPair(ctx, me, url.searchParams.get('aiId'));
     const after = Number(url.searchParams.get('after')) || 0;
     const limit = parseLimit(url, 50, 100);
-    const rows = await db.all('SELECT * FROM dms WHERE human_id = ? AND ai_id = ? AND seq > ? ORDER BY seq LIMIT ?', human.id, ai.id, after, limit + 1);
+    const hid = dmScope();
+    const rows = await db.all(`SELECT * FROM dms WHERE human_id = ? AND ai_id = ? AND seq > ?${hid.sql} ORDER BY seq LIMIT ?`, human.id, ai.id, after, ...hid.args, limit + 1);
     const hasMore = rows.length > limit;
     const items = rows.slice(0, limit);
     const people = await peopleMap(ctx);
@@ -2858,7 +2871,7 @@ ${ending}`;
     ]);
     invalidatePeople();
     await loadProjects(true);
-    const purged = days === 0 ? await purgeProject({ ...row, deleted_at: at, purge_at: purgeAt, paused_ais: JSON.stringify(paused.map(p => p.id)) }, { actor: me }) : null;
+    const purged = days === 0 ? await purgeProject({ ...row, deleted_at: at, purge_at: purgeAt, paused_ais: JSON.stringify(paused.map(p => p.id)) }) : null;
     return projectsSeenBy(ctx, me, { deleted: { projectId: id, name: row.name, code, counts, recoveryDays: days, purgeAt: iso(purgeAt), aisPaused: paused.map(p => p.name), purged: !!purged } });
   });
   // 已刪除的專案（可復原期內）：預計永久清除時間早的在前
@@ -2872,6 +2885,18 @@ ${ending}`;
         counts: await projectFootprint(r.id), aisPaused: idList(r.paused_ais).map(x => people.get(x)?.name).filter(Boolean) });
     }
     return { items };
+  });
+  // 舊的刪除紀錄端點（相容用，形狀不變）：最近 50 個永久清除了的專案，資料來自稽核紀錄的 project.purge（新的在前）。
+  // by、byName 是清除前最後一次按刪除的人（永久清除的操作者是系統）；找不到（轉進來的舊紀錄）就用清除紀錄的操作者
+  route('GET', '/api/project-deletions', async ({ ctx, me }) => {
+    await access.check(ctx, me, 'see_deleted_projects', 'workspace', { what: '查看已刪除的專案' });
+    const purges = (await auditLog.list({ action: AUDIT_ACTION.PROJECT_PURGE, limit: 50 })).items;
+    const dels = (await auditLog.list({ action: AUDIT_ACTION.PROJECT_DELETE, limit: 200 })).items;
+    return { items: purges.map(e => {
+      const by = dels.find(d => d.scope.projectId === e.scope.projectId && d.at <= e.at)?.actor || e.actor;
+      return { projectId: e.scope.projectId, name: e.scope.projectName ?? e.target?.name ?? '', code: e.detail?.code ?? null, by: by.kind === 'system' ? null : by.id, byName: by.name,
+        at: e.at, counts: e.detail?.counts || {}, aisDeleted: e.detail?.aisDeleted || [] };
+    }) };
   });
   // 復原：回到封存狀態（要用時再還原封存）；刪除時暫停的 AI 恢復。可復原期過了（等排程清除中）不能復原
   route('POST', '/api/projects/:id/restore', async ({ ctx, me, params }) => {
@@ -2898,12 +2923,12 @@ ${ending}`;
     return projectsSeenBy(ctx, me, { restored: { projectId: row.id, name: row.name } });
   });
   // 永久清除（到期的排程、可復原期 0 的刪除當下）：
-  // 刪：卡片與紀錄、訊息與通知、決策、上傳檔與文件（含檔案本體）、知識庫、技能、加入申請、私訊、專案事件與設定；人和 AI 帳號留著，只是不再屬於這個專案
+  // 刪：卡片與紀錄、訊息與通知、決策、上傳檔與文件（含檔案本體）、知識庫、技能、加入申請、私訊、專案事件與設定；人和 AI 都留著，只是不再屬於這個專案
   // 只屬於這個專案的 AI（AI 至少要一個專案）此時才刪除：跟「刪除 AI」一樣，狀態改 deleted、Token 失效
   // 可復原期內被加進別的專案、不再只屬於它的暫停 AI：不刪，恢復啟用
   // 跨專案頻道（project=all）的訊息不動。D1：每張表一句（沒有索引的表只掃一次），不逐筆刪
-  // actor：操作者（null＝系統）。稽核紀錄的 project.purge 記名稱快照與數量（專案事件會跟著刪掉）
-  async function purgeProject(row, { actor = null } = {}) {
+  // 稽核紀錄的 project.purge 記名稱快照與數量（專案事件會跟著刪掉）；永久清除的操作者一律是系統（可復原期 0 天的刪除也是，刪除那筆才記操作的人）
+  async function purgeProject(row) {
     const id = row.id, at = nowIso(), code = projCodes[id] || null;
     invalidatePeople(); // 用最新的成員資料算「只屬於這個專案的 AI」
     const people = [...(await peopleMap({})).values()].filter(p => p.kind !== 'system');
@@ -2972,7 +2997,7 @@ ${ending}`;
       settings.push(['UPDATE invites SET projects = ? WHERE id = ?', [String(inv.projects).split(',').filter(x => x && x !== id).join(','), inv.id]]);
     settings.push(['DELETE FROM projects WHERE id = ?', [id]]);
     const pj = { id, name: row.name }, aisDeleted = onlyHere.map(p => p.name);
-    await writeStmts([...settings, auditLog.stmt({ actor, action: AUDIT_ACTION.PROJECT_PURGE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
+    await writeStmts([...settings, auditLog.stmt({ actor: null, action: AUDIT_ACTION.PROJECT_PURGE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
       detail: { code, counts, aisDeleted } })]);
     titlesAt = 0;
     invalidatePeople(); invalidateProjects();
@@ -3429,15 +3454,26 @@ ${ending}`;
   // 權限範圍：訊息的專案＋作者、刪除者（access.js 的 delete_own_message／delete_message／restore_message）
   const msgAccessScope = m => ({ project: m.project || null, message: { authorId: m.author_id, deletedBy: m.deleted_by || null } });
   const msgAuditScope = m => (m.project ? { scope: AUDIT_SCOPE.PROJECT, project: { id: m.project, name: nameOf(m.project) } } : { scope: AUDIT_SCOPE.WORKSPACE });
+  // 訊息附件的檔案稽核（隨訊息刪除、復原）：一個檔一筆，檔名與大小在寫入時快照。msgSql 是選出訊息 id 的 SQL（參數 args）
+  const msgFileAuditStmt = (action, actor, detail, at, msgSql, args) => [`INSERT INTO file_audit (id, file_id, action, actor_id, actor_kind, at, name, size, sha256, declared, detail)
+    SELECT ? || id, id, ?, ?, ?, ?, name, size, sha256, declared, ? FROM files WHERE message_id IN (${msgSql}) OR id IN (SELECT file_id FROM messages WHERE id IN (${msgSql}) AND file_id IS NOT NULL)`,
+  [randId('aud') + '_', action, actor.id, actor.kind, at, detail, ...args, ...args]];
+  // 刪除、清空當下的時間與依生效的可復原期算出的永久清除時間（ISO；訊息的時間欄都是 ISO 字串）；days 0＝當下就永久清除
+  async function deleteTiming() {
+    const now = Date.now(), { days, purgeAt } = await purgeAtFor(now);
+    return { at: new Date(now).toISOString(), days, purgeIso: new Date(purgeAt).toISOString() };
+  }
   async function visibleMessage(me, id) {
     const m = await db.get('SELECT * FROM messages WHERE id = ?', id);
     if (!m || !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到訊息');
     return m;
   }
-  // 訊息被刪除、復原、永久清除：團隊狀態與待處理通知的快取重讀
-  function messagesChanged() {
+  // 訊息被刪除、復原、永久清除：團隊狀態與待處理通知的快取重讀；msg_ver 換新（網頁輪詢時比對，有變就重讀已載入的訊息；
+  // Workers 沒有即時通道，開著的頁面靠這個換成佔位或復原）
+  async function messagesChanged() {
     pendCache = { at: 0, rows: null };
     teamCache = { at: 0, data: null };
+    await db.run("INSERT INTO app_settings (key, value) VALUES ('msg_ver', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", String(Date.now()) + Math.random().toString(36).slice(2, 8));
   }
   // 作者刪自己的、工作區管理員刪任何人的（不用再驗證身分）。永久清除時間在刪除當下依生效的可復原期決定，0 天＝當下就永久清除
   // 不發通知；寫稽核紀錄（不存原文）；這則訊息的待處理通知自動確認（復原時不重發）；[接單] 的認領記在卡片紀錄，不受影響
@@ -3445,16 +3481,17 @@ ${ending}`;
     const m = await visibleMessage(me, params.id);
     await access.check(ctx, me, m.author_id === me.id ? 'delete_own_message' : 'delete_message', msgAccessScope(m), { what: '刪除別人的訊息' });
     if (m.deleted_at) throw new ApiError(410, 'MESSAGE_DELETED', '這則訊息已刪除');
-    const now = Date.now(), at = new Date(now).toISOString(), { days, purgeAt } = await purgeAtFor(now), purgeIso = new Date(purgeAt).toISOString();
+    const { at, days, purgeIso } = await deleteTiming();
     const r = await db.run('UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = NULL WHERE id = ? AND deleted_at IS NULL', at, me.id, purgeIso, m.id);
     if (!r.changes) throw new ApiError(410, 'MESSAGE_DELETED', '這則訊息已刪除'); // 別人剛好先刪了
     const author = (await peopleMap(ctx, [m.author_id])).get(m.author_id);
     await writeStmts([
       ["UPDATE notifications SET status = 'acked', acked_at = COALESCE(acked_at, ?) WHERE message_id = ? AND status = 'pending'", [at, m.id]],
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_DELETE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, days, purgeAt: purgeIso }, at }),
+      msgFileAuditStmt('msg_delete', me, 'MESSAGE_DELETED', at, '?', [m.id]),
     ]);
-    messagesChanged();
-    if (days === 0) await purgeMessages([m.id], { actor: me });
+    await messagesChanged();
+    if (days === 0) await purgeMessages([m.id]);
     await liveMessageChange(ctx, m, 'message_deleted').catch(() => {});
     return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
   });
@@ -3468,23 +3505,26 @@ ${ending}`;
     const r = await db.run('UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE id = ? AND deleted_at = ? AND purged_at IS NULL', m.id, m.deleted_at);
     if (!r.changes) throw new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
     const author = (await peopleMap(ctx, [m.author_id])).get(m.author_id);
-    await auditLog.write({ actor: me, action: AUDIT_ACTION.MESSAGE_RESTORE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, deletedBy: m.deleted_by }, at });
-    messagesChanged();
+    await writeStmts([
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_RESTORE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, deletedBy: m.deleted_by }, at }),
+      msgFileAuditStmt('msg_restore', me, 'MESSAGE_RESTORED', at, '?', [m.id]),
+    ]);
+    await messagesChanged();
     await liveMessageChange(ctx, m, 'message_restored').catch(() => {});
     return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
   });
   // 永久清除訊息（ids 中已刪除、還沒清除的）：清掉內文，附件本體與附件列刪掉（檔案稽核記 purge）；
   // 佔位要的欄位（id、作者、時間、刪除者）留著，回應、卡片關聯、決策結果、收件人、request_id（重送不會變新訊息）不動
-  // actor：操作者（null＝系統，到期清除）。回清除了幾則。可復原期 0 天的刪除、到期清除、清空專案訊息都走這裡
+  // 操作者一律是系統（可復原期 0 天的刪除、清空也是；刪除、清空那筆才記操作的人）。回清除了幾則。可復原期 0 天的刪除、到期清除、清空專案訊息都走這裡
   // 一次最多 MESSAGE_PURGE_BATCH 則一批（資料與稽核紀錄同一批寫入）；稽核紀錄每批、每個專案一筆 message.purge（count＝幾則，detail 只有 id 與附件數，不存原文）
   const MESSAGE_PURGE_BATCH = Math.max(1, Number(config.purgeBatch) || 200); // 測試可調小
-  async function purgeMessages(ids, { actor = null } = {}) {
+  async function purgeMessages(ids) {
     let total = 0;
-    for (let i = 0; i < ids.length; i += MESSAGE_PURGE_BATCH) total += await purgeMessageBatch(ids.slice(i, i + MESSAGE_PURGE_BATCH), actor);
-    if (total) messagesChanged();
+    for (let i = 0; i < ids.length; i += MESSAGE_PURGE_BATCH) total += await purgeMessageBatch(ids.slice(i, i + MESSAGE_PURGE_BATCH));
+    if (total) await messagesChanged();
     return total;
   }
-  async function purgeMessageBatch(ids, actor) {
+  async function purgeMessageBatch(ids) {
     const rows = await db.all('SELECT id, project, file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL', JSON.stringify(ids));
     if (!rows.length) return 0;
     const mids = JSON.stringify(rows.map(m => m.id)), at = nowIso();
@@ -3502,11 +3542,11 @@ ${ending}`;
     await writeStmts([
       [`INSERT INTO file_audit (id, file_id, action, actor_id, actor_kind, at, name, size, sha256, declared, detail)
         SELECT ? || id, id, 'purge', ?, ?, ?, name, size, sha256, declared, 'MESSAGE_PURGED' FROM files WHERE id IN (SELECT value FROM json_each(?))`,
-        [randId('aud') + '_', actor?.id ?? 'system', actor?.kind ?? 'system', at, fids]],
+        [randId('aud') + '_', 'system', 'system', at, fids]],
       ['DELETE FROM file_chunks WHERE file_id IN (SELECT value FROM json_each(?))', [fids]], // dbStorage 的本體（其他儲存上面已刪）
       ['DELETE FROM files WHERE id IN (SELECT value FROM json_each(?))', [fids]],
       ["UPDATE messages SET text = '', purged_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL", [at, mids]],
-      ...[...groups.values()].map(g => auditLog.stmt({ actor, action: AUDIT_ACTION.MESSAGE_PURGE, ...msgAuditScope(g.m), count: g.ids.length, detail: { messageIds: g.ids, files: g.files }, at })),
+      ...[...groups.values()].map(g => auditLog.stmt({ actor: null, action: AUDIT_ACTION.MESSAGE_PURGE, ...msgAuditScope(g.m), count: g.ids.length, detail: { messageIds: g.ids, files: g.files }, at })),
     ]);
     return rows.length;
   }
@@ -3523,13 +3563,7 @@ ${ending}`;
     return row;
   }
   // 推給看得到這個專案新訊息的人（一個專案一則，不逐則推）；網頁重讀訊息
-  async function liveProjectMessages(ctx, project, type, data) {
-    const on = live ? live.connectedIds() : [];
-    if (!on.length) return;
-    const people = await peopleMap(ctx), m = { project, created_at: nowIso() }, see = [];
-    for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
-    live.toPeople(see, type, { project, ...data });
-  }
+  const liveProjectMessages = (ctx, project, type, data) => liveToViewers(ctx, { project, created_at: nowIso() }, type, { project, ...data });
   // 預覽：會刪掉幾則訊息、幾個附件（已刪除的不算）、照現在生效的可復原期算出的預計永久清除時間（不用再驗證）
   route('GET', '/api/projects/:id/messages/clear-preview', async ({ ctx, me, params }) => {
     const row = await clearableProject(ctx, me, params.id, 'preview_messages_clear');
@@ -3544,7 +3578,7 @@ ${ending}`;
     const body = await readJson(req);
     if (String(body.confirmName ?? '').trim() !== row.name) throw invalid(`請輸入專案名稱「${row.name}」確認`);
     const pj = { id: row.id, name: row.name }, clearId = randId('clr');
-    const now = Date.now(), at = new Date(now).toISOString(), { days, purgeAt } = await purgeAtFor(now), purgeIso = new Date(purgeAt).toISOString();
+    const { at, days, purgeIso } = await deleteTiming();
     const r = await db.run('UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = ? WHERE project = ? AND deleted_at IS NULL', at, me.id, purgeIso, clearId, row.id);
     if (!r.changes) return { ok: true, clear: { clearId: null, projectId: row.id, name: row.name, messages: 0, files: 0 } };
     const files = await msgClearFiles('clear_id = ?', clearId);
@@ -3552,10 +3586,11 @@ ${ending}`;
       ["UPDATE notifications SET status = 'acked', acked_at = COALESCE(acked_at, ?) WHERE message_id IN (SELECT id FROM messages WHERE clear_id = ?) AND status = 'pending'", [at, clearId]],
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_CLEAR, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, count: r.changes, at,
         detail: { clearId, files, recoveryDays: days, purgeAt: purgeIso } }),
+      msgFileAuditStmt('msg_delete', me, 'PROJECT_MESSAGES_CLEARED', at, 'SELECT id FROM messages WHERE clear_id = ?', [clearId]),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_CLEAR, detail: { a: me.name, p: row.name } }),
     ]);
-    messagesChanged();
-    if (days === 0) await purgeMessages((await db.all('SELECT id FROM messages WHERE clear_id = ?', clearId)).map(x => x.id), { actor: me });
+    await messagesChanged();
+    if (days === 0) await purgeMessages((await db.all('SELECT id FROM messages WHERE clear_id = ?', clearId)).map(x => x.id));
     await liveProjectMessages(ctx, row.id, 'messages_cleared', { clearId }).catch(() => {});
     return { ok: true, clear: { clearId, projectId: row.id, name: row.name, messages: r.changes, files, recoveryDays: days, purgeAt: purgeIso, purged: days === 0 } };
   });
@@ -3581,15 +3616,17 @@ ${ending}`;
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這次清空');
     const at = nowIso();
     if (Number(c.purged) || c.purge_at <= at) throw new ApiError(409, 'RECOVERY_EXPIRED', '已經過了可復原期，這次清空不能復原');
+    const ids = JSON.stringify((await db.all('SELECT id FROM messages WHERE clear_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL', params.id)).map(x => x.id)); // 檔案稽核用（復原後 clear_id 就清掉了）
     const r = await db.run('UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE clear_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL', params.id);
     if (!r.changes) throw new ApiError(404, 'NOT_FOUND', '找不到這次清空'); // 別人剛好先復原了
     const pj = { id: row.id, name: row.name };
     await writeStmts([
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_RESTORE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, count: r.changes, at,
         detail: { clearId: params.id } }),
+      msgFileAuditStmt('msg_restore', me, 'PROJECT_MESSAGES_RESTORED', at, 'SELECT value FROM json_each(?)', [ids]),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_RESTORE, detail: { a: me.name, p: row.name } }),
     ]);
-    messagesChanged();
+    await messagesChanged();
     await liveProjectMessages(ctx, row.id, 'messages_restored', { clearId: params.id }).catch(() => {});
     return { ok: true, restored: { clearId: params.id, projectId: row.id, name: row.name, messages: r.changes } };
   });
@@ -3646,11 +3683,11 @@ ${ending}`;
   route('GET', '/api/notifications', ({ ctx, me, url }) => listNotifications(ctx, me, url));
   route('GET', '/api/notifications/count', async ({ me, ctx, url }) => {
     onlyParams(url, ['wake'], 'GET /api/notifications/count');
-    const scope = await messageScope(me, 'm');
-    const r = await db.get(`SELECT COUNT(*) AS c FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${scope ? ` AND (n.reasons = '["dm"]' OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''}`, me.id, ...(scope ? scope.args : [])); // 私訊通知也算
+    const scope = await messageScope(me, 'm'), dmN = dmNotifScope(), sArgs = scope ? [...dmN.args, ...scope.args] : [];
+    const r = await db.get(`SELECT COUNT(*) AS c FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${scope ? ` AND (${dmN.sql} OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''}`, me.id, ...sArgs); // 私訊通知也算
     // （UX 退回）：?wake=1 另回「要叫醒的」數量，知會類（wake:false）不算——等待腳本看這個，否則留著的知會會讓它一啟動就醒、空轉
     if (url.searchParams.get('wake') !== '1' || !r.c) return { pending: r.c, ...(url.searchParams.get('wake') === '1' ? { wake: 0 } : {}) };
-    const rows = await db.all(`SELECT n.* FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${scope ? ` AND (n.reasons = '["dm"]' OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''} ORDER BY n.created_at, n.rowid LIMIT 200`, me.id, ...(scope ? scope.args : []));
+    const rows = await db.all(`SELECT n.* FROM notifications n WHERE n.recipient_id = ? AND n.status = 'pending'${scope ? ` AND (${dmN.sql} OR EXISTS (SELECT 1 FROM messages m WHERE m.id = n.message_id AND ${scope.sql}))` : ''} ORDER BY n.created_at, n.rowid LIMIT 200`, me.id, ...sArgs);
     return { pending: r.c, wake: (await serializeNotifications(ctx, rows)).filter(x => x.wake).length };
   });
   route('POST', '/api/notifications/ack', async ({ me, req }) => { const b = await readJson(req); return ackNotifications(me, b.notificationIds, b.cursor); }); // cursor 選填

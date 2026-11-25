@@ -2,11 +2,11 @@
 // A. 只有工作區管理員（含平台管理員的隱含權限）能預覽、清空、列出與整批復原；專案管理員、其他成員、AI 一律被拒
 // B. 預覽：會刪掉多少則訊息、多少個附件（已單獨刪除的不算）、照現在生效的可復原期算出的預計永久清除時間
 // C. 清空要輸入專案名稱確認；是敏感動作，這台裝置要先再驗證身分
-// D. 範圍只有該專案的群組訊息與附件：卡片、卡片紀錄、決策結果、私訊、跨專案頻道、別的專案都不變；被清空的訊息跟單則刪除一樣是佔位、搜尋不到、附件不能下載、待處理通知自動確認
+// D. 範圍只有該專案的群組訊息與附件：卡片、卡片紀錄、決策結果、私訊、跨專案頻道、別的專案都不變；被清空的訊息跟單則刪除一樣是佔位、搜尋不到、附件不能下載（清空、整批復原都寫進檔案稽核）、待處理通知自動確認
 // E. 每次清空是一筆有 id 的操作；工作區管理員看得到最近可復原的清空，可在可復原期內整批復原；
 //    清空前已被單獨刪除的不會被帶回來；清空後單獨復原的一則不再屬於那次清空；過了可復原期 RECOVERY_EXPIRED
 // F. 清空、整批復原都通知所有工作區管理員（不含操作者本人），寫稽核紀錄（附數量、不含原文）
-// G. 可復原期 0 天：清空當下就永久清除，不能整批復原
+// G. 可復原期 0 天：清空當下就永久清除，不能整批復原；清空記操作的人，永久清除的操作者是系統
 // H. 即時通道：一個專案推一則（messages_cleared／messages_restored）
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres
 // 本機暫存資料庫，不連任何站。用法：node scripts/message-clear-test.js
@@ -20,6 +20,7 @@ import { openTestDb } from './test-db.js';
 import { adminSession, reauth } from './test-admin.js';
 import { dbStorage } from '../src/storage-db.js';
 import { scriptHashes } from './script-hashes.mjs';
+import { appCaller } from './test-call.js';
 import { testToken } from './test-token.js';
 
 const PJ = '預設專案', PJ2 = '第二專案', ENC = encodeURIComponent(PJ);
@@ -32,12 +33,7 @@ try {
   const events = [];
   const live = { connectedIds: () => connected, has: id => connected.includes(id), toPeople: (ids, type, data) => { for (const id of ids) events.push({ to: id, type, data }); } };
   const app = createApp({ db, storage: dbStorage(db), docText: '', scriptHashes: scriptHashes(), live, config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0' } });
-  const call = async (token, p, method = 'GET', body, raw = false) => {
-    const r = await app(new Request('http://localhost' + p, { method, headers: { ...(raw ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: raw ? body : body ? JSON.stringify(body) : undefined }), 'http://localhost');
-    const text = await r.text();
-    let json = null; try { json = JSON.parse(text); } catch { /* 下載是檔案內容 */ }
-    return { status: r.status, body: json, text };
-  };
+  const call = appCaller(app);
   const code = r => `${r.status} ${r.body?.error?.code || ''}`;
   let rq = 0;
   const post = async (token, text, extra = {}) => {
@@ -134,6 +130,8 @@ try {
   assert.equal(await claimOf(), ai.participantId, 'D 卡片紀錄（認領）不變');
   assert.deepEqual((await call(chen.token, '/api/search/messages?q=SECRETCLR')).body.items.map(m => m.messageId).sort(), [other.messageId, cross.messageId].sort(), 'D 搜尋不到被清空的');
   assert.equal(code(await call(chen.token, `/api/files/${f1}`)), '410 MESSAGE_DELETED', 'D 附件不能下載');
+  const fileAudit = async (fid, action) => (await call(boss.token, '/api/files/audit?limit=500')).body.items.filter(a => a.fileId === fid && a.action === action).map(a => [a.detail, a.actor.participantId]);
+  for (const f of [f1, f2]) assert.deepEqual(await fileAudit(f, 'msg_delete'), [['PROJECT_MESSAGES_CLEARED', lin.id]], 'D 清空寫進檔案稽核（每個附件一筆、操作者）');
   assert.equal(await pending(zhao), 0, 'D 待處理通知自動確認');
   assert.deepEqual(events.filter(e => e.type === 'messages_cleared').map(e => [e.to, e.data.project, e.data.clearId]).sort(), [chen.id, zhao.id, lin.id].map(id => [id, PJ, c1.clearId]).sort(), 'H 一個專案推一則');
   assert.equal(events.filter(e => e.type === 'message_deleted').length, 0, 'H 不逐則推送');
@@ -167,6 +165,7 @@ try {
   assert.deepEqual([s.deleted, s.deletedBy.participantId], [true, chen.id], 'E 清空前已被單獨刪除的沒有被帶回來');
   assert.equal((await read(chen.token, after.messageId)).text, '清空後的新訊息', 'E 清空後的新訊息不受影響');
   assert.equal((await call(chen.token, `/api/files/${f1}`)).status, 200, 'E 復原後附件下載得到');
+  for (const f of [f1, f2]) assert.deepEqual(await fileAudit(f, 'msg_restore'), [['PROJECT_MESSAGES_RESTORED', WANG]], 'E 整批復原寫進檔案稽核');
   assert.equal(await pending(zhao), 0, 'E 復原不重發通知');
   assert.deepEqual(events.filter(e => e.type === 'messages_restored').map(e => [e.to, e.data.project, e.data.clearId]), [[chen.id, PJ, c1.clearId]], 'H 整批復原推一則');
   assert.deepEqual((await clears(lin.token)).body.items, [], 'E 復原後不在清單');
@@ -202,6 +201,10 @@ try {
   assert.deepEqual([zz.text, zz.deleted, zz.purged], [GONE, true, true], 'G 已永久清除，佔位留著');
   assert.equal((await read(chen.token, other.messageId)).purged, true, 'G 同專案的都清除');
   assert.equal(code(await restoreClear(lin.token, r.body.clear.clearId)), '409 RECOVERY_EXPIRED', 'G 0 天的清空不能復原');
+  const zl = async action => (await call(boss.token, `/api/audit-log?action=${action}&limit=200`)).body.items.filter(e => e.scope.projectId === PJ2);
+  assert.deepEqual((await zl('project_messages.clear')).filter(e => e.detail?.clearId === r.body.clear.clearId).map(e => e.actor.id), [lin.id], 'G 清空的稽核紀錄是操作的人');
+  const zp = (await zl('message.purge')).filter(e => e.detail?.messageIds?.includes(z.messageId));
+  assert.deepEqual(zp.map(e => [e.actor.id, e.actor.kind]), [['system', 'system']], 'G 永久清除的稽核紀錄是系統：' + JSON.stringify(zp));
 
   console.log('message-clear-test：全部通過');
 } finally {

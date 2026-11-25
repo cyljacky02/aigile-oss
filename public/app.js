@@ -1078,6 +1078,7 @@
       for (let i = 0; i < 5; i++) {
         const d = await api(`/api/messages?limit=100&after=${encodeURIComponent(state.nextCursor)}`, { timeoutMs: 8_000 });
         d.items.forEach(onNewMessage);
+        noteChangesVer(d);
         if (d.items.length) state.newMsgAt = Date.now(); // 收件匣據此決定要不要重抓通知
         state.nextCursor = d.nextCursor;
         if (!d.hasMore) break;
@@ -1367,7 +1368,7 @@
     </article>`;
   }
   // 「刪除」按鈕：''＝可以刪；文字＝按了說明為什麼不能刪；null＝不出現（別人的訊息）
-  // 作者刪自己的（唯讀成員不行；工作區政策設為只有管理員時也不行）、工作區管理員刪任何人的；自己 AI 發的要找工作區管理員
+  // 作者刪自己的（唯讀成員不行；工作區政策設為只有工作區管理員時也不行）、工作區管理員刪任何人的；自己 AI 發的要找工作區管理員
   function delWhy(m) {
     if (state.me?.memberType !== 'human' || m.deleted) return null;
     if (isAdmin()) return '';
@@ -1387,6 +1388,32 @@
     const i = state.messages.findIndex(x => x.messageId === m.messageId);
     if (i >= 0) state.messages[i] = m;
     const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top;
+  }
+  // 別人刪除、復原、清空了訊息：輪詢回來的 changesVer 跟上次不同就照原位重讀已載入的訊息（Workers 沒有即時通道時靠這個）
+  function noteChangesVer(d) {
+    if (!d?.changesVer) return;
+    if (state.changesVer && d.changesVer !== state.changesVer) refreshLoaded().catch(() => {});
+    state.changesVer = d.changesVer;
+  }
+  // 已載入的訊息（最新的一段或前後文）從第一則起重讀，被刪除或復原的換掉；不動捲動位置、不離開前後文
+  async function refreshLoaded() {
+    const list = state.messages || [];
+    if (!list.length) return;
+    const first = list[0].sequence, last = list[list.length - 1].sequence, fresh = new Map();
+    let cur = curOf(first - 1);
+    for (let i = 0; i < 5; i++) {
+      const d = await api(`/api/messages?limit=100&after=${encodeURIComponent(cur)}`);
+      for (const m of d.items) if (m.sequence <= last) fresh.set(m.messageId, m);
+      if (!d.hasMore || !d.items.length || d.items[d.items.length - 1].sequence >= last) break;
+      cur = d.nextCursor;
+    }
+    let changed = false;
+    state.messages = state.messages.map(m => {
+      const x = fresh.get(m.messageId);
+      if (!x || (!!x.deleted === !!m.deleted && x.text === m.text)) return m;
+      changed = true; state.byId.set(x.messageId, x); return x;
+    });
+    if (changed) { const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top; }
   }
   async function reloadMsg(id) {
     if (!state.byId.has(id)) return;
@@ -2098,6 +2125,7 @@
     state.mobileWin = mobile;
     state.byId = state.byId || new Map();
     setMessages(d.items);
+    if (d.changesVer) state.changesVer = d.changesVer;
     const seen = Number(store.get(seenKey())) || 0; // 上次看到的地方（這台裝置）
     state.seenId = seen ? (d.items.find(x => x.sequence > seen && !isMine(x) && visible(x))?.messageId || null) : null;
     markSeen(Math.max(0, ...d.items.map(x => x.sequence || 0)));
@@ -7606,10 +7634,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       } catch (err) { const el = body.querySelector('#mc-err'); if (el) el.textContent = err.message; }
     });
   }
-  // 整個專案的訊息被清空或整批復原：畫面上有這個專案的訊息就重讀訊息視窗（正在看前後文時不動）
+  // 整個專案的訊息被清空或整批復原：畫面上有這個專案的訊息就重讀訊息視窗；正在看前後文時照原位重讀（不離開前後文）
   function reloadProjMsgs(pj) {
-    if (state.ctx || !state.messages?.some(m => m.project === pj)) return;
-    loadWindow().catch(() => {});
+    if (!state.messages?.some(m => m.project === pj)) return;
+    (state.ctx ? refreshLoaded() : loadWindow()).catch(() => {});
   }
 
   // 角色範本：常用的排前面，其餘收進「其他角色」群組（只是選單分組，角色定義不變；既有成員的角色照常顯示已選）
@@ -9109,7 +9137,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <p class="muted small">會產生一次性的救援登入連結（15 分鐘內、只能用一次），只救平台管理員。平台管理員不只一位時要指定名字：<code>npm run admin-rescue -- --name 名字</code>（沒指定只列出名單、不產生連結）。本機或 Docker 版（node server.js）改用 <code>npm run admin-rescue -- --local</code>，有設 <code>DATABASE_URL</code> 就照同一組設定連 Postgres。</p></div></div>`;
   }
   // 稽核與儲存：全站稽核紀錄（只有管理員拿得到全站）＋儲存空間狀態；點進來才讀
-  const auditLabel = { upload: '上傳', download: '下載', delete: '刪除', reject: '拒絕', expire: '到期清除', purge: '隨訊息永久清除', rename: '改名', move: '搬移' };
+  const auditLabel = { upload: '上傳', download: '下載', delete: '刪除', reject: '拒絕', expire: '到期清除', purge: '隨訊息永久清除', msg_delete: '隨訊息刪除', msg_restore: '隨訊息復原', rename: '改名', move: '搬移' };
   const auditTableHtml = items => (items.length ? `<div class="table-scroll"><table class="audit-table"><thead><tr><th>時間</th><th>動作</th><th>操作者</th><th>檔名</th><th>大小</th><th>SHA-256</th><th>聲明</th><th>備註</th></tr></thead><tbody>${
     items.map(x => `<tr><td>${fmtTime(x.at)}</td><td>${auditLabel[x.action] || x.action}</td>
       <td>${esc(x.actor.name || x.actor.participantId || '')}${x.actor.memberType === 'ai' ? L('（AI）', ' (AI)') : x.actor.memberType === 'human' ? L('（人類）', ' (human)') : ''}</td>
@@ -9668,7 +9696,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="dm">${p.dm?.on ? '關閉私訊…' : '開放成員私訊自己的 AI…'}<span class="pm-sub">${p.dm?.on ? `已開放${p.dm.at ? ' · ' + esc(mmdd(p.dm.at)) : ''}${p.dm.byName ? ' ' + esc(p.dm.byName) + ' 打開' : ''}` : '預設關'}</span></button>
           <button type="button" role="menuitem" data-pp="log">異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>封存…${blocked ? `<span class="pm-sub">${esc(why)}</span>` : ''}</button></div>` : '';
-      const last = p.archived ? `<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button>${isAdmin() ? '<button type="button" class="btn small danger-outline" data-pp="pdelete">刪除…</button>' : ''}</span>` // 封存的才能刪除（只有管理員）
+      const last = p.archived ? `<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button>${isAdmin() ? '<button type="button" class="btn small danger-outline" data-pp="pdelete">刪除…</button>' : ''}</span>` // 封存的才能刪除（只有工作區管理員）
         : `<span class="pm-more-wrap"><button type="button" class="pm-more" data-pm-more="${esc(p.id)}" aria-haspopup="menu" aria-expanded="${perm.moreOpen === p.id}" aria-label="${esc(p.name)} 的更多動作">⋯</button>${menu}</span>`;
       const log = open ? `<tr class="pm-log-tr" data-pj="${esc(p.id)}"><td colspan="6"><div class="pm-log-head"><b>異動紀錄 · ${esc(p.name)}</b><button type="button" class="link small" data-pp="log" aria-expanded="true">收起</button></div><ul class="pa-log">${(perm.events[p.id] || []).map(e => `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(e.text)}</li>`).join('') || '<li class="muted small">還沒有紀錄</li>'}</ul></td></tr>` : '';
       return `<tr class="pm-prow${p.archived ? ' archived' : ''}" data-pj="${esc(p.id)}"><td class="c-pname"><b>${esc(p.name)}</b>${p.archived ? ' <span class="pill-tag grey">已封存</span>' : ''}</td><td class="c-code" data-label="API 代號" title="${esc(p.id)}">${esc(p.id)}</td><td class="c-num" data-label="成員">${p.memberCount}</td><td class="c-num2" data-label="未結案卡">${p.openCards}</td><td class="c-repo" data-label="程式庫">${repo}</td><td class="c-more">${last}</td></tr>${log}`;
@@ -9678,7 +9706,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <table class="pm-table pm-ptable"><thead><tr><th scope="col">專案</th><th scope="col" class="c-code">API 代號</th><th scope="col" class="c-num">成員</th><th scope="col" class="c-num2">未結案卡</th><th scope="col" class="c-repo">程式庫</th><th scope="col" class="c-more"><span class="sr-only">動作</span></th></tr></thead>
         <tbody>${rows}</tbody></table></div>${permDelsHtml()}</div>`;
   }
-  // PLAT-381：leader 的專案管理：只列自己當 leader 的專案；⋯ 有改名、程式庫與分支、成員與本專案角色、封存（刪除只有管理員）
+  // 專案管理員的專案管理：只列自己是專案管理員的專案；⋯ 有改名、程式庫與分支、成員與本專案角色、封存（刪除只有工作區管理員）
   function permLeadProjectsHtml() {
     const list = myLeadRows();
     const rows = list.map(p => {
@@ -10505,7 +10533,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       perm.gsLogOpen = !!$('.pm-gs-log')?.open;
       return loadGroupSettings(); // 異動紀錄多一筆
     }
-    if (a === 'noop') { drawPerm(); return toast('只有工作區管理員能刪除專案'); } // PLAT-381
+    if (a === 'noop') { drawPerm(); return toast('只有工作區管理員能刪除專案'); } // 專案管理員的 ⋯ 選單裡灰掉的刪除
     if (a === 'members') return psetAct('members', id);
     if (a === 'statuses') { drawPerm(); return openStatusEditor(id); }
     if (a === 'visibility') { drawPerm(); return openVisibilityEditor(id); }

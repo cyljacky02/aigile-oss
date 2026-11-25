@@ -5,7 +5,7 @@
 // C. 讀取 GET /api/audit-log：平台管理員看全部；工作區管理員只看自己工作區的事件（平台層事件不給）；其他人類、AI 一律 403、沒登入 401
 // D. 篩選：動作、操作者、時間區間；分頁（新的在前，before 游標）；不認得的參數、不認得的動作 400
 // E. 只能新增：沒有修改或刪除的 API
-// F. 稽核紀錄在備份裡；還原後紀錄回來，並多一筆 backup.restore
+// F. 稽核紀錄在備份裡；還原後紀錄回來，並多一筆 backup.restore；還原的站原本的紀錄不會不見（合併，同一筆不重複，中途重來也一樣）
 // 管理端點用 adminSession 的裝置 Token（敏感操作要再驗證）；SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres
 // 本機暫存資料庫，不連任何站。用法：node scripts/audit-log-test.js
 import './test-home.mjs'; // 不寫到真的家目錄
@@ -181,13 +181,21 @@ try {
   assert.equal(tables.audit_log.length, before.length, 'F 備份裡的稽核紀錄筆數一樣');
   const B = await site('b');
   const me = (await B.call(null, '/api/join', 'POST', { name: '匯入的人', role: 'PO' })).body;
-  ok(await B.call(me.token, '/api/admin/restore/begin', 'POST', { format: info.format, formatVersion: info.formatVersion, appVersion: info.appVersion }), '開始匯入');
-  for (const [t, rows] of Object.entries(tables)) for (let i = 0; i < rows.length; i += 200) ok(await B.call(me.token, '/api/admin/restore/rows', 'POST', { table: t, rows: rows.slice(i, i + 200) }), '匯入 ' + t);
+  const meB = await adminSession(B.call, me.token);
+  ok(await B.call(meB.token, '/api/platform/settings', 'PUT', { recoveryDays: 7 }), '還原前在這個站改可復原期（留一筆稽核紀錄）');
+  const own = (await B.call(me.token, '/api/audit-log?limit=200')).body.items;
+  assert.deepEqual(own.map(x => x.action), ['recovery_window.update'], 'F 還原前這個站有自己的紀錄');
+  const restoreAll = async () => {
+    ok(await B.call(me.token, '/api/admin/restore/begin', 'POST', { format: info.format, formatVersion: info.formatVersion, appVersion: info.appVersion }), '開始匯入');
+    for (const [t, rows] of Object.entries(tables)) for (let i = 0; i < rows.length; i += 200) ok(await B.call(me.token, '/api/admin/restore/rows', 'POST', { table: t, rows: rows.slice(i, i + 200) }), '匯入 ' + t);
+  };
+  await restoreAll();
+  await restoreAll(); // 中途重來：再開始一次、再匯一次，同一筆不重複
   ok(await B.call(me.token, '/api/admin/restore/finish', 'POST', {}), '結束匯入');
   const after = (await B.call(me.token, '/api/audit-log?limit=200')).body.items;
   assert.equal(after[0].action, 'backup.restore', 'F 還原後多一筆 backup.restore：' + JSON.stringify(after[0]));
   assert.deepEqual([after[0].actor.name, after[0].scope.kind, after[0].detail.appVersion], ['王小美', 'platform', info.appVersion], 'F 操作者是登入改掛過去的平台管理員');
-  assert.deepEqual(after.slice(1).map(x => x.id), before.map(x => x.id), 'F 還原後稽核紀錄回來了');
+  assert.deepEqual(after.slice(1).map(x => x.id), [...own, ...before].map(x => x.id), 'F 還原後稽核紀錄回來了，這個站原本的也還在（照時間排、不重複）');
   const bossB = await adminSession(B.call, me.token); // 任免管理員是敏感操作：還原後也要用裝置登入、剛再驗證過
   ok(await B.call(bossB.token, `/api/participants/${LIN}/workspace-role`, 'PUT', { role: 'member' }), '還原後照常寫（流水號接得上）');
   assert.equal((await B.call(me.token, '/api/audit-log')).body.items[0].action, 'workspace_admin.revoke', 'F 還原後新增的紀錄在最前面');

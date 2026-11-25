@@ -3595,8 +3595,6 @@ window.AIGILE_EN = {
     "你管理的專案": "Projects you manage",
     "全站稽核限工作區管理員。": "The full audit log is for workspace admins only.",
     "請工作區管理員開通。": "Ask a workspace admin to enable it.",
-
-    // #27 稽核紀錄
     "工作區稽核紀錄": "Workspace audit log",
     "誰在什麼時候做了哪個管理操作": "Who did which admin action, and when",
     "平台稽核紀錄": "Platform audit log",
@@ -3639,8 +3637,6 @@ window.AIGILE_EN = {
     "{0} 要是 ISO 時間（例 2026-07-01T00:00:00Z）": "{0} must be an ISO time (e.g. 2026-07-01T00:00:00Z)",
     "limit 要是 1–200 的整數": "limit must be an integer from 1 to 200",
     "before 要用上一頁回傳的 next": "before must be the next value returned by the previous page",
-
-    // #28 管理員異動通知
     "某位管理員": "An admin",
     "{0} 把 {1} 升為平台管理員 · {2}。": "{0} made {1} a platform admin · {2}.",
     "{0} 把 {1} 降為一般帳號（不再是平台管理員）· {2}。": "{0} changed {1} to a regular account (no longer a platform admin) · {2}.",
@@ -3654,8 +3650,6 @@ window.AIGILE_EN = {
     "{0} 復原了專案「{1}」· {2}。": "{0} restored project \"{1}\" · {2}.",
     "{0} 做了一項管理操作 · {1}。": "{0} made an admin change · {1}.",
     "管理權或重大異動都會通知相關管理員。不是預期的變動？請跟其他管理員確認，必要時聯絡站長。": "Admin changes and major changes are sent to the admins involved. Not expected? Check with the other admins, and contact the server operator if needed.",
-
-    // #29 再驗證身分
     "再驗證身分": "Confirm it's you",
     "這是敏感操作，請再輸入一次你的密碼。驗證後 10 分鐘內，這台裝置不必再輸入。": "This is a sensitive action. Enter your password again. After that, this device won't ask again for 10 minutes.",
     "先設定密碼": "Set a password first",
@@ -3663,8 +3657,6 @@ window.AIGILE_EN = {
     "這個操作要先輸入密碼確認身分，你還沒設定帳號密碼：請先到「個人設定 › 帳號與登入」設定帳號密碼。": "This action needs your password to confirm it's you, and you haven't set one yet. Set a username and password in Personal settings › Account & sign-in first.",
     "密碼不對": "Wrong password",
     "這是敏感操作：請先再輸入一次密碼確認身分（10 分鐘內不必重複輸入）。": "This is a sensitive action: enter your password again to confirm it's you (no need to repeat it for 10 minutes).",
-
-    // #30 可復原期設定
     "可復原期": "Recovery window",
     "跟平台預設": "platform default",
     "立即永久清除": "Purge immediately",
@@ -3677,8 +3669,6 @@ window.AIGILE_EN = {
     "{0} 只能是 {1}（天）": "{0} must be one of {1} (days)",
     "要帶 days（天數，或 null 跟平台預設）": "days is required (number of days, or null to follow the platform default)",
     "要帶 fileTtlHours 或 recoveryDays": "fileTtlHours or recoveryDays is required",
-
-    // #31 刪除與復原訊息
     "（此訊息已刪除）": "(This message was deleted)",
     "此訊息已被 {0} 於 {1} 刪除": "Deleted by {0} · {1}",
     "你在這個專案是唯讀成員，不能刪除訊息（包括自己以前發的）。": "You're a viewer in this project, so you can't delete messages (including ones you sent before).",
@@ -3694,11 +3684,9 @@ window.AIGILE_EN = {
     "這則訊息是管理員刪的，只有工作區管理員能復原。": "An admin deleted this message, so only a workspace admin can restore it.",
     "刪除別人的訊息": "delete other people's messages",
     "復原別人的訊息": "restore other people's messages",
-
-    // #32 訊息永久清除
     "隨訊息永久清除": "Purged with its message",
-
-    // #33 清空專案訊息
+    "隨訊息刪除": "Deleted with its message",
+    "隨訊息復原": "Restored with its message",
     "清空專案訊息…": "Clear project messages…",
     "清空專案訊息 · {0}": "Clear project messages · {0}",
     "會刪除這個專案所有的群組訊息：訊息 {0} 則、附件 {1} 個。卡片、卡片紀錄、決策結果、私訊與跨專案頻道的訊息都不受影響。": "This deletes all group messages in this project: {0} messages and {1} attachments. Cards, card history, decision results, DMs and cross-project channel messages are not affected.",
@@ -3720,8 +3708,6 @@ window.AIGILE_EN = {
     "已經過了可復原期，這次清空不能復原": "The recovery window has passed, so this clear can't be restored",
     "清空專案的訊息": "clear a project's messages",
     "整批復原清空的訊息": "restore cleared messages",
-
-    // #34 刪除專案進入可復原期
     "刪除…": "Delete…",
     "🗑 刪除": "🗑 Delete",
     "刪除 AI？": "Delete AI?",
@@ -3746,8 +3732,6 @@ window.AIGILE_EN = {
     "要先封存才能刪除": "Archive the project before deleting it",
     "可復原期已過，這個專案等待永久清除，不能復原": "The recovery window has ended; this project is waiting to be purged and can't be restored",
     "這個 AI 只屬於已刪除的專案，在可復原期內暫停；專案復原後會自動恢復。": "This AI belongs only to a deleted project and is paused during the recovery window; it resumes automatically if the project is restored.",
-
-    // #35 工作區政策：誰可以刪除自己的訊息
     "誰可以刪除自己的訊息": "Who can delete their own messages",
     "誰可以刪除自己的訊息：{0} → {1}": "Who can delete their own messages: {0} → {1}",
     "作者可以刪自己的訊息，在可復原期內也能自己復原；唯讀成員與 AI 不行": "Authors can delete their own messages and restore them during the recovery window. Viewers and AIs can't.",
