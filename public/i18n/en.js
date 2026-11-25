@@ -3697,6 +3697,8 @@ window.AIGILE_EN = {
 
     // #32 訊息永久清除
     "隨訊息永久清除": "Purged with its message",
+    "隨訊息刪除": "Deleted with its message",
+    "隨訊息復原": "Restored with its message",
 
     // #33 清空專案訊息
     "清空專案訊息…": "Clear project messages…",

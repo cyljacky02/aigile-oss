@@ -3438,6 +3438,10 @@ ${ending}`;
   // 權限範圍：訊息的專案＋作者、刪除者（access.js 的 delete_own_message／delete_message／restore_message）
   const msgAccessScope = m => ({ project: m.project || null, message: { authorId: m.author_id, deletedBy: m.deleted_by || null } });
   const msgAuditScope = m => (m.project ? { scope: AUDIT_SCOPE.PROJECT, project: { id: m.project, name: nameOf(m.project) } } : { scope: AUDIT_SCOPE.WORKSPACE });
+  // 訊息附件的檔案稽核（隨訊息刪除、復原）：一個檔一筆，檔名與大小在寫入時快照。msgSql 是選出訊息 id 的 SQL（參數 args）
+  const msgFileAuditStmt = (action, actor, detail, at, msgSql, args) => [`INSERT INTO file_audit (id, file_id, action, actor_id, actor_kind, at, name, size, sha256, declared, detail)
+    SELECT ? || id, id, ?, ?, ?, ?, name, size, sha256, declared, ? FROM files WHERE message_id IN (${msgSql}) OR id IN (SELECT file_id FROM messages WHERE id IN (${msgSql}) AND file_id IS NOT NULL)`,
+  [randId('aud') + '_', action, actor.id, actor.kind, at, detail, ...args, ...args]];
   async function visibleMessage(me, id) {
     const m = await db.get('SELECT * FROM messages WHERE id = ?', id);
     if (!m || !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到訊息');
@@ -3461,6 +3465,7 @@ ${ending}`;
     await writeStmts([
       ["UPDATE notifications SET status = 'acked', acked_at = COALESCE(acked_at, ?) WHERE message_id = ? AND status = 'pending'", [at, m.id]],
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_DELETE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, days, purgeAt: purgeIso }, at }),
+      msgFileAuditStmt('msg_delete', me, 'MESSAGE_DELETED', at, '?', [m.id]),
     ]);
     messagesChanged();
     if (days === 0) await purgeMessages([m.id]);
@@ -3477,7 +3482,10 @@ ${ending}`;
     const r = await db.run('UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE id = ? AND deleted_at = ? AND purged_at IS NULL', m.id, m.deleted_at);
     if (!r.changes) throw new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
     const author = (await peopleMap(ctx, [m.author_id])).get(m.author_id);
-    await auditLog.write({ actor: me, action: AUDIT_ACTION.MESSAGE_RESTORE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, deletedBy: m.deleted_by }, at });
+    await writeStmts([
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_RESTORE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, deletedBy: m.deleted_by }, at }),
+      msgFileAuditStmt('msg_restore', me, 'MESSAGE_RESTORED', at, '?', [m.id]),
+    ]);
     messagesChanged();
     await liveMessageChange(ctx, m, 'message_restored').catch(() => {});
     return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
@@ -3561,6 +3569,7 @@ ${ending}`;
       ["UPDATE notifications SET status = 'acked', acked_at = COALESCE(acked_at, ?) WHERE message_id IN (SELECT id FROM messages WHERE clear_id = ?) AND status = 'pending'", [at, clearId]],
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_CLEAR, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, count: r.changes, at,
         detail: { clearId, files, recoveryDays: days, purgeAt: purgeIso } }),
+      msgFileAuditStmt('msg_delete', me, 'PROJECT_MESSAGES_CLEARED', at, 'SELECT id FROM messages WHERE clear_id = ?', [clearId]),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_CLEAR, detail: { a: me.name, p: row.name } }),
     ]);
     messagesChanged();
@@ -3590,12 +3599,14 @@ ${ending}`;
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這次清空');
     const at = nowIso();
     if (Number(c.purged) || c.purge_at <= at) throw new ApiError(409, 'RECOVERY_EXPIRED', '已經過了可復原期，這次清空不能復原');
+    const ids = JSON.stringify((await db.all('SELECT id FROM messages WHERE clear_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL', params.id)).map(x => x.id)); // 檔案稽核用（復原後 clear_id 就清掉了）
     const r = await db.run('UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE clear_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL', params.id);
     if (!r.changes) throw new ApiError(404, 'NOT_FOUND', '找不到這次清空'); // 別人剛好先復原了
     const pj = { id: row.id, name: row.name };
     await writeStmts([
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_RESTORE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, count: r.changes, at,
         detail: { clearId: params.id } }),
+      msgFileAuditStmt('msg_restore', me, 'PROJECT_MESSAGES_RESTORED', at, 'SELECT value FROM json_each(?)', [ids]),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_RESTORE, detail: { a: me.name, p: row.name } }),
     ]);
     messagesChanged();

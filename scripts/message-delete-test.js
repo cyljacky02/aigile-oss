@@ -7,7 +7,7 @@
 // E. 搜尋找不到被刪的訊息；團隊狀態也不露出原文
 // F. 被刪訊息的待處理通知自動確認；復原時不重發
 // G. [接單] 訊息被刪，卡片的認領不變
-// H. 附件在可復原期內不能下載（MESSAGE_DELETED），照常寫進檔案稽核
+// H. 附件在可復原期內不能下載（MESSAGE_DELETED），照常寫進檔案稽核；刪除、復原也各寫一筆檔案稽核
 // I. 復原：作者復原自己刪的；作者復原管理員刪的回 RESTORE_FORBIDDEN；工作區管理員復原任何被刪的；過了可復原期 RECOVERY_EXPIRED；沒被刪的 NOT_DELETED
 // J. 刪除當下依生效的可復原期決定永久清除時間，之後改設定不影響；0 天＝刪除當下就永久清除
 // K. 刪除與復原寫稽核紀錄（不存原文）、不發通知；刪除單則訊息不用再驗證身分
@@ -210,6 +210,8 @@ try {
   assert.equal(code(await call(lin.token, `/api/files/${fid}`)), '410 MESSAGE_DELETED', 'H 可復原期內附件不能下載');
   const fa = (await call(boss.token, '/api/files/audit')).body.items.filter(a => a.fileId === fid).map(a => [a.action, a.detail]);
   assert.deepEqual(fa[0], ['reject', 'MESSAGE_DELETED'], 'H 被拒的下載寫進檔案稽核：' + JSON.stringify(fa));
+  const fileAudit = async (f, action) => (await call(boss.token, '/api/files/audit?limit=500')).body.items.filter(a => a.fileId === f && a.action === action).map(a => [a.detail, a.actor.participantId]);
+  assert.deepEqual(await fileAudit(fid, 'msg_delete'), [['MESSAGE_DELETED', WANG]], 'H 刪除寫進檔案稽核（操作者）');
   assert.ok(!(await call(chen.token, '/api/files')).body.items.some(f => f.fileId === fid), 'H 檔案清單不列被刪訊息的附件');
 
   // ---------- I 復原 ----------
@@ -227,6 +229,7 @@ try {
   assert.equal(r.status, 200, 'I 工作區管理員復原平台管理員刪的');
   assert.ok((await read(wangAi.token, secret.messageId)).text.startsWith('秘密字串 ZQX 請看附件'), 'I 復原後 AI 讀得到原文');
   assert.equal((await call(lin.token, `/api/files/${fid}`)).status, 200, 'I 復原後附件下載得到');
+  assert.deepEqual(await fileAudit(fid, 'msg_restore'), [['MESSAGE_RESTORED', lin.id]], 'H 復原寫進檔案稽核（操作者）');
   assert.equal((await call(chen.token, '/api/search/messages?q=ZQX')).body.items.some(m => m.messageId === secret.messageId), true, 'I 復原後搜得到');
   assert.equal(await pending(zhao), 0, 'F 復原不重發通知');
   assert.equal(await pending(wangAi), 0, 'F 復原不重發通知（AI）');
