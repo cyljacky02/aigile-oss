@@ -15,7 +15,8 @@ export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'pro
   'decision_resolutions', 'cards', 'card_log', 'card_msgs', 'suggestions', 'avatars', 'avatar_proposals',
   'skills', 'skill_allows', 'skill_installs', 'skill_syncs', 'join_requests', 'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages', // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
-  'audit_log']; // 稽核紀錄：還原時換成備份裡的，結束匯入時再加一筆 backup.restore
+  'audit_log']; // 稽核紀錄：還原時不清掉這個站原本的，備份裡的合併進來（同一筆 id 不重複），結束匯入時再加一筆 backup.restore
+const KEEP_TABLES = ['audit_log']; // 開始匯入時不清的表（稽核紀錄只能新增）
 // 不匯出：登入用的（Token、密碼雜湊、裝置、登入碼、邀請、救援連結、登入通知、失敗次數）
 // schema_migrations：每個站自己套過哪些資料庫升級，不跟著備份搬；legacy_members：升級用的暫存，轉完就是空的
 export const SKIP_TABLES = ['devices', 'invites', 'pair_codes', 'credentials', 'login_fails', 'rescue_links', 'account_notices', 'schema_migrations', 'legacy_members'];
@@ -113,7 +114,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     if (String(body.appVersion).split('.')[0] !== APP_VERSION.split('.')[0]) throw new ApiError(400, 'BACKUP_MAJOR', `備份是 ${body.appVersion} 版，跟這個站（${APP_VERSION}）的主版本不同，不能直接匯入`);
     if (!state && !(await isEmpty(me))) throw new ApiError(409, 'NOT_EMPTY', '只有空站能匯入：這個站已經有其他成員、訊息、卡片、技能或文件。請在新架的站匯入。');
     if (state && state.by !== me.id) throw new ApiError(409, 'RESTORE_BY_OTHER', '別的管理員正在匯入');
-    const stmts = [...EXPORT_TABLES.filter(t => !['participants', 'accounts'].includes(t)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []]);
+    const stmts = [...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES].includes(t)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []]);
     stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
     stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${me.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
@@ -132,7 +133,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     const t = body.table;
     if (!EXPORT_TABLES.includes(t)) throw invalid('table 不在可匯入的清單');
     if (!Array.isArray(body.rows) || body.rows.length > 1000) throw invalid('rows 要是陣列，一次最多 1000 列');
-    const have = new Set(await columnsOf(t)), drop = DROP_COLS[t] || [], blobs = BLOB_COLS[t] || [];
+    const have = new Set(await columnsOf(t)), drop = [...(DROP_COLS[t] || []), ...(t === 'audit_log' ? ['seq'] : [])], blobs = BLOB_COLS[t] || [];
     const stmts = [];
     let inserted = 0;
     for (const r of body.rows) {
@@ -154,7 +155,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       const cols = Object.keys(row);
       if (!cols.length) continue;
       inserted++;
-      stmts.push([`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})${t === 'app_settings' ? ' ON CONFLICT(key) DO UPDATE SET value = excluded.value' : ''}`, cols.map(c => row[c])]);
+      // 稽核紀錄跟這個站原本的合併：流水號重新編（不跟原本的撞），已經有的 id 略過（中途重來不重複）
+      stmts.push([`INSERT${t === 'audit_log' ? ' OR IGNORE' : ''} INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})${t === 'app_settings' ? ' ON CONFLICT(key) DO UPDATE SET value = excluded.value' : ''}`, cols.map(c => row[c])]);
     }
     for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100));
     return { table: t, inserted };
@@ -197,7 +199,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     await afterRestore?.();
     const people = await peopleMap(ctx);
     const humans = [...people.values()].filter(p => p.kind === 'human').length, ais = [...people.values()].filter(p => p.kind === 'ai').length;
-    // 稽核紀錄在還原完才寫（開始匯入時表會清掉、換成備份裡的）；操作者是你現在的身分（登入改掛過去的那位）
+    // 稽核紀錄在還原完才寫（備份裡的紀錄已經合併進來）；操作者是你現在的身分（登入改掛過去的那位）
     await auditLog.write({ actor: { id: you, name: target ? target.name : state.name, kind: 'human' }, action: AUDIT_ACTION.BACKUP_RESTORE, scope: AUDIT_SCOPE.PLATFORM, detail: { appVersion: state.appVersion, humans, ais } });
     return { ok: true, admin: target ? { participantId: target.id, name: target.name } : { participantId: me.id, name: state.name }, humans, ais };
   });

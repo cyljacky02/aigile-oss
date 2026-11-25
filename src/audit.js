@@ -4,7 +4,7 @@
 //   auditLog.write(evt)  單獨寫一筆（就是 stmt 那一句的 db.run）
 //   auditLog.list(q)     查詢（GET /api/audit-log 用；可見範圍由呼叫端依權限決定）
 //   auditLog.migrateLegacy()  舊的專案刪除紀錄（app_settings 的 pdel:）轉進來；core.js 每份程式第一個請求跑一次
-// 只能新增：這裡沒有修改或刪除的方法（還原備份時整張換成備份裡的，在 src/backup.js）
+// 只能新增：這裡沒有修改或刪除的方法（還原備份時保留原本的、合併備份裡的，在 src/backup.js）
 // 呼叫端把 stmt 的結果放進清單時要去掉 null（core.js 的 writeStmts 會去掉；清單空了就不呼叫 db.batch）
 // 資料表還沒建立前 stmt 一律回 null（什麼都不寫）
 //
