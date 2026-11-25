@@ -6,7 +6,7 @@
 //   auditLog.migrateLegacy()  舊的專案刪除紀錄（app_settings 的 pdel:）轉進來；core.js 每份程式第一個請求跑一次
 // 只能新增：這裡沒有修改或刪除的方法（還原備份時保留原本的、合併備份裡的，在 src/backup.js）
 // 呼叫端把 stmt 的結果放進清單時要去掉 null（core.js 的 writeStmts 會去掉；清單空了就不呼叫 db.batch）
-// 資料表還沒建立前 stmt 一律回 null（什麼都不寫）
+// 確認資料表還不存在（還沒跑資料庫升級）時 stmt 一律回 null（什麼都不寫）；確認時的其他錯誤不算，照寫
 //
 // evt 的欄位：
 //   actor      操作者 { id, name, kind }（傳 participant 列就行）；null＝系統
@@ -16,11 +16,14 @@
 //   project    { id, name }：專案層的事件
 //   target     對象 { kind, id, name }，kind：participant／project／message／workspace；名字在寫入時快照
 //   count      摘要數字（例：清除了幾則訊息）
+//   countOf    [sql, args]：數字在同一批裡用這句 SELECT 算（例：這次清空了幾則），取代 count
 //   detail     細節物件（存成 JSON）；不放訊息原文
 //   at         ISO 時間；不給＝現在
 // 不寫的情況：沒有真的改到東西（no-op）、競態檢查擋下來（409）都不寫
 
 // 動作（存在 action 欄位；網頁的篩選與顯示文字照這張表）
+import { isMissingTable } from './db-errors.js';
+
 export const AUDIT_ACTION = Object.freeze({
   PLATFORM_ADMIN_GRANT: 'platform_admin.grant', PLATFORM_ADMIN_REVOKE: 'platform_admin.revoke',
   WORKSPACE_ADMIN_GRANT: 'workspace_admin.grant', WORKSPACE_ADMIN_REVOKE: 'workspace_admin.revoke',
@@ -65,7 +68,13 @@ const view = r => ({
 export function createAudit({ db, randId, nowIso }) {
   // 資料表在不在：Cloudflare 可能先部署程式、後跑資料庫升級；還沒有表時什麼都不寫（不擋管理操作）。轉換舊紀錄時確認
   let ready = true;
-  const stmt = evt => (ready && evt?.action ? [INSERT, values(evt, randId('aud'), evt.at || nowIso())] : null);
+  const stmt = evt => {
+    if (!ready || !evt?.action) return null;
+    const v = values(evt, randId('aud'), evt.at || nowIso());
+    if (!evt.countOf) return [INSERT, v];
+    const [sql, args = []] = evt.countOf; // count 是倒數第二欄
+    return [INSERT.replace(/\?,\?\)$/, `(${sql}),?)`), [...v.slice(0, -2), ...args, v[v.length - 1]]];
+  };
   async function write(evt) {
     const s = stmt(evt);
     if (s) await db.run(s[0], ...s[1]);
@@ -101,7 +110,8 @@ export function createAudit({ db, randId, nowIso }) {
   // 回 false＝這次沒做完（匯入備份中、還沒有資料表），下個請求再試
   async function migrateLegacy() {
     if (await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
-    try { await db.get('SELECT seq FROM audit_log LIMIT 1'); ready = true; } catch { ready = false; return false; }
+    // 只有「沒有這張表」才當還沒升級；其他錯誤（連線中斷…）照寫，不能因為一次讀不到就不記
+    try { await db.get('SELECT seq FROM audit_log LIMIT 1'); ready = true; } catch (e) { if (!isMissingTable(e)) throw e; ready = false; return false; }
     const rows = await db.all('SELECT key, value FROM app_settings WHERE key >= ? AND key < ?', LEGACY_FROM, LEGACY_TO);
     for (let i = 0; i < rows.length; i += 20) {
       const stmts = [];
