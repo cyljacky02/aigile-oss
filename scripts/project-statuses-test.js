@@ -456,6 +456,33 @@ try {
     }
   }
 
+  // 26) 別的專案的卡 status_id 指到這個專案的狀態（壞掉或舊的資料，ADR 0001：算在它自己專案同類別第一個狀態）：
+  //     不算在這個狀態裡，刪除、改類別都照常做（#19）
+  {
+    const r = ok(await call(boss.token, '/api/projects', 'POST', { name: '別人指過來', statuses: [{ name: '待', category: '待處理' }, { name: 'X', category: '進行中' }, { name: 'Y', category: '進行中' }, { name: '卡住', category: '受阻' }, { name: '完', category: '已完成' }] }), '建專案');
+    const PJ = encodeURIComponent(r.id), sts = r.items.find(p => p.id === r.id).statuses, X = sts.find(s => s.name === 'X'), Y = sts.find(s => s.name === 'Y'), Z = sts.find(s => s.name === '卡住');
+    const stale = async (sid, status, title) => {
+      const c = ok(await mkCard(boss.token, { status, title }), '預設專案的卡');
+      await db.run('UPDATE cards SET status_id = ? WHERE project = ? AND title = ?', sid, '預設專案', title); // 舊資料：指到別的專案的狀態
+      return c;
+    };
+    const a = await stale(Z.id, '進行中', '指到別專案受阻的卡');
+    const patched = ok(await patchSt(Z.id, { category: '進行中' }, boss.token, PJ), '改類別（這個專案裡沒有卡）');
+    assert.equal(patched.items.find(s => s.id === Z.id).category, '進行中');
+    const b = await stale(X.id, '進行中', '指到別專案進行中的卡');
+    // 有 moveTo：以前會把別的專案的卡也算進來、搬不過去，永遠 409 CONFLICT
+    assert.equal(ok(await del(X.id, { moveTo: Y.id }, boss.token, PJ), '刪狀態、指定 moveTo（這個專案裡沒有卡）').moved, 0, '沒有搬別的專案的卡');
+    const c2 = await stale(Y.id, '進行中', '指到別專案的卡二');
+    // 沒有 moveTo：不要求選目標
+    assert.equal(ok(await del(Y.id, {}, boss.token, PJ), '刪狀態（這個專案裡沒有卡）').moved, 0);
+    assert.ok(!(await statuses(PJ)).some(s => s.id === X.id || s.id === Y.id), 'X、Y 刪掉了');
+    for (const c of [a, b, c2]) {
+      const got = await getCard(c.cardId);
+      assert.equal(got.project, '預設專案', '卡還在自己的專案');
+      assert.equal(got.status, (await statuses()).find(s => s.category === '進行中').name, '算在自己專案同類別第一個狀態');
+    }
+  }
+
   console.log('project-statuses-test：全部通過');
 } finally {
   db.close?.();
