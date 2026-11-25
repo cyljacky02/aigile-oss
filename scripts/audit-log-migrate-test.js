@@ -1,7 +1,7 @@
 // 驗收測試：升級到稽核紀錄（migrations/010_audit_log.sql）
 // 舊站把「永久刪除專案」記在設定表（app_settings 的 pdel:<時間>:<專案 id>）。升級後：
 // - 010 建好稽核紀錄表；舊的專案刪除紀錄在程式啟動後轉進稽核紀錄（project.purge，detail.legacy＝true），設定表裡的鍵移除
-// - 操作者、專案名字、代號、數量照舊；GET /api/project-deletions 照樣列得出來
+// - 操作者、專案名字、代號、數量照舊
 // - 重複啟動不會重複轉換；同一筆舊紀錄又出現（例：另一份程式還沒轉完就寫回來）也只留一筆
 // SQLite 與 Postgres（設了 AIGILE_TEST_PG_URL）都跑。用法：node scripts/audit-log-migrate-test.js
 import './test-home.mjs'; // 不寫到真的家目錄
@@ -52,8 +52,6 @@ try {
   assert.deepEqual(purged.map(x => [x.at, x.scope.projectId, x.scope.projectName, x.target?.name, x.actor.name]),
     [[AT2, 'proj_old2', '舊專案二', '舊專案二', '林志明'], [AT1, 'proj_old1', '舊專案一', '舊專案一', '林志明']], '舊紀錄轉進來（新的在前）：' + JSON.stringify(purged));
   assert.deepEqual([purged[1].scope.kind, purged[1].scope.workspaceId, purged[1].detail], ['project', 'default', { legacy: true, code: 'OLD', counts: OLD[0][1].counts, aisDeleted: ['舊 AI'] }], '細節照舊、標 legacy');
-  r = await call(boss.token, '/api/project-deletions');
-  assert.deepEqual(r.body.items.map(x => [x.name, x.byName, x.code, x.counts.messages]), [['舊專案二', '林志明', null, 0], ['舊專案一', '林志明', 'OLD', 12]], '專案刪除清單照樣列得出來');
   assert.deepEqual(await pdelKeys(db), [], '設定表裡的舊鍵移除了');
   await db.close();
 

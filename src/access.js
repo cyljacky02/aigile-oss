@@ -109,8 +109,12 @@ const ACTIONS = {
   reset_login: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能重設他的登入。`) }, // target 是平台管理員時只有平台管理員能
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
   create_project: { admin: true, fresh: true, rule: (v, me) => workspaceAdmin(v, me) || (v.membersCreateProjects() && v.roleIn(me, 'workspace') === R.MEMBER) }, // fresh：check 時重讀工作區設定
+  // 刪除專案：先進入可復原期，期滿由系統永久清除（只有工作區管理員）
+  delete_project: { admin: true, sensitive: true, rule: workspaceAdmin }, // 刪除已封存的專案（敏感）
+  preview_project_delete: { admin: true, rule: workspaceAdmin }, // 刪除前的預覽：會刪掉多少、預計永久清除的時間（不用再驗證）
+  see_deleted_projects: { admin: true, rule: workspaceAdmin }, // 可復原期內的「已刪除的專案」
+  restore_project: { admin: true, rule: workspaceAdmin }, // 可復原期內復原（回到封存狀態）
   // 專案（只有工作區管理員）
-  delete_project: { admin: true, rule: workspaceAdmin },
   set_project_code: { admin: true, rule: workspaceAdmin },
   set_project_slug: { admin: true, rule: workspaceAdmin },
   // 專案（專案管理員）
@@ -157,6 +161,7 @@ const scopeOf = scope => {
 //   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
 //   isPlatformAdmin(p)       → 他的帳號是平台管理員（沒注入＝沒有平台管理員）
 //   visibilityOf(pj)         → 專案可見度（PROJECT_VISIBILITY；沒注入或不認得的值＝審核）
+//   isDeletedProject(pj)     → 專案在可復原期（已刪除、還沒永久清除）：對所有人都當它不存在（沒注入＝沒有）
 export function createAccess(deps) {
   const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, projectAdminsOf, isReadOnly } = deps;
   const memberProjectsOf = deps.memberProjectsOf || projectsOf;
@@ -198,7 +203,7 @@ export function createAccess(deps) {
       visibilityOf: pj => { const x = deps.visibilityOf?.(pj); return PROJECT_VISIBILITIES.includes(x) ? x : VIS.REVIEW; },
       // 私人專案只有專案成員與有隱含權限的人（工作區管理員等）看得到它存在；開放、審核所有人都看得到
       // （成員先判，不必讀成員資料；非成員看私人專案才要判上層管理員）
-      discovers: (p, pj) => !!p && (p.kind === 'system' || v.visibilityOf(pj) !== VIS.PRIVATE || projectsOf(p).includes(pj) || v.roleIn(p, { project: pj }) !== null),
+      discovers: (p, pj) => !!p && !deps.isDeletedProject?.(pj) && (p.kind === 'system' || v.visibilityOf(pj) !== VIS.PRIVATE || projectsOf(p).includes(pj) || v.roleIn(p, { project: pj }) !== null),
       // 看得到存在的專案（未封存）；錯誤訊息列可選的專案也用這個，不洩漏私人專案
       visibleProjects: p => projects().filter(pj => v.discovers(p, pj)),
       isProjectAdmin: (p, pj) => !!p && projectAdminsOf(pj).includes(p.id),

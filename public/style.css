@@ -3361,11 +3361,13 @@ button.ob-toggle:focus-visible { outline: 2px solid var(--primary); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) :is(.ma-tool-ask, .sw-safety) { background: #3a3013; color: #f3dc9a; } }
 :root[data-theme="dark"] :is(.ma-tool-ask, .sw-safety) { background: #3a3013; color: #f3dc9a; }
 
-/* 永久刪除已封存的專案 */
+/* 刪除已封存的專案、可復原期內的「已刪除的專案」 */
 .pm-arch-acts { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .pm-dels summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
 .pm-dels-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 8px; }
 .pm-dels-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--border); }
+.pm-dels-list li .btn { margin-left: auto; }
+.pm-purge-at { color: var(--danger, #b42318); }
 
 /* 專案設定入口：專案卡 ⚙、切換清單最下面、專案管理 ⇄ 成員管理、回報收件與群組名稱同一套 */
 .ph-gear { width: 36px; height: 36px; flex: none; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--sb-line, var(--border)); border-radius: 10px; background: var(--surface); color: inherit; font-size: 16px; cursor: pointer; }

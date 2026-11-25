@@ -129,7 +129,7 @@ try {
   assert.deepEqual((await m.fetchMembersOf(B)).find(x => x.id === ux).projects.length, 2, '連同各自的專案');
   console.log('✓ 直接讀資料庫');
 
-  // 永久刪除專案：所有人的歸屬、leader、唯讀都拿掉那個專案，別的專案不動
+  // 永久清除專案：所有人的歸屬、leader、唯讀都拿掉那個專案，別的專案不動
   await run(m.setProjectAdminsStmts({ [A]: [boss], [B]: [boss] }));
   await m.load(true);
   const people = await db.all('SELECT * FROM participants');

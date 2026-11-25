@@ -1,6 +1,6 @@
 // 驗收測試：稽核紀錄（GLOSSARY「刪除與稽核」；docs/adr/0003）
 // A. 管理操作寫稽核紀錄：任免平台管理員、任免工作區管理員、停用／恢復帳號、移出工作區（含自己離開）、修改「誰可以建立專案」、
-//    刪除專案（記成 project.purge）、備份還原；沒有真的改到東西（no-op）不寫
+//    刪除專案（project.delete；永久清除另見 project-delete-test）、備份還原；沒有真的改到東西（no-op）不寫
 // B. 每筆有時間、操作者（id、名字快照；系統操作記為「系統」）、動作、範圍（平台／工作區／專案）、對象（id、名字快照）、摘要數字、細節
 // C. 讀取 GET /api/audit-log：平台管理員看全部；工作區管理員只看自己工作區的事件（平台層事件不給）；其他人類、AI 一律 403、沒登入 401
 // D. 篩選：動作、操作者、時間區間；分頁（新的在前，before 游標）；不認得的參數、不認得的動作 400
@@ -108,11 +108,9 @@ try {
   ok(await call(boss.token, `/api/projects/${encodeURIComponent(PID)}/archive`, 'POST'), '封存');
   ok(await call(boss.token, `/api/projects/${encodeURIComponent(PID)}/delete`, 'POST', { confirmName: '要刪的專案' }), '刪除專案');
   e = await latest();
-  assert.deepEqual([e.action, e.scope.kind, e.scope.workspaceId, e.scope.projectId, e.scope.projectName, e.target], ['project.purge', 'project', 'default', PID, '要刪的專案', { kind: 'project', id: PID, name: '要刪的專案' }], 'A 刪除專案：' + JSON.stringify(e));
+  assert.deepEqual([e.action, e.scope.kind, e.scope.workspaceId, e.scope.projectId, e.scope.projectName, e.target], ['project.delete', 'project', 'default', PID, '要刪的專案', { kind: 'project', id: PID, name: '要刪的專案' }], 'A 刪除專案：' + JSON.stringify(e));
   assert.equal(e.detail.code, 'DEL'); assert.equal(e.detail.counts.messages, 1, 'B 細節有數量');
   assert.ok(!JSON.stringify(await log(boss.token, 'limit=200')).includes('不該進稽核的原文'), 'B 不存訊息原文');
-  r = ok(await call(boss.token, '/api/project-deletions'), '專案刪除清單');
-  assert.deepEqual([r.items[0].name, r.items[0].byName, r.items[0].code], ['要刪的專案', '王小美', 'DEL'], '舊的專案刪除清單從稽核紀錄讀');
 
   // ---------- C 可見範圍 ----------
   ok(await call(boss.token, `/api/participants/${LIN}/workspace-role`, 'PUT', { role: 'admin' }), '林工作再升為工作區管理員（不是平台管理員）');

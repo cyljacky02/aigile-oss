@@ -6353,7 +6353,8 @@
   // 自動待命、對話接續改成每個 AI 自己的選項（只影響這個 AI 接下來複製的設定；複製內容不變）
   const maWarn = ai => ai.status === 'active' && ['expired', '2h', '24h'].includes(tokenLevel(ai.expiresAt));
   const maNeedsYou = ai => maWarn(ai) || (ai.status === 'active' && ai.skillsWaiting > 0);
-  const maState = ai => ai.status !== 'active' ? ['off', '已停用']
+  const maState = ai => ai.status === 'paused' ? ['off', '暫停中'] // 只屬於已刪除的專案（可復原期內），專案復原時自動恢復
+    : ai.status !== 'active' ? ['off', '已停用']
     : tokenLevel(ai.expiresAt) === 'expired' ? ['bad', 'Token 已過期'] // 過期的連不上，不能顯示在線
     : ai.isOnline ? ['on', '在線'] : ai.standby ? ['standby', '待命中']
     : ai.lastSeenAt && Date.now() - Date.parse(ai.lastSeenAt) < 24 * 3600_000 ? ['idle', '閒置'] : ['', '離線'];
@@ -6367,15 +6368,17 @@
     const pjTags = pjs.slice(0, 2).map(projTag).join('') + (pjs.length > 2 ? `<span class="ptag">+${pjs.length - 2}</span>` : '');
     const tokTxt = !active || level === 'expired' ? '' // 過期：狀態那裡已寫「Token 已過期」，旁邊是重發 Token
       : maWarn(ai) ? `<span class="pill-tag yellow">Token ${esc(maWhen(ai.expiresAt))} 到期</span>` : `<span class="muted small ma-tok">Token 到 ${esc(mmdd(ai.expiresAt))}</span>`;
-    const main = !active ? `<button class="btn" type="button" data-act="enable" data-id="${id}">重新啟用</button>`
+    const paused = ai.status === 'paused';
+    const main = paused ? '<span class="muted small ma-paused">專案已刪除，復原後自動恢復</span>'
+      : !active ? `<button class="btn" type="button" data-act="enable" data-id="${id}">重新啟用</button>`
       : maWarn(ai) ? `<button class="btn warn" type="button" data-act="reissue" data-id="${id}">重發<span class="ma-long"> Token</span></button>`
       : `<button class="btn ma-copy" type="button" data-act="short" data-id="${id}">複製接入文字</button>`; // 短版接入是主要做法
     const menuHtml = menu ? `<div class="ma-menu" role="menu">
-        <button type="button" role="menuitem" data-act="edit" data-id="${id}">✏️ 編輯名稱、角色、專案</button>
+        ${paused ? '' : `<button type="button" role="menuitem" data-act="edit" data-id="${id}">✏️ 編輯名稱、角色、專案</button>`}
         ${active ? `<button type="button" role="menuitem" data-act="tab" data-tab="skills" data-id="${id}">🧩 技能${ai.skillsWaiting ? ` · ${ai.skillsWaiting} 等你允許` : ''}</button>
         <button type="button" role="menuitem" data-act="reissue" data-id="${id}">🔑 重發 Token</button>
         ${level !== 'expired' ? `<button type="button" role="menuitem" data-act="token" data-id="${id}">📋 只複製 Token</button>` : ''}
-        <hr><button type="button" role="menuitem" data-act="disable" data-id="${id}">⏸ 停用</button>` : `<hr><button type="button" role="menuitem" data-act="enable" data-id="${id}">▶ 重新啟用</button>`}
+        <hr><button type="button" role="menuitem" data-act="disable" data-id="${id}">⏸ 停用</button>` : paused ? '' : `<hr><button type="button" role="menuitem" data-act="enable" data-id="${id}">▶ 重新啟用</button>`}
         <button type="button" role="menuitem" class="danger-text" data-act="delete" data-id="${id}">🗑 刪除這隻 AI</button>
       </div>` : '';
     return `<div class="ma-item${tab ? ' open' : ''}" data-ma="${id}">
@@ -6575,7 +6578,7 @@
           await api(`/api/my-ais/${id}/disable`, { method: 'POST' });
           await draw();
         } else if (b.dataset.act === 'delete') {
-          if (!await confirmDialog({ title: '永久刪除 AI？', confirmText: '永久刪除', danger: true, expectText: ai.name,
+          if (!await confirmDialog({ title: '刪除 AI？', confirmText: '刪除', danger: true, expectText: ai.name,
             message: `<b>${esc(ai.name)}</b> 的 Token 會立即失效，從成員名單、@ 選單、團隊狀態消失，<b>不可復原</b>。它發過的訊息與卡片紀錄會保留並標「（已刪除）」；它負責且未完成的卡片會變成未指派。` })) return;
           const r = await api(`/api/my-ais/${id}/delete`, { method: 'POST', body: { confirmName: ai.name } });
           toast(r.unassignedCards.length ? `已刪除；${r.unassignedCards.join('、')} 變成未指派` : '已刪除');
@@ -8928,7 +8931,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   const ADM_SECS = [
     ['todo', '📋', '待處理', '加入申請、技能核准、邀請到期'],
     ['group', '🏷️', '工作區設定', '名稱、建立專案、AI 工具、開放註冊、附件保存'],
-    ['projects', '📁', L('專案', 'Projects'), '新增、改名、程式庫、封存、永久刪除'], // 字典的「專案」是單數，目錄要複數
+    ['projects', '📁', L('專案', 'Projects'), '新增、改名、程式庫、封存、刪除'], // 字典的「專案」是單數，目錄要複數
     ['invites', '✉️', '邀請', '邀請新的人、重發、作廢'],
     ['accounts', '🔑', '帳號與救援', '重設登入、救援指令'], // 升降管理員、移出工作區、停用搬到成員名冊
     ['audit', '🔍', '稽核與儲存', '全站稽核紀錄、儲存空間'],
@@ -9554,7 +9557,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="dm">${p.dm?.on ? '關閉私訊…' : '開放成員私訊自己的 AI…'}<span class="pm-sub">${p.dm?.on ? `已開放${p.dm.at ? ' · ' + esc(mmdd(p.dm.at)) : ''}${p.dm.byName ? ' ' + esc(p.dm.byName) + ' 打開' : ''}` : '預設關'}</span></button>
           <button type="button" role="menuitem" data-pp="log">異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>封存…${blocked ? `<span class="pm-sub">${esc(why)}</span>` : ''}</button></div>` : '';
-      const last = p.archived ? `<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button>${isAdmin() ? '<button type="button" class="btn small danger-outline" data-pp="purge">永久刪除…</button>' : ''}</span>` // 封存的才能永久刪除（只有管理員）
+      const last = p.archived ? `<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button>${isAdmin() ? '<button type="button" class="btn small danger-outline" data-pp="pdelete">刪除…</button>' : ''}</span>` // 封存的才能刪除（只有管理員）
         : `<span class="pm-more-wrap"><button type="button" class="pm-more" data-pm-more="${esc(p.id)}" aria-haspopup="menu" aria-expanded="${perm.moreOpen === p.id}" aria-label="${esc(p.name)} 的更多動作">⋯</button>${menu}</span>`;
       const log = open ? `<tr class="pm-log-tr" data-pj="${esc(p.id)}"><td colspan="6"><div class="pm-log-head"><b>異動紀錄 · ${esc(p.name)}</b><button type="button" class="link small" data-pp="log" aria-expanded="true">收起</button></div><ul class="pa-log">${(perm.events[p.id] || []).map(e => `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(e.text)}</li>`).join('') || '<li class="muted small">還沒有紀錄</li>'}</ul></td></tr>` : '';
       return `<tr class="pm-prow${p.archived ? ' archived' : ''}" data-pj="${esc(p.id)}"><td class="c-pname"><b>${esc(p.name)}</b>${p.archived ? ' <span class="pill-tag grey">已封存</span>' : ''}</td><td class="c-code" data-label="API 代號" title="${esc(p.id)}">${esc(p.id)}</td><td class="c-num" data-label="成員">${p.memberCount}</td><td class="c-num2" data-label="未結案卡">${p.openCards}</td><td class="c-repo" data-label="程式庫">${repo}</td><td class="c-more">${last}</td></tr>${log}`;
@@ -9564,7 +9567,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <table class="pm-table pm-ptable"><thead><tr><th scope="col">專案</th><th scope="col" class="c-code">API 代號</th><th scope="col" class="c-num">成員</th><th scope="col" class="c-num2">未結案卡</th><th scope="col" class="c-repo">程式庫</th><th scope="col" class="c-more"><span class="sr-only">動作</span></th></tr></thead>
         <tbody>${rows}</tbody></table></div>${permDelsHtml()}</div>`;
   }
-  // PLAT-381：leader 的專案管理：只列自己當 leader 的專案；⋯ 有改名、程式庫與分支、成員與本專案角色、封存（永久刪除只有管理員）
+  // PLAT-381：leader 的專案管理：只列自己當 leader 的專案；⋯ 有改名、程式庫與分支、成員與本專案角色、封存（刪除只有管理員）
   function permLeadProjectsHtml() {
     const list = myLeadRows();
     const rows = list.map(p => {
@@ -9579,7 +9582,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="statuses">🗂 看板狀態<span class="pm-sub">${(p.statuses || []).length} 個</span></button>
           <button type="button" role="menuitem" data-pp="log">🕘 異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>🗄 封存專案<span class="pm-sub">${blocked ? esc(why) : '可還原'}</span></button>
-          <button type="button" role="menuitem" aria-disabled="true" class="pm-off" data-pp="noop" title="只有工作區管理員能永久刪除">🗑 永久刪除<span class="pm-sub">只有工作區管理員</span></button></div>` : '';
+          <button type="button" role="menuitem" aria-disabled="true" class="pm-off" data-pp="noop" title="只有工作區管理員能刪除專案">🗑 刪除<span class="pm-sub">只有工作區管理員</span></button></div>` : '';
       const last = p.archived ? '<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button></span>'
         : `<span class="pm-more-wrap"><button type="button" class="pm-more" data-pm-more="${esc(p.id)}" aria-haspopup="menu" aria-expanded="${perm.moreOpen === p.id}" aria-label="${esc(p.name)} 的更多動作">⋯</button>${menu}</span>`;
       const log = perm.openLog === p.id ? `<tr class="pm-log-tr" data-pj="${esc(p.id)}"><td colspan="6"><div class="pm-log-head"><b>異動紀錄 · ${esc(p.name)}</b><button type="button" class="link small" data-pp="log" aria-expanded="true">收起</button></div><ul class="pa-log">${(perm.events[p.id] || []).map(e => `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(e.text)}</li>`).join('') || '<li class="muted small">還沒有紀錄</li>'}</ul></td></tr>` : '';
@@ -9589,19 +9592,20 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <div class="pm-card"><div class="pm-card-head"><strong>你管理的專案 · ${list.filter(p => !p.archived).length}</strong></div>
         ${list.length ? `<table class="pm-table pm-ptable"><thead><tr><th scope="col">專案</th><th scope="col" class="c-code">API 代號</th><th scope="col" class="c-num">成員</th><th scope="col" class="c-num2">未結案卡</th><th scope="col" class="c-repo">程式庫</th><th scope="col" class="c-more"><span class="sr-only">動作</span></th></tr></thead>
         <tbody>${rows}</tbody></table>` : '<p class="muted small pm-pad">你目前不是任何專案的專案管理員。</p>'}</div>
-      <div class="pm-card pm-lead-note"><p class="muted small">專案管理員能做：改名、程式庫與分支、成員與專案角色、看板狀態、封存（可還原）。永久刪除、邀請、帳號只有工作區管理員能做。</p></div></div>`;
+      <div class="pm-card pm-lead-note"><p class="muted small">專案管理員能做：改名、程式庫與分支、成員與專案角色、看板狀態、封存（可還原）。刪除專案、邀請、帳號只有工作區管理員能做。</p></div></div>`;
   }
-  // 已永久刪除的專案（全站紀錄，只有管理員）；第一次畫才去讀
+  // 已刪除的專案（可復原期內，只有工作區管理員）：預計永久清除的時間、復原；第一次畫才去讀
   function permDelsHtml() {
     if (!isAdmin()) return '';
     if (perm.deletions === undefined) {
       perm.deletions = null;
-      api('/api/project-deletions').then(d => { perm.deletions = d.items || []; if (state.page === 'perm' && perm.tab === 'admin' && perm.deletions.length) drawPerm(); }).catch(() => { perm.deletions = []; });
+      api('/api/deleted-projects').then(d => { perm.deletions = d.items || []; if (state.page === 'perm' && perm.tab === 'admin' && perm.deletions.length) drawPerm(); }).catch(() => { perm.deletions = []; });
     }
     const list = perm.deletions || [];
     if (!list.length) return '';
-    return `<details class="pm-card pm-dels"><summary>已永久刪除的專案 · ${list.length}</summary><ul class="pm-dels-list">${list.map(d => `<li><b>${esc(d.name)}</b>${d.code ? ` <span class="muted small">${esc(d.code)}</span>` : ''}
-      <span class="muted small">${esc(d.byName || '')} · ${esc(shortTime(d.at))}</span><span class="muted small">訊息 ${d.counts?.messages ?? 0} 則、卡片 ${d.counts?.cards ?? 0} 張、文件 ${d.counts?.docs ?? 0} 份</span></li>`).join('')}</ul></details>`;
+    return `<details class="pm-card pm-dels" open><summary>已刪除的專案 · ${list.length}</summary><p class="muted small pm-pad">可復原期內只有工作區管理員看得到；復原後回到封存狀態。到期由系統永久清除。</p><ul class="pm-dels-list">${list.map(d => `<li data-pj="${esc(d.projectId)}"><b>${esc(d.name)}</b>${d.code ? ` <span class="muted small">${esc(d.code)}</span>` : ''}
+      <span class="muted small">${esc(d.deletedBy?.name || '')} · ${esc(shortTime(d.deletedAt))} 刪除</span><span class="muted small">訊息 ${d.counts?.messages ?? 0} 則、卡片 ${d.counts?.cards ?? 0} 張、文件 ${d.counts?.docs ?? 0} 份</span>
+      <span class="small pm-purge-at">${esc(localYmdHm(d.purgeAt))} 永久清除</span><button type="button" class="btn small" data-pp="restore">${L('復原', 'Restore')}</button></li>`).join('')}</ul></details>`;
   }
   // ---------- 看板狀態（每個專案自訂；GLOSSARY：狀態、狀態類別、必要類別） ----------
   const ST_CATS = ['待整理', '待處理', '進行中', '受阻', '待確認', '已完成']; // 已封存由系統管理，不能選
@@ -9860,7 +9864,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!onAdm && !onLead) perm.lastMemTab = perm.tab;
     if (state.permTab !== perm.tab) { state.permTab = perm.tab; drawChrome(); }
     // 管理員設定、成員管理分兩頁（頭像選單各一項），頂端互相連過去
-    const title = onRoster ? '<h2>📇 成員名冊</h2><span class="muted small">工作區裡所有人與 AI；專案只列你看得到的</span>' : onLead ? `<h2>📁 專案管理</h2><span class="muted small">你是專案管理員的專案 · 永久刪除專案請找工作區管理員 ${esc(wsAdminNames())}</span>` : onAdm ? '<h2>⚙️ 管理員設定</h2><span class="muted small">只有工作區管理員看得到 · 成員、AI 職務、技能在 <button type="button" class="link small" data-pm-page="members">👥 成員管理 ›</button></span>'
+    const title = onRoster ? '<h2>📇 成員名冊</h2><span class="muted small">工作區裡所有人與 AI；專案只列你看得到的</span>' : onLead ? `<h2>📁 專案管理</h2><span class="muted small">你是專案管理員的專案 · 刪除專案請找工作區管理員 ${esc(wsAdminNames())}</span>` : onAdm ? '<h2>⚙️ 管理員設定</h2><span class="muted small">只有工作區管理員看得到 · 成員、AI 職務、技能在 <button type="button" class="link small" data-pm-page="members">👥 成員管理 ›</button></span>'
       : `<h2>👥 成員管理</h2><span class="muted small">工作區管理員：${esc(wsAdminNames())}${admin ? ' · <button type="button" class="link small" data-adm="">⚙️ 管理員設定 ›</button>' : ' · 你是專案管理員'}</span>`;
     const tabs = onAdm || onLead || !manager ? '' : `<div class="seg-scope pm-tabs" role="tablist" aria-label="分頁">${[['roster', '名冊'], ['members', '專案成員'], ['roles', 'AI 職務'], ['skills', '技能']].map(([k, t]) => `<button type="button" role="tab" data-pm-tab="${k}" aria-selected="${perm.tab === k}" aria-pressed="${perm.tab === k}">${t}</button>`).join('')}</div>`;
     const body = onRoster ? rosterHtml() : onLead ? permLeadProjectsHtml() : onAdm ? admBodyHtml() : perm.tab === 'skills' ? permSkillsHtml() : perm.tab === 'roles' ? permRolesHtml() : permView() === 'byMember' ? permByMemberHtml() : permByProjectHtml();
@@ -10390,7 +10394,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       perm.gsLogOpen = !!$('.pm-gs-log')?.open;
       return loadGroupSettings(); // 異動紀錄多一筆
     }
-    if (a === 'noop') { drawPerm(); return toast('只有管理員能永久刪除專案'); } // PLAT-381
+    if (a === 'noop') { drawPerm(); return toast('只有工作區管理員能刪除專案'); } // PLAT-381
     if (a === 'members') return psetAct('members', id);
     if (a === 'statuses') { drawPerm(); return openStatusEditor(id); }
     if (a === 'visibility') { drawPerm(); return openVisibilityEditor(id); }
@@ -10457,20 +10461,27 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         toast(on ? '已開放私訊' : '已關閉私訊');
       } else if (a === 'unarchive') {
         await api(`/api/projects/${encodeURIComponent(id)}/unarchive`, { method: 'POST' });
-      } else if (a === 'purge') { // 先看會刪掉多少；有擋下原因就只說明
+      } else if (a === 'pdelete') { // 先看會刪掉多少、什麼時候永久清除；有擋下原因就只說明
         const pv = await api(`/api/projects/${encodeURIComponent(id)}/delete-preview`);
         if (pv.blockers.length) {
-          await confirmDialog({ title: '還不能永久刪除', confirmText: '知道了', message: `<ul class="confirm-list">${pv.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` });
+          await confirmDialog({ title: '還不能刪除', confirmText: '知道了', message: `<ul class="confirm-list">${pv.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` });
           return;
         }
-        const c = pv.counts;
-        const ok = await confirmDialog({ title: `永久刪除「${pv.name}」？`, confirmText: '永久刪除', danger: true, expectText: pv.name,
-          message: `<p>刪掉就救不回來。會一起刪掉：</p><ul class="confirm-list"><li>訊息 ${c.messages} 則（含通知與決策紀錄）</li><li>卡片 ${c.cards} 張（含卡片紀錄）</li><li>文件 ${c.docs} 份、上傳檔 ${c.files} 個</li><li>技能 ${c.skills} 個</li>${pv.aisToDelete?.length ? `<li>只屬於這個專案的 AI 會一起刪除：${esc(pv.aisToDelete.join('、'))}</li>` : ''}</ul>` +
+        const c = pv.counts, now = !pv.recoveryDays;
+        const ok = await confirmDialog({ title: `刪除「${pv.name}」？`, confirmText: '刪除', danger: true, expectText: pv.name,
+          message: (now ? '<p>可復原期是 0 天：刪除後立刻永久清除，救不回來。會一起清除：</p>'
+            : `<p>刪除後進入可復原期（${pv.recoveryDays} 天），${esc(localYmdHm(pv.purgeAt))} 由系統永久清除；在那之前工作區管理員可以在「已刪除的專案」復原。到期會一起清除：</p>`) +
+            `<ul class="confirm-list"><li>訊息 ${c.messages} 則（含通知與決策紀錄）</li><li>卡片 ${c.cards} 張（含卡片紀錄）</li><li>文件 ${c.docs} 份、上傳檔 ${c.files} 個</li><li>技能 ${c.skills} 個</li>${pv.aisToDelete?.length ? (now ? `<li>只屬於這個專案的 AI 會一起刪除：${esc(pv.aisToDelete.join('、'))}</li>` : `<li>只屬於這個專案的 AI 會先暫停、永久清除時一起刪除：${esc(pv.aisToDelete.join('、'))}</li>`) : ''}</ul>` +
             `<p>${c.members} 位成員與 AI 的帳號會留著，只是不再屬於這個專案；跨專案頻道的訊息不動。</p>` });
         if (!ok) return;
-        await api(`/api/projects/${encodeURIComponent(id)}/delete`, { method: 'POST', body: { confirmName: pv.name } });
-        perm.deletions = undefined; // 重讀刪除紀錄
-        toast(`已永久刪除「${pv.name}」`);
+        const d = await api(`/api/projects/${encodeURIComponent(id)}/delete`, { method: 'POST', body: { confirmName: pv.name } });
+        perm.deletions = undefined; // 重讀已刪除的專案
+        toast(d.deleted?.purged ? `已永久清除「${pv.name}」` : `已刪除「${pv.name}」，${localYmdHm(d.deleted?.purgeAt)} 永久清除`);
+      } else if (a === 'restore') {
+        const name = perm.deletions?.find(x => x.projectId === id)?.name || '';
+        await api(`/api/projects/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+        perm.deletions = undefined;
+        toast(`已復原「${name}」，回到封存狀態`);
       }
       await Promise.all([loadProjectList(), loadParticipants()]);
       if (perm.openLog) perm.events[perm.openLog] = (await api(`/api/projects/${encodeURIComponent(perm.openLog)}/events?limit=20`).catch(() => ({ items: [] }))).items;
