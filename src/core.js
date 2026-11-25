@@ -577,6 +577,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     delete p.owner_ws_status;
     p.authKind = dev ? 'device' : 'code';
     p.deviceId = dev?.id || null;
+    p.reauthAt = dev?.reauth_at || 0; // 這台裝置最近一次再驗證身分（敏感操作用）
     if (p.owner_id) {
       const ownerStatus = 'owner_status' in p ? p.owner_status : (await db.get('SELECT status FROM participants WHERE id = ?', p.owner_id))?.status; // 驗證時已一起查回
       if (ownerStatus !== 'active') throw new ApiError(401, 'INVALID_TOKEN', '所屬人類已離開群組');
@@ -1584,6 +1585,7 @@ ${ending}`;
     memberProjectsOf: membership.projectsOf, visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
     loadProjectAdmins: membership.loadProjectAdmins, projectAdminsOf: membership.projectAdminsOf,
     loadReadOnly: membership.loadReadOnly, isReadOnly: membership.isReadOnly, isPlatformAdmin: membership.isPlatformAdmin, ownerOf,
+    requireRecentAuth: me => login.requireFreshAuth(me), // 敏感動作：這台裝置剛再驗證過（login 在下面註冊路由時才建立）
   });
   // 稽核紀錄（auditLog；名字跟下面檔案稽核的 audit() 分開）、管理員異動通知：跟著管理操作一起寫（先改資料、確認改成了，再寫這一批）
   const auditLog = createAudit({ db, randId, nowIso });
@@ -2981,8 +2983,8 @@ ${ending}`;
   // 名冊可見範圍（誰看得到誰）：權限模組的 see_member（工作區成員看得到工作區裡所有人；成員名冊 GET /api/roster 見 src/roster.js）
   // ---------- 停用／恢復成員、交出管理員（只有管理員） ----------
   // 停用：所有裝置登出、登入碼與配對碼作廢、他的 AI 的 Token 全部換掉（恢復後要主人重發）；名單標「已停用」。資料、卡片、訊息都留著
-  async function humanTarget(ctx, me, id) {
-    await access.check(ctx, me, 'manage_accounts', 'platform', { what: '停用或恢復成員' });
+  async function humanTarget(ctx, me, id, action) {
+    await access.check(ctx, me, action, 'platform', { what: '停用或恢復成員' });
     const t = await db.get("SELECT * FROM participants WHERE id = ? AND kind = 'human'", id);
     if (!t || t.status === 'deleted') throw new ApiError(404, 'NOT_FOUND', '找不到這位人類成員');
     if (t.id === me.id) throw new ApiError(400, 'SELF', '不能停用自己；要離開工作區，請先把另一位成員升為工作區管理員。');
@@ -2998,7 +3000,7 @@ ${ending}`;
   }
   // 停用帳號（只有平台管理員）：所有工作區都進不去。工作區角色、平台角色照舊留著（停用中不算管理員），恢復後回到停用前的樣子
   route('POST', '/api/participants/:id/disable', async ({ ctx, me, params }) => {
-    const t = await humanTarget(ctx, me, params.id);
+    const t = await humanTarget(ctx, me, params.id, 'disable_account');
     if (t.status === 'disabled') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyDisabled: true };
     await assertNotLastAdmin(ctx, t, { platform: true });
     const now = Date.now(), at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
@@ -3025,7 +3027,7 @@ ${ending}`;
     return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)), revokedAiTokens: ais.length };
   });
   route('POST', '/api/participants/:id/enable', async ({ ctx, me, params }) => {
-    const t = await humanTarget(ctx, me, params.id);
+    const t = await humanTarget(ctx, me, params.id, 'manage_accounts');
     if (t.status !== 'disabled') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyActive: true };
     await assertNameFree(t.name, t.id).catch(() => { throw new ApiError(409, 'NAME_TAKEN', `已經有人叫「${t.name}」，先請對方改名再恢復。`); });
     const at = nowIso();

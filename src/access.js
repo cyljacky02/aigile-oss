@@ -93,11 +93,12 @@ const DENY = {
 const ACTIONS = {
   // 平台
   manage_platform: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 備份與還原、示範資料、更新檢查
-  manage_accounts: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 停用／恢復帳號、已停用清單
-  assign_platform_admin: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 任免平台管理員
+  manage_accounts: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 恢復帳號、已停用清單
+  disable_account: { admin: true, sensitive: true, rule: platformAdmin, deny: DENY.platform }, // 停用帳號（敏感：要再驗證身分）
+  assign_platform_admin: { admin: true, sensitive: true, rule: platformAdmin, deny: DENY.platform }, // 任免平台管理員（敏感）
   // 工作區
   manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
-  assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
+  assign_workspace_admin: { admin: true, sensitive: true, rule: workspaceAdmin }, // 升降工作區管理員（敏感）
   remove_member: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能把他移出工作區。`) }, // 把人移出工作區（帳號不受影響）；target 是平台管理員時只有平台管理員能
   see_removed_members: { admin: true, rule: workspaceAdmin },
   review_upgrade: { admin: true, rule: workspaceAdmin }, // 成員名冊：升級時同時是 leader 又是唯讀、先當唯讀成員的人（upgradeReview），略過標記 // 成員名冊：已移出工作區的人（待接受的邀請是 GET /api/invites?status=pending，invite）

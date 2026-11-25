@@ -8,6 +8,7 @@ import path from 'node:path';
 import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
+import { adminSession } from './test-admin.js';
 import { dbStorage } from '../src/storage-db.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-rsroles-'));
@@ -51,6 +52,7 @@ try {
   const join = async name => (await A.call(null, '/api/join', 'POST', { name, role: 'PG' })).body;
   const boss = await join('林志明'), chen = await join('陳昭宇'), wang = await join('王小美'), zhao = await join('趙小安');
   const Bo = boss.participant.participantId, Cn = chen.participant.participantId, Wg = wang.participant.participantId;
+  for (const p of [boss, wang]) p.token = (await adminSession(A.call, p.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入
   ok(await A.call(boss.token, `/api/participants/${Cn}/workspace-role`, 'PUT', { role: 'admin' }), '陳昭宇升為工作區管理員');
   ok(await A.call(boss.token, `/api/participants/${Wg}/platform-role`, 'PUT', { role: 'admin' }), '王小美升為平台管理員');
   ok(await A.call(wang.token, `/api/participants/${Bo}/platform-role`, 'PUT', { role: 'none' }), '林志明降為一般帳號');

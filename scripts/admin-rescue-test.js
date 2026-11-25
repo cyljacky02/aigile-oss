@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
+import { adminSession, reauth } from './test-admin.js';
 import { dbStorage } from '../src/storage-db.js';
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'admin-rescue.js');
@@ -45,6 +46,7 @@ try {
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.participant.name, '林志明', '一位平台管理員：救的是他');
   bossTok = r.body.token;
+  bossTok = (await adminSession(call, bossTok)).token; // 救援登入的帳號沒有密碼：設好密碼、再驗證，才能任免平台管理員
   console.log('✓ 一位平台管理員');
 
   // 2. 平台管理員換人：先升陳昭宇，林志明再降自己。最早建立的人（林志明）已不是平台管理員，救援仍要給到陳昭宇
@@ -58,6 +60,7 @@ try {
   assert.equal(r.status, 200, '換人後救援連結可以登入：' + JSON.stringify(r.body));
   assert.equal(r.body.participant.name, '陳昭宇', '換人後救的是現在的平台管理員');
   let chenTok = r.body.token;
+  chenTok = (await adminSession(call, chenTok)).token;
   console.log('✓ 平台管理員換人後');
 
   // 3. 多位平台管理員：沒指定名字就列出名單結束、不產生連結；用 --name 指定就救那位
@@ -79,6 +82,7 @@ try {
     assert.equal(r.body.participant.name, name, '救的是指定的人');
     if (name === '林志明') bossTok = r.body.token; else chenTok = r.body.token;
   }
+  for (const token of [bossTok, chenTok]) await reauth(call, { token, password: 'pass-word-1' }); // 救援登入後也要再驗證才能任免平台管理員
   console.log('✓ 多位平台管理員');
 
   // 4. 非平台管理員拿不到救援連結：指定一般帳號，腳本不產生連結；
