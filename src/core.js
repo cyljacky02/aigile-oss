@@ -2911,9 +2911,9 @@ ${ending}`;
   route('GET', '/api/project-deletions', async ({ ctx, me }) => {
     await access.check(ctx, me, 'see_deleted_projects', 'workspace', { what: '查看已刪除的專案' });
     const purges = (await auditLog.list({ action: AUDIT_ACTION.PROJECT_PURGE, limit: 50 })).items;
-    const dels = (await auditLog.list({ action: AUDIT_ACTION.PROJECT_DELETE, limit: 200 })).items;
-    return { items: purges.map(e => {
-      const by = dels.find(d => d.scope.projectId === e.scope.projectId && d.at <= e.at)?.actor || e.actor;
+    const dels = await Promise.all(purges.map(e => auditLog.latestForProject({ action: AUDIT_ACTION.PROJECT_DELETE, projectId: e.scope.projectId, at: e.at })));
+    return { items: purges.map((e, i) => {
+      const by = dels[i]?.actor || e.actor;
       return { projectId: e.scope.projectId, name: e.scope.projectName ?? e.target?.name ?? '', code: e.detail?.code ?? null, by: by.kind === 'system' ? null : by.id, byName: by.name,
         at: e.at, counts: e.detail?.counts || {}, aisDeleted: e.detail?.aisDeleted || [] };
     }) };

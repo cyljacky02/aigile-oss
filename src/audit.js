@@ -3,6 +3,7 @@
 //   auditLog.stmt(evt)   回一句 [sql, args]，跟資料異動放進同一個 db.batch；沒有要寫的回 null
 //   auditLog.write(evt)  單獨寫一筆（就是 stmt 那一句的 db.run）
 //   auditLog.list(q)     查詢（GET /api/audit-log 用；可見範圍由呼叫端依權限決定）
+//   auditLog.latestForProject(q)  某個專案某個時間前最後一筆某種紀錄（舊的刪除紀錄端點找按刪除的人）
 //   auditLog.migrateLegacy()  舊的專案刪除紀錄（app_settings 的 pdel:）轉進來；core.js 每份程式第一個請求跑一次
 // 只能新增：這裡沒有修改或刪除的方法（還原備份時保留原本的、合併備份裡的，在 src/backup.js）
 // 呼叫端把 stmt 的結果放進清單時要去掉 null（core.js 的 writeStmts 會去掉；清單空了就不呼叫 db.batch）
@@ -106,6 +107,12 @@ export function createAudit({ db, randId, nowIso }) {
     return out;
   }
 
+  // 某個專案在 at 之前（含）最後一筆 action 紀錄（沒有回 null）：例如永久清除前最後按刪除的人
+  async function latestForProject({ action, projectId, at }) {
+    const r = await db.get(`SELECT ${COLS} FROM audit_log WHERE action = ? AND project_id = ? AND at <= ? ORDER BY at DESC, seq DESC LIMIT 1`, action, projectId, at);
+    return r ? view(r) : null;
+  }
+
   // 舊的專案刪除紀錄（pdel:）轉進稽核紀錄後移除：一筆一批（新增＋刪鍵），id 由鍵決定，重跑、多份程式同時跑都不會重複
   // 回 false＝這次沒做完（匯入備份中、還沒有資料表），下個請求再試
   async function migrateLegacy() {
@@ -128,5 +135,5 @@ export function createAudit({ db, randId, nowIso }) {
     if (rows.length) console.log(`舊的專案刪除紀錄轉進稽核紀錄：${rows.length} 筆`);
     return true;
   }
-  return { stmt, write, list, migrateLegacy };
+  return { stmt, write, list, latestForProject, migrateLegacy };
 }

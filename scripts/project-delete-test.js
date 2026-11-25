@@ -314,6 +314,15 @@ try {
   assert.deepEqual((await call(liu.token, '/api/project-deletions')).body.items.map(x => [x.name, x.byName]), [['馬上清除', '林志明'], ['要刪的專案', '林志明']], 'J 舊端點新的在前');
   r = await call(liu.token, '/api/projects', 'POST', { name: '馬上清除', code: 'NOW' });
   assert.ok(r.status < 300, 'I 代碼馬上可以再用：' + JSON.stringify(r.body).slice(0, 200));
+  // J 之後又有很多專案被刪（別的管理員按的）：舊端點的刪除者照樣是當初按刪除的人（修正前：只往回找 200 筆刪除紀錄，找不到就變成系統）
+  assert.equal((await call(boss.token, '/api/recovery-window', 'PUT', { days: null })).status, 200, '可復原期改回跟平台預設');
+  const linBoss = await adminSession(call, lin.token);
+  for (let i = 0; i < 201; i++) {
+    const p = (await call(lin.token, '/api/projects', 'POST', { name: `批次${i}` })).body.items.find(x => x.name === `批次${i}`).id;
+    await call(lin.token, `/api/projects/${encodeURIComponent(p)}/archive`, 'POST');
+    assert.equal((await call(linBoss.token, `/api/projects/${encodeURIComponent(p)}/delete`, 'POST', { confirmName: `批次${i}` })).status, 200, '批次刪除');
+  }
+  assert.deepEqual((await call(liu.token, '/api/project-deletions')).body.items.filter(x => x.projectId === pid).map(x => x.byName), ['林志明'], 'J 刪除者是當初按刪除的人');
   console.log('project-delete-test：全部通過');
 } catch (e) {
   console.error('project-delete-test 失敗：', e.message, (e.stack || '').split('\n').slice(1, 3).join(' | '));
