@@ -154,7 +154,13 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
   }
   const reply = async (ctx, pj, extra = {}) => { ctx.statusBook = null; return { items: (await statuses.load(ctx)).list(pj), ...extra }; };
   const find = (book, pj, sid) => { const s = book.byId(sid); if (!s || s.project !== pj) throw notFound(); return s; };
-  const cardsIn = sid => db.all(`SELECT * FROM cards WHERE status_id = ? AND status != '${ARCHIVED}' ORDER BY seq`, sid);
+  // 這個專案裡、status_id 指向這個狀態的卡；別的專案的卡 status_id 對不上（舊資料）時算在它自己專案的狀態（ADR 0001），不算這裡
+  const cardsIn = ({ project, id }) => db.all(`SELECT * FROM cards WHERE project = ? AND status_id = ? AND status != '${ARCHIVED}' ORDER BY seq`, project, id);
+  // 只有空的狀態能改類別：有卡就等於一次觸發大量完成／驗收規則
+  async function requireEmptyForCategoryChange(status) {
+    const count = (await cardsIn(status)).length;
+    if (count) throw new ApiError(409, 'STATUS_NOT_EMPTY', `「${status.name}」裡還有 ${count} 張卡，不能改類別：請新建一個狀態，把卡片搬過去。`);
+  }
   const event = (pj, me, text) => (projEvent ? db.batch([projEvent(pj, me.id, `${me.name} ${text}`, nowIso())]) : null);
   const keys = rows => rows.slice(0, 20).map(c => cardKey(c)).filter(Boolean);
   // 新增、刪除、改類別的交易第一句：鎖住專案那一列，同一個專案的這類修改一次一個（Postgres；SQLite／D1 本來就一次一個交易）
@@ -193,11 +199,7 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
     const name = body.name === undefined ? s.name : checkStatusName(body.name, category, invalid);
     if (body.name === undefined) checkStatusName(name, category, invalid); // 改類別後原名稱也要合規則
     const color = body.color === undefined ? s.color : checkColor(body.color, category, invalid);
-    if (category !== s.category) {
-      // 只有空的狀態能改類別：有卡就等於一次觸發大量完成／驗收規則
-      const n = (await cardsIn(s.id)).length;
-      if (n) throw new ApiError(409, 'STATUS_NOT_EMPTY', `「${s.name}」裡還有 ${n} 張卡，不能改類別：請新建一個狀態，把卡片搬過去。`);
-    }
+    if (category !== s.category) await requireEmptyForCategoryChange(s);
     checkStatusList(book.list(pj).map(x => (x.id === s.id ? { name, category } : x)), invalid);
     const update = ['UPDATE project_statuses SET name = ?, category = ?, color = ? WHERE id = ?', [name, category, color, s.id]];
     const what = [name !== s.name && `改名「${s.name}」→「${name}」`, category !== s.category && `類別 ${s.category} → ${category}`, color !== s.color && '改顏色'].filter(Boolean);
@@ -208,8 +210,7 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
       try { await db.batch([lockProject(pj), update, eventIf(pj, me, `看板狀態${what.join('、')}`, nowIso(), ok, [s.id, ...(required ? [s.category] : [])])]); }
       catch (e) {
         if (!raced(e)) throw e;
-        const n = (await cardsIn(s.id)).length;
-        if (n) throw new ApiError(409, 'STATUS_NOT_EMPTY', `「${s.name}」裡還有 ${n} 張卡，不能改類別：請新建一個狀態，把卡片搬過去。`);
+        await requireEmptyForCategoryChange(s);
         throw conflict();
       }
     } else {
@@ -243,7 +244,7 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
       const deferred = await db.all(`SELECT seq, project, proj_no FROM cards WHERE project = ? AND type = '決策' AND decision_result IS NULL AND status = '受阻' AND blocker LIKE '暫緩（%' ORDER BY seq`, pj);
       if (deferred.length) throw new ApiError(409, 'HAS_DEFERRED', `還有 ${deferred.length} 張暫緩中的決策卡（${keys(deferred).join('、')}），先恢復它們，才能拿掉最後一個「受阻」狀態。`, { cards: keys(deferred) });
     }
-    const rows = await cardsIn(s.id);
+    const rows = await cardsIn(s);
     let target = null;
     if (rows.length) {
       const raw = body.moveTo ?? url.searchParams.get('moveTo');
