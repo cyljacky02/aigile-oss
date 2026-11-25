@@ -2,6 +2,8 @@
 // - 狀態類別：系統固定的七種語意；所有流程規則（接單、決策、驗收、交接、封存）只看類別，存在 cards.status
 // - 狀態：各專案自訂的看板欄（名稱、順序、顏色），存在 project_statuses；卡片的 cards.status_id 指向它
 // - cards.status_id 為空或對不上（別的專案、別的類別）時，卡片算在「同專案、同類別、排最前面」的狀態；已封存的卡沒有狀態
+import { isUniqueConstraintViolation } from './db-errors.js';
+
 export const ARCHIVED = '已封存';
 export const CATEGORIES = ['待整理', '待處理', '進行中', '待確認', '受阻', '已完成', ARCHIVED];
 export const BOARD_CATEGORIES = CATEGORIES.filter(c => c !== ARCHIVED);
@@ -170,6 +172,11 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
   const eventIf = (pj, me, text, at, ok, args) => [`INSERT INTO project_events (project_id, at, actor_id, text) VALUES ((SELECT p.id FROM projects p WHERE p.id = ? AND ${ok}),?,?,?)`,
     [pj, ...args, at, me.id, `${me.name} ${text}`]];
   const catHas = 'EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.project = p.id AND ps.category = ?)'; // 這個專案的類別 ? 還有狀態
+  // 同一個專案的狀態名稱重複：讀完清單後剛好有人同時新增或改名成同一個名稱
+  const nameTaken = e => isUniqueConstraintViolation(e, {
+    constraint: 'idx_project_statuses_name',
+    columns: ['project_statuses.project', 'project_statuses.name'],
+  });
   // 交易被上面的檢查（或搬卡語句的同類檢查，都是 NOT NULL）擋下，或 Postgres 偵測到兩個交易互等（deadlock）：當成剛好有人同時在改
   const raced = e => e?.code === '23502' || e?.code === '40P01' || /NOT NULL constraint failed/i.test(String(e?.message));
   const conflict = () => new ApiError(409, 'CONFLICT', '看板狀態或裡面的卡片剛好有人同時在改，這次沒有存；請重新讀取後再試。');
@@ -188,7 +195,7 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
     // 新增跟異動紀錄同一個交易，最後一句兼檢查加完還沒超過上限（上面讀到的清單可能已經過時：同時有人也在新增）
     const ok = `(SELECT COUNT(*) FROM project_statuses ps WHERE ps.project = p.id) <= ${STATUS_LIMITS.max}`;
     try { await db.batch([lockProject(pj), ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [pj, name, category, position, color]], eventIf(pj, me, `新增看板狀態「${name}」（${category}）`, nowIso(), ok, [])]); }
-    catch (e) { throw raced(e) ? conflict() : e; }
+    catch (e) { throw nameTaken(e) || raced(e) ? conflict() : e; }
     return { __status: 201, ...(await reply(ctx, pj)) };
   });
 
@@ -209,12 +216,14 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
       const ok = `NOT EXISTS (SELECT 1 FROM cards c WHERE c.project = p.id AND c.status_id = ? AND c.status != '${ARCHIVED}')${required ? ` AND ${catHas}` : ''}`;
       try { await db.batch([lockProject(pj), update, eventIf(pj, me, `看板狀態${what.join('、')}`, nowIso(), ok, [s.id, ...(required ? [s.category] : [])])]); }
       catch (e) {
+        if (nameTaken(e)) throw conflict();
         if (!raced(e)) throw e;
         await requireEmptyForCategoryChange(s);
         throw conflict();
       }
     } else {
-      await db.run(update[0], ...update[1]);
+      try { await db.run(update[0], ...update[1]); }
+      catch (e) { throw nameTaken(e) ? conflict() : e; }
       if (what.length) await event(pj, me, `看板狀態${what.join('、')}`);
     }
     return reply(ctx, pj);

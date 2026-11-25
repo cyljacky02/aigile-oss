@@ -65,14 +65,14 @@ try {
   const del = (id, body = {}) => () => call(boss.token, `/api/projects/${P}/statuses/${id}`, 'DELETE', body);
   const getCard = async id => ok(await call(boss.token, `/api/cards/${id}`), '讀卡');
   const fresh = async name => { const r = ok(await call(boss.token, '/api/projects', 'POST', { name }), '建專案'); pj = r.id; P = encodeURIComponent(pj); await items(); };
-  const DELETE_DONE = /^INSERT INTO project_events\b/; // 新增／刪除／改類別交易的最後一句（檢查完、還沒提交）
+  const PROJECT_EVENT_INSERT = /^INSERT INTO project_events\b/; // 新增／刪除／改類別交易的最後一句（檢查完、還沒提交）
 
   // 1) 先刪狀態（停在提交前），同時有人把卡改到那個狀態：改卡片要等刪除做完，然後回 409 STATUS_DELETED
   {
     await fresh('競態一');
     const qa = await add('QA', '待確認');
     const c = ok(await mkCard({ status: '進行中' }), '建卡');
-    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: del(qa.id), second: () => call(boss.token, `/api/cards/${c.cardId}`, 'PATCH', { status: 'QA' }), secondSql: '%UPDATE cards%' });
+    const { r1, r2, blocked } = await race({ re: PROJECT_EVENT_INSERT, first: del(qa.id), second: () => call(boss.token, `/api/cards/${c.cardId}`, 'PATCH', { status: 'QA' }), secondSql: '%UPDATE cards%' });
     assert.equal(r1.status, 200, '刪除成功：' + JSON.stringify(r1.body).slice(0, 200));
     assert.ok(blocked, '改卡片要等刪除的交易做完');
     assert.equal(r2.status, 409, '改卡片：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'STATUS_DELETED');
@@ -98,7 +98,7 @@ try {
     await fresh('競態三');
     const dc = ok(await mkCard({ type: '決策', question: '要不要？', options: ['要', '不要'] }), '決策卡');
     const blocked0 = (await items()).find(s => s.category === '受阻');
-    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: del(blocked0.id), second: () => call(boss.token, `/api/cards/${dc.cardId}/defer`, 'POST', { reason: '下季' }), secondSql: '%UPDATE cards%' });
+    const { r1, r2, blocked } = await race({ re: PROJECT_EVENT_INSERT, first: del(blocked0.id), second: () => call(boss.token, `/api/cards/${dc.cardId}/defer`, 'POST', { reason: '下季' }), secondSql: '%UPDATE cards%' });
     assert.equal(r1.status, 200, '刪除成功：' + JSON.stringify(r1.body).slice(0, 200));
     assert.ok(blocked, '暫緩要等刪除的交易做完');
     assert.equal(r2.status, 409, '暫緩：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'STATUS_DELETED');
@@ -114,7 +114,7 @@ try {
     const a = ok(await call(boss.token, '/api/my-ais', 'POST', { projects: [pj], roleKey: 'PG', role: 'PG', name: '甲PG', duties: 'x', style: 'x', autonomy: 'x', mustConfirm: 'x', handoff: 'x' }), '建 AI');
     const aiTok = await testToken(db, a.participantId);
     const w = ok(await mkCard({ status: '待處理', ownerId: a.participantId }), 'AI 的卡');
-    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: del(doing.id, { moveTo: doing2.id }),
+    const { r1, r2, blocked } = await race({ re: PROJECT_EVENT_INSERT, first: del(doing.id, { moveTo: doing2.id }),
       second: () => call(aiTok, '/api/messages', 'POST', { project: pj, requestId: 'm1', text: '[接單] 開始', cardId: w.cardId, recipientIds: [], replyFrom: [] }), secondSql: '%UPDATE cards%' });
     assert.equal(r1.status, 200, '刪除成功：' + JSON.stringify(r1.body).slice(0, 200));
     assert.ok(blocked, '[接單] 移卡要等刪除的交易做完');
@@ -142,7 +142,7 @@ try {
     await fresh('競態六');
     const tmp = await add('暫時', '待處理');
     const c = ok(await mkCard({ status: '進行中' }), '建卡');
-    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: () => call(boss.token, `/api/projects/${P}/statuses/${tmp.id}`, 'PATCH', { category: '受阻' }),
+    const { r1, r2, blocked } = await race({ re: PROJECT_EVENT_INSERT, first: () => call(boss.token, `/api/projects/${P}/statuses/${tmp.id}`, 'PATCH', { category: '受阻' }),
       second: () => call(boss.token, `/api/cards/${c.cardId}`, 'PATCH', { status: '暫時' }), secondSql: '%UPDATE cards%' });
     assert.equal(r1.status, 200, '改類別成功：' + JSON.stringify(r1.body).slice(0, 200));
     assert.ok(blocked, '改卡片要等改類別的交易做完');
@@ -156,7 +156,7 @@ try {
     await fresh('競態七');
     const todo2 = await add('待處理二', '待處理');
     const todo = (await items()).find(s => s.name === '待處理');
-    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: del(todo.id), second: del(todo2.id), secondSql: '%UPDATE projects%' });
+    const { r1, r2, blocked } = await race({ re: PROJECT_EVENT_INSERT, first: del(todo.id), second: del(todo2.id), secondSql: '%UPDATE projects%' });
     assert.equal(r1.status, 200, '第一個刪除：' + JSON.stringify(r1.body).slice(0, 200));
     assert.ok(blocked, '第二個刪除要等第一個做完');
     assert.equal(r2.status, 409, '第二個刪除：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'CONFLICT');
@@ -168,7 +168,7 @@ try {
     await fresh('競態八');
     for (let i = (await items()).length; i < 11; i++) await add('狀態' + i, '進行中');
     const addCall = name => () => call(boss.token, `/api/projects/${P}/statuses`, 'POST', { name, category: '進行中' });
-    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: addCall('第十二'), second: addCall('第十三'), secondSql: '%UPDATE projects%' });
+    const { r1, r2, blocked } = await race({ re: PROJECT_EVENT_INSERT, first: addCall('第十二'), second: addCall('第十三'), secondSql: '%UPDATE projects%' });
     assert.equal(r1.status, 201, '第一個新增：' + JSON.stringify(r1.body).slice(0, 200));
     assert.ok(blocked, '第二個新增要等第一個做完');
     assert.equal(r2.status, 409, '第二個新增：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'CONFLICT');
@@ -182,7 +182,7 @@ try {
     const confirm = (await items()).find(s => s.category === '待確認' && s.id !== confirm2.id);
     const dc = ok(await mkCard({ type: '決策', question: '要不要？', options: ['要', '不要'] }), '決策卡');
     ok(await call(boss.token, `/api/cards/${dc.cardId}/defer`, 'POST', { reason: '下季' }), '暫緩');
-    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: del(confirm2.id), second: del(confirm.id), secondSql: '%UPDATE projects%' });
+    const { r1, r2, blocked } = await race({ re: PROJECT_EVENT_INSERT, first: del(confirm2.id), second: del(confirm.id), secondSql: '%UPDATE projects%' });
     assert.equal(r1.status, 200, '第一個刪除：' + JSON.stringify(r1.body).slice(0, 200));
     assert.ok(blocked, '第二個刪除要等第一個做完');
     assert.equal(r2.status, 409, '第二個刪除：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'CONFLICT');
@@ -190,6 +190,20 @@ try {
     ok(await call(boss.token, `/api/cards/${dc.cardId}/resume`, 'POST', {}), '恢復');
     assert.equal((await getCard(dc.cardId)).statusId, confirm.id, '恢復後回到待確認');
     assert.deepEqual(await stranded(), [], '沒有卡指向不存在的狀態');
+  }
+
+  // 10) 兩個人同時取同一個狀態名稱（第一個新增停在提交前）：第二個要等第一個做完，然後卡在名稱的唯一索引、回 409（不是 500），名稱不重複
+  // 第二個是新增（等專案列鎖）、或只改名（不拿專案列鎖，等的是唯一索引上還沒提交的那一列）
+  for (const [label, second, secondSql] of [
+    ['新增', () => call(boss.token, `/api/projects/${P}/statuses`, 'POST', { name: '同名', category: '進行中' }), '%UPDATE projects%'],
+    ['改名', async () => call(boss.token, `/api/projects/${P}/statuses/${(await items()).find(s => s.name === '受阻').id}`, 'PATCH', { name: '同名' }), '%UPDATE project_statuses%'],
+  ]) {
+    await fresh('競態十' + label);
+    const { r1, r2, blocked } = await race({ re: PROJECT_EVENT_INSERT, first: () => call(boss.token, `/api/projects/${P}/statuses`, 'POST', { name: '同名', category: '進行中' }), second, secondSql });
+    assert.equal(r1.status, 201, '第一個新增：' + JSON.stringify(r1.body).slice(0, 200));
+    assert.ok(blocked, `${label}要等第一個做完`);
+    assert.equal(r2.status, 409, `後做完的${label}：` + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'CONFLICT');
+    assert.equal((await items()).filter(s => s.name === '同名').length, 1, '名稱不重複');
   }
 
   console.log('project-statuses-pg-race-test：全部通過');
