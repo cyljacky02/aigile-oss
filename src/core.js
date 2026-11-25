@@ -2882,6 +2882,18 @@ ${ending}`;
     }
     return { items };
   });
+  // 舊的刪除紀錄端點（相容用，形狀不變）：最近 50 個永久清除了的專案，資料來自稽核紀錄的 project.purge（新的在前）。
+  // by、byName 是清除前最後一次按刪除的人（永久清除的操作者是系統）；找不到（轉進來的舊紀錄）就用清除紀錄的操作者
+  route('GET', '/api/project-deletions', async ({ ctx, me }) => {
+    await access.check(ctx, me, 'see_deleted_projects', 'workspace', { what: '查看已刪除的專案' });
+    const purges = (await auditLog.list({ action: AUDIT_ACTION.PROJECT_PURGE, limit: 50 })).items;
+    const dels = (await auditLog.list({ action: AUDIT_ACTION.PROJECT_DELETE, limit: 200 })).items;
+    return { items: purges.map(e => {
+      const by = dels.find(d => d.scope.projectId === e.scope.projectId && d.at <= e.at)?.actor || e.actor;
+      return { projectId: e.scope.projectId, name: e.scope.projectName ?? e.target?.name ?? '', code: e.detail?.code ?? null, by: by.kind === 'system' ? null : by.id, byName: by.name,
+        at: e.at, counts: e.detail?.counts || {}, aisDeleted: e.detail?.aisDeleted || [] };
+    }) };
+  });
   // 復原：回到封存狀態（要用時再還原封存）；刪除時暫停的 AI 恢復。可復原期過了（等排程清除中）不能復原
   route('POST', '/api/projects/:id/restore', async ({ ctx, me, params }) => {
     await access.check(ctx, me, 'restore_project', 'workspace', { what: '復原專案' });

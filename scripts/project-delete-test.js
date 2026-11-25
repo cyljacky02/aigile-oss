@@ -9,6 +9,7 @@
 // G. 刪除與復原通知其他工作區管理員（不含操作者）；刪除、復原、永久清除都寫稽核紀錄（專案名稱快照與數量；清除的操作者是系統）
 // H. 期滿由排程（runScheduled）永久清除：卡片與紀錄、訊息與通知、決策、上傳檔與文件（含本體）、技能、知識庫、加入申請、私訊、
 //    專案事件與設定；人和 AI 帳號留著，只屬於這個專案的 AI 此時才刪除；跨專案頻道與其他專案不動；清除後代碼與名稱可以再用
+// J. 舊的刪除紀錄端點 GET /api/project-deletions 照舊可用（形狀不變，只給工作區管理員）：資料來自稽核紀錄的永久清除，刪除者是按刪除的人
 // I. 可復原期為 0：刪除當下就永久清除（刪除記操作的人，永久清除的操作者是系統）
 // 修正前：刪除當下就清除，救不回來
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres。本機暫存資料庫，不連正式站。用法：node scripts/project-delete-test.js
@@ -268,6 +269,16 @@ try {
   assert.equal((await audit('project.delete')).length, 2, 'H 刪除紀錄在專案清除後仍在');
   assert.deepEqual((await notices(lin)).map(x => x.kind), ['admin_project_delete'], 'G 再刪一次也通知（永久清除不另外通知）');
   assert.equal((await app.runScheduled()).purged?.projects, 0, 'H 沒有到期的就不清');
+  // J 舊的刪除紀錄端點
+  r = await call(liu.token, '/api/project-deletions');
+  assert.equal(r.status, 200, 'J 舊端點照舊可用：' + JSON.stringify(r.body));
+  const pd = r.body.items[0];
+  assert.deepEqual([pd?.projectId, pd?.name, pd?.code, pd?.by, pd?.byName, pd?.counts?.cards, pd?.aisDeleted], [pid, '要刪的專案', 'DEL', id(liu), '林志明', 1, ['只在這裡的AI']], 'J 形狀跟以前一樣：' + JSON.stringify(pd));
+  assert.ok(!Number.isNaN(Date.parse(pd.at)), 'J 有時間');
+  assert.equal(r.body.items.length, 1, 'J 只列永久清除了的（可復原期內的不算）');
+  assert.equal((await call(lin.token, '/api/project-deletions')).status, 200, 'J 另一位工作區管理員看得到（不用再驗證）');
+  assert.equal((await call(wang.token, '/api/project-deletions')).status, 403, 'J 只有管理員看得到刪除紀錄');
+  assert.equal((await call(aiBothTok, '/api/project-deletions')).status, 403, 'J AI 看不到');
   // 清除後同名同代號、同網址英文名可以再建
   r = await call(liu.token, '/api/projects', 'POST', { name: '要刪的專案', code: 'DEL', slug: 'to-del' });
   assert.ok(r.status < 300 && r.body.items.some(p => p.name === '要刪的專案' && p.code === 'DEL'), 'H 清除後代碼可以再用：' + JSON.stringify(r.body).slice(0, 200));
@@ -288,6 +299,7 @@ try {
   L = (await audit('project.purge')).filter(e => e.scope.projectId === p0);
   assert.deepEqual([L.length, L[0]?.actor.kind, L[0]?.actor.name], [1, 'system', '系統'], 'I 立即清除也寫稽核紀錄（操作者是系統）：' + JSON.stringify(L));
   assert.deepEqual((await audit('project.delete')).filter(e => e.scope.projectId === p0).map(e => e.actor.name), ['林志明'], 'I 刪除也有紀錄（操作的人）');
+  assert.deepEqual((await call(liu.token, '/api/project-deletions')).body.items.map(x => [x.name, x.byName]), [['馬上清除', '林志明'], ['要刪的專案', '林志明']], 'J 舊端點新的在前');
   r = await call(liu.token, '/api/projects', 'POST', { name: '馬上清除', code: 'NOW' });
   assert.ok(r.status < 300, 'I 代碼馬上可以再用：' + JSON.stringify(r.body).slice(0, 200));
   console.log('project-delete-test：全部通過');
