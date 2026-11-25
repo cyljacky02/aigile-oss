@@ -508,7 +508,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       'SELECT message_id, participant_id FROM message_recipients WHERE message_id IN (SELECT value FROM json_each(?))',
       JSON.stringify(rows.map(m => m.id)));
     // [需確認] 被人類標「已處理」（沒有回覆）時附上 resolution，提問的 AI 讀得到、當暫緩；只查 [需確認] 那幾則
-    const waitIds = rows.filter(m => inferState(m.text) === 'waiting').map(m => m.id);
+    // （永久清除的內文已清掉、看不出是不是 [需確認]，一併查：決策結果的參照不斷）
+    const waitIds = rows.filter(m => m.purged_at || inferState(m.text) === 'waiting').map(m => m.id);
     const resRows = waitIds.length ? await db.all('SELECT message_id, resolved_by, resolved_at FROM decision_resolutions WHERE message_id IN (SELECT value FROM json_each(?))', JSON.stringify(waitIds)) : [];
     const resBy = new Map(resRows.map(r => [r.message_id, r]));
     const people = await peopleMap(ctx, [...rows.map(m => m.author_id), ...recRows.map(r => r.participant_id), ...resRows.map(r => r.resolved_by), ...rows.map(m => m.deleted_by).filter(Boolean)]);
@@ -3459,13 +3460,42 @@ ${ending}`;
     await liveMessageChange(ctx, m, 'message_restored').catch(() => {});
     return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
   });
-  // 永久清除訊息（ids 中已刪除、還沒清除的）：清掉內文，佔位要的欄位（id、作者、時間、刪除者）留著，回應、卡片關聯、決策結果的參照不斷
+  // 永久清除訊息（ids 中已刪除、還沒清除的）：清掉內文，附件本體與附件列刪掉（檔案稽核記 purge）；
+  // 佔位要的欄位（id、作者、時間、刪除者）留著，回應、卡片關聯、決策結果、收件人、request_id（重送不會變新訊息）不動
   // actor：操作者（null＝系統，到期清除）。回清除了幾則。可復原期 0 天的刪除、到期清除、清空專案訊息都走這裡
+  // 一次最多 MESSAGE_PURGE_BATCH 則一批（資料與稽核紀錄同一批寫入）；稽核紀錄每批、每個專案一筆 message.purge（count＝幾則，detail 只有 id 與附件數，不存原文）
+  const MESSAGE_PURGE_BATCH = Math.max(1, Number(config.purgeBatch) || 200); // 測試可調小
   async function purgeMessages(ids, { actor = null } = {}) {
-    if (!ids.length) return 0;
-    const r = await db.run("UPDATE messages SET text = '', purged_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL", nowIso(), JSON.stringify(ids));
-    if (r.changes) messagesChanged();
-    return r.changes;
+    let total = 0;
+    for (let i = 0; i < ids.length; i += MESSAGE_PURGE_BATCH) total += await purgeMessageBatch(ids.slice(i, i + MESSAGE_PURGE_BATCH), actor);
+    if (total) messagesChanged();
+    return total;
+  }
+  async function purgeMessageBatch(ids, actor) {
+    const rows = await db.all('SELECT id, project, file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL', JSON.stringify(ids));
+    if (!rows.length) return 0;
+    const mids = JSON.stringify(rows.map(m => m.id)), at = nowIso();
+    // 一則可掛多個檔（files.message_id）；messages.file_id 是第一個。已到期的檔本體早就刪了，列一樣拿掉
+    const fileRows = await db.all('SELECT id, message_id FROM files WHERE message_id IN (SELECT value FROM json_each(?)) OR id IN (SELECT file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND file_id IS NOT NULL)', mids, mids);
+    if (storage) for (const f of fileRows) await storage.delete(f.id).catch(() => {}); // 本體先刪（列刪了就找不到 id）
+    const fids = JSON.stringify(fileRows.map(f => f.id)), groups = new Map(); // 專案 → 這批清除的訊息與附件數
+    for (const m of rows) {
+      const k = m.project || '';
+      if (!groups.has(k)) groups.set(k, { m, ids: [], files: 0 });
+      const g = groups.get(k);
+      g.ids.push(m.id);
+      g.files += fileRows.filter(f => f.message_id === m.id || (!f.message_id && f.id === m.file_id)).length;
+    }
+    await writeStmts([
+      [`INSERT INTO file_audit (id, file_id, action, actor_id, actor_kind, at, name, size, sha256, declared, detail)
+        SELECT ? || id, id, 'purge', ?, ?, ?, name, size, sha256, declared, 'MESSAGE_PURGED' FROM files WHERE id IN (SELECT value FROM json_each(?))`,
+        [randId('aud') + '_', actor?.id ?? 'system', actor?.kind ?? 'system', at, fids]],
+      ['DELETE FROM file_chunks WHERE file_id IN (SELECT value FROM json_each(?))', [fids]], // dbStorage 的本體（其他儲存上面已刪）
+      ['DELETE FROM files WHERE id IN (SELECT value FROM json_each(?))', [fids]],
+      ["UPDATE messages SET text = '', purged_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL", [at, mids]],
+      ...[...groups.values()].map(g => auditLog.stmt({ actor, action: AUDIT_ACTION.MESSAGE_PURGE, ...msgAuditScope(g.m), count: g.ids.length, detail: { messageIds: g.ids, files: g.files }, at })),
+    ]);
+    return rows.length;
   }
   // cardId（選填）：訊息發出時一併關聯到該卡（待你處理的行內輸入、卡片內回覆用）；一張卡最多 50 則，滿了就略過關聯
   route('POST', '/api/messages', async ({ req, me, ctx }) => {
@@ -4253,7 +4283,11 @@ ${ending}`;
   };
   // 可復原期到期的永久清除：訊息、專案各一步，各自回清除了幾筆（還沒有可復原期的東西：都是 0）
   async function purgeDue() { return { messages: await purgeDueMessages(), projects: await purgeDueProjects() }; }
-  async function purgeDueMessages() { return 0; }
+  // 可復原期滿了的訊息：每次最多 MESSAGE_PURGE_BATCH 則（先到期的先清），跑不完下次繼續。還沒升級資料庫（沒有 purge_at）時不做
+  async function purgeDueMessages() {
+    const due = await db.all('SELECT id FROM messages WHERE deleted_at IS NOT NULL AND purged_at IS NULL AND purge_at <= ? ORDER BY purge_at LIMIT ?', nowIso(), MESSAGE_PURGE_BATCH).catch(() => []);
+    return purgeMessages(due.map(m => m.id));
+  }
   // 可復原期滿了的專案：每次最多 5 個（一個專案要好幾批），跑不完下次繼續。還沒升級資料庫（沒有 purge_at）時不做
   async function purgeDueProjects() {
     const due = await db.all('SELECT * FROM projects WHERE deleted_at IS NOT NULL AND purge_at <= ? ORDER BY purge_at LIMIT 5', Date.now()).catch(() => []);
