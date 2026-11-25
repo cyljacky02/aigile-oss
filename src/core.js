@@ -203,6 +203,14 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const rec = recipients.filter(id => see.includes(id));
     if (rec.length) live.toPeople(rec, 'notify', { messageId: m.id });
   }
+  // 訊息被刪除或復原（message_deleted／message_restored）：推給看得到這則的人，網頁重讀這一則
+  async function liveMessageChange(ctx, m, type) {
+    const on = live ? live.connectedIds() : [];
+    if (!on.length) return;
+    const people = await peopleMap(ctx), see = [];
+    for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
+    live.toPeople(see, type, { id: m.id, project: m.project || null });
+  }
   async function liveCard(ctx, cardId, project) {
     const on = live ? live.connectedIds() : [];
     if (!on.length || !project) return;
@@ -503,13 +511,13 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const waitIds = rows.filter(m => inferState(m.text) === 'waiting').map(m => m.id);
     const resRows = waitIds.length ? await db.all('SELECT message_id, resolved_by, resolved_at FROM decision_resolutions WHERE message_id IN (SELECT value FROM json_each(?))', JSON.stringify(waitIds)) : [];
     const resBy = new Map(resRows.map(r => [r.message_id, r]));
-    const people = await peopleMap(ctx, [...rows.map(m => m.author_id), ...recRows.map(r => r.participant_id), ...resRows.map(r => r.resolved_by)]);
-    const fileIds = rows.map(m => m.file_id).filter(Boolean);
+    const people = await peopleMap(ctx, [...rows.map(m => m.author_id), ...recRows.map(r => r.participant_id), ...resRows.map(r => r.resolved_by), ...rows.map(m => m.deleted_by).filter(Boolean)]);
+    const fileIds = rows.filter(m => !m.deleted_at).map(m => m.file_id).filter(Boolean); // 被刪的訊息不露出附件
     const fileRows = fileIds.length
       ? await db.all('SELECT * FROM files WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(fileIds)) : [];
     const filesById = new Map(fileRows.map(x => [x.id, x]));
     // 一則訊息可掛多個檔（files.message_id）；file＝第一個（舊版照讀），files＝全部、照上傳順序
-    const withFile = rows.filter(m => m.file_id).map(m => m.id);
+    const withFile = rows.filter(m => m.file_id && !m.deleted_at).map(m => m.id);
     const moreRows = withFile.length
       ? await db.all('SELECT * FROM files WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, rowid', JSON.stringify(withFile)) : [];
     const filesByMsg = new Map();
@@ -537,7 +545,17 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       createdAt: m.created_at,
       ...(AUTO_MSG_RE.test(m.request_id || '') ? { auto: true } : {}), // 平台自動組的通知（卡片異動、退回、交接…）：網頁英文介面照固定句型翻，內容不動
       ...(resBy.has(m.id) ? { resolution: resolutionView(resBy.get(m.id), people) } : {}),
+      ...(m.deleted_at ? deletedView(ctx, m, people) : {}),
     }; });
+  }
+  // 被刪除的訊息：留佔位（回覆串、卡片關聯、決策結果的參照不斷），text 換成固定文字、多 deleted: true，附件只留 fileId（available: false）。
+  // 人類另外看得到刪除者、時間、預計永久清除時間（畫面的「此訊息已被 X 於 T 刪除」）；給 AI 的形狀不變，只多 deleted
+  const DELETED_TEXT = '（此訊息已刪除）';
+  function deletedView(ctx, m, people) {
+    const out = { text: DELETED_TEXT, deleted: true, ...(m.file_id ? { file: fileView(undefined, m.file_id) } : {}) };
+    if (ctx.viewerKind === 'ai') return out;
+    const p = people.get(m.deleted_by);
+    return { ...out, deletedBy: { participantId: m.deleted_by, name: p ? p.name : '?' }, deletedAt: m.deleted_at, purgeAt: m.purge_at || null, ...(m.purged_at ? { purged: true } : {}) };
   }
 
   // 「已處理（沒有回覆）」：人類在網頁按掉，沒有回答；AI 當暫緩，不再等、不重問
@@ -585,7 +603,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
         wake: needsWake(ask, reasons, m.text, !!m.dm), // false＝知會，watcher 不為它叫醒
         ...(m.dm ? { dm: true } : {}), // 私訊（用 GET /api/dm 讀，GET /api/messages/:id 讀不到）
         sender,
-        preview: m.text.length > 100 ? m.text.slice(0, 100) + '…' : m.text,
+        preview: m.deleted_at ? DELETED_TEXT : m.text.length > 100 ? m.text.slice(0, 100) + '…' : m.text, // 被刪除的訊息不露出原文
         createdAt: n.created_at,
         confirmedAt: n.acked_at,
       };
@@ -3371,7 +3389,7 @@ ${ending}`;
     const where = (pf ? ` AND ${pf.sql}` : '') + (scope ? ` AND ${scope.sql}` : ''), args = [...(pf ? pf.args : []), ...(scope ? scope.args : [])];
     const top = (await db.get('SELECT COALESCE(MAX(seq), 0) AS s FROM messages')).s;
     const like = '%' + kw.replace(/[%_\\]/g, m => '\\' + m) + '%';
-    const rows = await db.all(`SELECT * FROM messages WHERE seq > ? AND text LIKE ? ESCAPE '\\'${where} ORDER BY seq DESC LIMIT ?`, top - 5000, like, ...args, limit + 1);
+    const rows = await db.all(`SELECT * FROM messages WHERE seq > ? AND text LIKE ? ESCAPE '\\' AND deleted_at IS NULL${where} ORDER BY seq DESC LIMIT ?`, top - 5000, like, ...args, limit + 1);
     return { items: await serializeMessages(ctx, rows.slice(0, limit)), hasMore: rows.length > limit, scanned: Math.min(top, 5000) };
   }
   route('GET', '/api/messages/:id/around', async ({ ctx, me, params, url }) => {
@@ -3393,6 +3411,62 @@ ${ending}`;
     if (!m || !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到訊息');
     return serializeMessage(ctx, m);
   });
+  // ---------- 刪除與復原單則訊息（詞彙見 GLOSSARY「刪除與稽核」） ----------
+  // 權限範圍：訊息的專案＋作者、刪除者（access.js 的 delete_own_message／delete_message／restore_message）
+  const msgAccessScope = m => ({ project: m.project || null, message: { authorId: m.author_id, deletedBy: m.deleted_by || null } });
+  const msgAuditScope = m => (m.project ? { scope: AUDIT_SCOPE.PROJECT, project: { id: m.project, name: nameOf(m.project) } } : { scope: AUDIT_SCOPE.WORKSPACE });
+  async function visibleMessage(me, id) {
+    const m = await db.get('SELECT * FROM messages WHERE id = ?', id);
+    if (!m || !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到訊息');
+    return m;
+  }
+  // 訊息被刪除、復原、永久清除：團隊狀態與待處理通知的快取重讀
+  function messagesChanged() {
+    pendCache = { at: 0, rows: null };
+    teamCache = { at: 0, data: null };
+  }
+  // 作者刪自己的、工作區管理員刪任何人的（不用再驗證身分）。永久清除時間在刪除當下依生效的可復原期決定，0 天＝當下就永久清除
+  // 不發通知；寫稽核紀錄（不存原文）；這則訊息的待處理通知自動確認（復原時不重發）；[接單] 的認領記在卡片紀錄，不受影響
+  route('DELETE', '/api/messages/:id', async ({ ctx, me, params }) => {
+    const m = await visibleMessage(me, params.id);
+    await access.check(ctx, me, m.author_id === me.id ? 'delete_own_message' : 'delete_message', msgAccessScope(m), { what: '刪除別人的訊息' });
+    if (m.deleted_at) throw new ApiError(410, 'MESSAGE_DELETED', '這則訊息已刪除');
+    const now = Date.now(), at = new Date(now).toISOString(), { days, purgeAt } = await purgeAtFor(now), purgeIso = new Date(purgeAt).toISOString();
+    const r = await db.run('UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = NULL WHERE id = ? AND deleted_at IS NULL', at, me.id, purgeIso, m.id);
+    if (!r.changes) throw new ApiError(410, 'MESSAGE_DELETED', '這則訊息已刪除'); // 別人剛好先刪了
+    const author = (await peopleMap(ctx, [m.author_id])).get(m.author_id);
+    await writeStmts([
+      ["UPDATE notifications SET status = 'acked', acked_at = COALESCE(acked_at, ?) WHERE message_id = ? AND status = 'pending'", [at, m.id]],
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_DELETE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, days, purgeAt: purgeIso }, at }),
+    ]);
+    messagesChanged();
+    if (days === 0) await purgeMessages([m.id], { actor: me });
+    await liveMessageChange(ctx, m, 'message_deleted').catch(() => {});
+    return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
+  });
+  // 可復原期內：作者復原自己刪的；工作區管理員復原任何被刪的。寫稽核紀錄、不發通知、通知不重發
+  route('POST', '/api/messages/:id/restore', async ({ ctx, me, params }) => {
+    const m = await visibleMessage(me, params.id);
+    if (!m.deleted_at) throw new ApiError(409, 'NOT_DELETED', '這則訊息沒有被刪除');
+    await access.check(ctx, me, 'restore_message', msgAccessScope(m), { what: '復原別人的訊息' });
+    const at = nowIso();
+    if (m.purged_at || (m.purge_at && m.purge_at <= at)) throw new ApiError(409, 'RECOVERY_EXPIRED', '已經過了可復原期，這則訊息不能復原');
+    const r = await db.run('UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE id = ? AND deleted_at = ? AND purged_at IS NULL', m.id, m.deleted_at);
+    if (!r.changes) throw new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
+    const author = (await peopleMap(ctx, [m.author_id])).get(m.author_id);
+    await auditLog.write({ actor: me, action: AUDIT_ACTION.MESSAGE_RESTORE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, deletedBy: m.deleted_by }, at });
+    messagesChanged();
+    await liveMessageChange(ctx, m, 'message_restored').catch(() => {});
+    return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
+  });
+  // 永久清除訊息（ids 中已刪除、還沒清除的）：清掉內文，佔位要的欄位（id、作者、時間、刪除者）留著，回應、卡片關聯、決策結果的參照不斷
+  // actor：操作者（null＝系統，到期清除）。回清除了幾則。可復原期 0 天的刪除、到期清除、清空專案訊息都走這裡
+  async function purgeMessages(ids, { actor = null } = {}) {
+    if (!ids.length) return 0;
+    const r = await db.run("UPDATE messages SET text = '', purged_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL", nowIso(), JSON.stringify(ids));
+    if (r.changes) messagesChanged();
+    return r.changes;
+  }
   // cardId（選填）：訊息發出時一併關聯到該卡（待你處理的行內輸入、卡片內回覆用）；一張卡最多 50 則，滿了就略過關聯
   route('POST', '/api/messages', async ({ req, me, ctx }) => {
     const body = await readJson(req);
@@ -3735,8 +3809,12 @@ ${ending}`;
     if (!f.message_id) throw new ApiError(404, 'NOT_FOUND', '找不到檔案');
     // 已掛在訊息上的檔案，套用跟訊息相同的專案隔離；看不到就當作不存在
     if (f.message_id) {
-      const m = await db.get('SELECT project, created_at FROM messages WHERE id = ?', f.message_id);
+      const m = await db.get('SELECT project, created_at, deleted_at FROM messages WHERE id = ?', f.message_id);
       if (m && !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到檔案');
+      if (m?.deleted_at) { // 訊息被刪除：可復原期內不能下載（照常記進檔案稽核）
+        await audit('reject', me, f, { detail: 'MESSAGE_DELETED' });
+        throw new ApiError(410, 'MESSAGE_DELETED', '這個檔案所在的訊息已刪除，不能下載');
+      }
     }
     const bytes = await storage.get(f.id);
     if (!bytes) throw new ApiError(404, 'NOT_FOUND', '檔案內容不存在');
@@ -3805,7 +3883,7 @@ ${ending}`;
   route('GET', '/api/files', async ({ ctx, me }) => {
     const people = await peopleMap(ctx);
     const scope = await messageScope(me, 'm');
-    const rows = await db.all(`SELECT f.*, m.project AS msg_project FROM files f LEFT JOIN messages m ON m.id = f.message_id WHERE m.id IS NOT NULL AND f.deleted_at IS NULL AND f.expires_at > ?${scope ? ` AND (m.id IS NULL OR ${scope.sql})` : ''} ORDER BY f.created_at DESC`, Date.now(), ...(scope ? scope.args : []));
+    const rows = await db.all(`SELECT f.*, m.project AS msg_project FROM files f LEFT JOIN messages m ON m.id = f.message_id WHERE m.id IS NOT NULL AND m.deleted_at IS NULL AND f.deleted_at IS NULL AND f.expires_at > ?${scope ? ` AND (m.id IS NULL OR ${scope.sql})` : ''} ORDER BY f.created_at DESC`, Date.now(), ...(scope ? scope.args : []));
     const used = rows.reduce((n, f) => n + f.size, 0);
     return {
       items: rows.map(f => ({ ...fileView(f), project: f.msg_project ?? null, uploader: people.get(f.uploader_id) ? identity(people.get(f.uploader_id), people) : null })),
@@ -3836,8 +3914,15 @@ ${ending}`;
   const headline = text => String(text).trimStart().split('\n')[0].replace(/^\[[^\]]*\]\s*/, '').slice(0, 80);
 
   // 團隊狀態用的最近 200 則訊息與 [需確認] 的回覆：保留在記憶體，之後只補讀新訊息
+  // 被刪除的訊息不算（不露出原文）：每次另查這段範圍裡被刪的（別份程式剛刪的也算）
   let recentCache = { rows: null, maxSeq: 0, replies: new Map() }; // replies: [需確認] id → 回覆列
   async function recentMessages() {
+    const rows = await recentRows();
+    if (!rows.length) return rows;
+    const gone = new Set((await db.all('SELECT id FROM messages WHERE seq >= ? AND deleted_at IS NOT NULL', rows[rows.length - 1].seq)).map(r => r.id));
+    return gone.size ? rows.filter(m => !gone.has(m.id)) : rows;
+  }
+  async function recentRows() {
     const cols = 'SELECT id, seq, author_id, text, reply_to, reply_from, created_at, project FROM messages';
     if (!recentCache.rows) {
       const rows = await db.all(`${cols} ORDER BY seq DESC LIMIT 200`);
@@ -4275,6 +4360,7 @@ ${ending}`;
         }));
         await membership.loadMembers(); // 成員資格快照（10 秒快取；本份程式改過就重讀）
         const me = r.open ? null : await authenticate(req, url);
+        if (me) ctx.viewerKind = me.kind; // 回應給誰看（被刪訊息的佔位：AI 只多 deleted）
         if (me?.kind === 'ai') await peopleMap(ctx); // AI 能進的專案要看所屬人類（成員快取）
         const routeKey = `${r.method} ${r.pattern}`;
         if (me?.kind === 'human' && DEFAULT_ADMIN && !credOk.has(me.id)) {

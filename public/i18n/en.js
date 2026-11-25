@@ -3679,6 +3679,21 @@ window.AIGILE_EN = {
     "要帶 fileTtlHours 或 recoveryDays": "fileTtlHours or recoveryDays is required",
 
     // #31 刪除與復原訊息
+    "（此訊息已刪除）": "(This message was deleted)",
+    "此訊息已被 {0} 於 {1} 刪除": "Deleted by {0} · {1}",
+    "你在這個專案是唯讀成員，不能刪除訊息（包括自己以前發的）。": "You're a viewer in this project, so you can't delete messages (including ones you sent before).",
+    "AI 不能刪除訊息，你也不能刪你的 AI 發的訊息：請找工作區管理員刪除。": "AIs can't delete messages, and you can't delete messages your AI sent: ask a workspace admin to delete it.",
+    "對話裡會留一行「已刪除」，回覆串與卡片關聯不會斷；可復原期內可以復原，之後永久清除。": "A \"deleted\" line stays in the conversation, so replies and card links keep working. You can restore it during the recovery window; after that it's purged.",
+    "刪除這則訊息？": "Delete this message?",
+    "刪除 {0} 的這則訊息？": "Delete this message from {0}?",
+    "已復原": "Restored",
+    "這則訊息已刪除": "This message was deleted",
+    "這則訊息沒有被刪除": "This message isn't deleted",
+    "已經過了可復原期，這則訊息不能復原": "The recovery window has passed, so this message can't be restored",
+    "這個檔案所在的訊息已刪除，不能下載": "The message this file belongs to was deleted, so it can't be downloaded",
+    "這則訊息是管理員刪的，只有工作區管理員能復原。": "An admin deleted this message, so only a workspace admin can restore it.",
+    "刪除別人的訊息": "delete other people's messages",
+    "復原別人的訊息": "restore other people's messages",
 
     // #32 訊息永久清除
 
@@ -3697,7 +3712,6 @@ window.AIGILE_EN = {
     "{0} · {1} 刪除": "deleted by {0} · {1}",
     "{0} 永久清除": "purged on {0}",
     "還不能刪除": "Can't delete yet",
-    "刪除「{0}」？": "Delete \"{0}\"?",
     "可復原期是 0 天：刪除後立刻永久清除，救不回來。會一起清除：": "The recovery window is 0 days: the project is purged right away and can't be restored. This also purges:",
     "刪除後進入可復原期（{0} 天），{1} 由系統永久清除；在那之前工作區管理員可以在「已刪除的專案」復原。到期會一起清除：": "The project enters a {0}-day recovery window and is purged by the system on {1}; until then a workspace admin can restore it from Deleted projects. When purged, this goes too:",
     "只屬於這個專案的 AI 會先暫停、永久清除時一起刪除：{0}": "AIs that belong only to this project are paused now and deleted when it's purged: {0}",

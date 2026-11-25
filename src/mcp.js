@@ -116,6 +116,7 @@ const who = p => (p ? (p.shortCode ? `${p.name}（${p.shortCode}）` : p.name ||
 const oneLine = (t, n) => { const x = String(t ?? '').replace(/\s+/g, ' ').trim(); return x.length > n ? x.slice(0, n) + '…' : x; };
 const cut = (t, n) => { const x = String(t ?? ''); return x.length > n ? x.slice(0, n) + '…' : x; };
 export const LINE_CHARS = 60;
+const del = x => (x.deleted ? { deleted: true } : {}); // 被刪除的訊息：text 是佔位，另帶 deleted
 export function slimMessage(x) {
   return {
     messageId: x.messageId, seq: x.sequence, from: who(x.author), fromId: x.author?.participantId,
@@ -124,7 +125,7 @@ export function slimMessage(x) {
     ...(x.file ? { file: { fileId: x.file.fileId, name: x.file.name, available: x.file.available } } : {}),
     // 一則掛多個檔時列出全部（file 仍是第一個，舊版照讀）；下載 GET /api/files/:fileId
     ...(x.files?.length > 1 ? { files: x.files.map(f => ({ fileId: f.fileId, name: f.name, available: f.available })) } : {}),
-    at: x.createdAt, text: x.text, ...(x.truncated ? { truncated: true } : {}),
+    at: x.createdAt, text: x.text, ...(x.truncated ? { truncated: true } : {}), ...del(x),
     ...(x.resolution ? { resolution: x.resolution } : {}), // [需確認] 被人類標已處理（未回覆）＝暫緩
   };
 }
@@ -135,7 +136,7 @@ export function slimInbox(n, m, meId) {
   for (const x of m?.items || []) {
     if (x.author?.participantId === meId) { skippedMine++; continue; }
     const forMe = withNotif.has(x.messageId) || x.audience === 'all' || (x.recipients || []).some(r => r.participantId === meId);
-    messages.push(forMe ? slimMessage(x) : { messageId: x.messageId, from: who(x.author), line: oneLine(x.text, LINE_CHARS), ...(x.resolution ? { resolution: x.resolution } : {}) });
+    messages.push(forMe ? slimMessage(x) : { messageId: x.messageId, from: who(x.author), line: oneLine(x.text, LINE_CHARS), ...del(x), ...(x.resolution ? { resolution: x.resolution } : {}) });
   }
   const shown = new Set(messages.filter(x => x.text !== undefined).map(x => x.messageId));
   const notifications = (n?.items || []).map(x => ({
@@ -148,13 +149,13 @@ export function slimInbox(n, m, meId) {
 // aigile_read 的前後文：每則截到 CTX_CHARS，合計超過 CTX_TOTAL 就從離目標最遠的開始省略
 export function slimContext(items, targetId) {
   const at = items.findIndex(x => x.messageId === targetId);
-  const rows = items.map((x, i) => ({ i, d: Math.abs(i - at), v: { messageId: x.messageId, from: who(x.author), at: x.createdAt, text: cut(x.text, CTX_CHARS) } })).filter(r => r.i !== at);
+  const rows = items.map((x, i) => ({ i, d: Math.abs(i - at), v: { messageId: x.messageId, from: who(x.author), at: x.createdAt, text: cut(x.text, CTX_CHARS), ...del(x) } })).filter(r => r.i !== at);
   let total = 0; const keep = [];
   for (const r of [...rows].sort((a, b) => a.d - b.d || a.i - b.i)) { total += r.v.text.length; if (total > CTX_TOTAL) break; keep.push(r); }
   return { context: keep.sort((a, b) => a.i - b.i).map(r => r.v), ...(keep.length < rows.length ? { omitted: rows.length - keep.length } : {}) };
 }
 export function slimHistory(x) {
-  return { messageId: x.messageId, seq: x.sequence, from: who(x.author), at: x.createdAt, text: cut(x.text, HIST_CHARS), ...(x.text?.length > HIST_CHARS ? { textLength: x.text.length } : {}), ...(x.resolution ? { resolution: x.resolution } : {}) };
+  return { messageId: x.messageId, seq: x.sequence, from: who(x.author), at: x.createdAt, text: cut(x.text, HIST_CHARS), ...(x.text?.length > HIST_CHARS ? { textLength: x.text.length } : {}), ...del(x), ...(x.resolution ? { resolution: x.resolution } : {}) };
 }
 export function slimPost(body, status) {
   return { messageId: body.messageId, sequence: body.sequence, ...(status === 200 ? { duplicate: true } : {}),

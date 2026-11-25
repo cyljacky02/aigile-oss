@@ -361,6 +361,10 @@ hr { border: 0; border-top: 1px solid var(--border); width: 100%; margin: 4px 0;
 .msg-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .msg-tags .tag { white-space: nowrap; }
 .msg-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; }
+/* 被刪除的訊息：一行佔位 */
+.msg.msg-deleted { padding-top: 6px; padding-bottom: 6px; }
+.msg-gone { margin: 0; font-style: italic; }
+.msg-gone .link { font-style: normal; margin-left: 6px; }
 .msg-foot .link.thread { display: inline; margin-top: 0; }
 .msg-foot .link.more { margin-top: 0; }
 .lead { display: inline-block; font-size: .78rem; font-weight: 700; border-radius: 6px; padding: 0 7px; margin-right: 6px; white-space: nowrap; vertical-align: 1px; }

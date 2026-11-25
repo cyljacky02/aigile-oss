@@ -1023,6 +1023,7 @@
   function liveEvent(kind, raw) {
     if (!kind || kind === 'hello' || kind === 'bye') return;
     if (kind === 'join') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} return onJoinDecided(x).catch(() => {}); }
+    if (kind === 'message_deleted' || kind === 'message_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return x.id ? reloadMsg(x.id).catch(() => {}) : undefined; } // 別人刪除或復原：重讀那一則
     liveConn.kinds.add(kind);
     clearTimeout(liveConn.timer);
     liveConn.timer = setTimeout(() => {
@@ -1354,7 +1355,54 @@
     renderMessages(false); box.scrollTop = top;
   }
 
+  // ---------- 刪除與復原訊息 ----------
+  // 被刪除的訊息留一行佔位「此訊息已被 X 於 T 刪除」；可以復原時多「復原」（可復原期內：工作區管理員，或刪自己訊息的作者）
+  const msgGone = m => !!m.purged || (!!m.purgeAt && Date.parse(m.purgeAt) <= Date.now());
+  const canRestoreMsg = m => !!m.deleted && !msgGone(m) && (isAdmin() || (isMine(m) && m.deletedBy?.participantId === meId() && !meRO(m.project || 'cross')));
+  function deletedHtml(m) {
+    const who = m.deletedBy?.name || '?', t = m.deletedAt ? fmtTime(m.deletedAt) : '';
+    return `<article class="msg msg-deleted" id="msg-${esc(m.messageId)}">
+      <p class="msg-gone muted small"><span>${esc(L(`此訊息已被 ${who} 於 ${t} 刪除`, `Deleted by ${who} · ${t}`))}</span>${canRestoreMsg(m) ? ` <button type="button" class="link" data-msg-restore="${esc(m.messageId)}">復原</button>` : ''}</p>
+    </article>`;
+  }
+  // 「刪除」按鈕：''＝可以刪；文字＝按了說明為什麼不能刪；null＝不出現（別人的訊息）
+  // 作者刪自己的（唯讀成員不行）、工作區管理員刪任何人的；自己 AI 發的要找工作區管理員
+  function delWhy(m) {
+    if (state.me?.memberType !== 'human' || m.deleted) return null;
+    if (isAdmin()) return '';
+    if (isMine(m)) return meRO(m.project || 'cross') ? '你在這個專案是唯讀成員，不能刪除訊息（包括自己以前發的）。' : '';
+    const a = state.participants.get(m.author.participantId) || m.author;
+    if (a.memberType === 'ai' && a.ownerParticipantId === meId()) return 'AI 不能刪除訊息，你也不能刪你的 AI 發的訊息：請找工作區管理員刪除。';
+    return null;
+  }
+  const delBtn = m => { const w = delWhy(m); return w === null ? '' : `<button class="reply-btn del-btn" type="button" data-msg-del="${esc(m.messageId)}"${w ? ` data-del-why="${esc(w)}"` : ''}>刪除</button>`; };
+  // 換掉畫面上的一則（刪除、復原後），捲動位置不動
+  function replaceMessage(m) {
+    if (!m?.messageId) return;
+    state.byId.set(m.messageId, m);
+    const i = state.messages.findIndex(x => x.messageId === m.messageId);
+    if (i >= 0) state.messages[i] = m;
+    const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top;
+  }
+  async function reloadMsg(id) {
+    if (!state.byId.has(id)) return;
+    replaceMessage(await api(`/api/messages/${encodeURIComponent(id)}`));
+  }
+  async function deleteMsg(id, why) {
+    if (why) return toast(why, 6000);
+    const m = state.byId.get(id);
+    if (!m) return;
+    const ok = await confirmDialog({ title: '刪除訊息', danger: true, confirmText: '刪除',
+      message: `<p>${esc(isMine(m) ? '刪除這則訊息？' : `刪除 ${m.author.name} 的這則訊息？`)}</p><p class="muted small">對話裡會留一行「已刪除」，回覆串與卡片關聯不會斷；可復原期內可以復原，之後永久清除。</p>` });
+    if (!ok) return;
+    try { replaceMessage((await api(`/api/messages/${encodeURIComponent(id)}`, { method: 'DELETE' })).message); toast('已刪除'); refreshInboxCount(); } catch (err) { toast(err.message); }
+  }
+  async function restoreMsg(id) {
+    try { replaceMessage((await api(`/api/messages/${encodeURIComponent(id)}/restore`, { method: 'POST' })).message); toast('已復原'); } catch (err) { toast(err.message); }
+  }
+
   function messageHtml(m) {
+    if (m.deleted) return deletedHtml(m);
     const prevCard = state.lastCard;
     state.lastCard = ''; // 一行／精簡沒有卡片列，下一則同卡要完整顯示
     if (isFlowLine(m)) return flowLineHtml(m);
@@ -1385,6 +1433,7 @@
         <div class="msg-foot${linkedCapsules(m) || state.open.has(m.messageId) || (!m.file && !ai && isLong(m.text)) || repliesOf(m.messageId).length ? '' : ' acts-only'}">
           <button class="reply-btn" type="button" data-reply="${esc(m.messageId)}">回覆</button>
           ${m.file ? '' : `<button class="reply-btn newcard" type="button" data-newcard="${esc(m.messageId)}">＋建卡</button>`}
+          ${delBtn(m)}
           ${linkedCapsules(m)}
           ${state.open.has(m.messageId) ? `<button type="button" class="link more" data-fold="${esc(m.messageId)}">收合 ▴</button>` : !m.file && !ai && isLong(m.text) ? `<button type="button" class="link more" data-more="${esc(m.messageId)}">${state.expanded.has(m.messageId) ? '收合' : '展開全文'}</button>` : ''}
           ${threadToggle(m)}
@@ -1443,6 +1492,7 @@
   }
   // 組內每則精簡：小頭像、名字、標籤、時間、要你回覆；AI 結論＋細節照原樣；不顯示角色行、卡片列、底部卡號
   function groupMsgHtml(m0, ids, cid) {
+    if (m0.deleted) return deletedHtml(m0);
     const tag = tagOf(m0.text);
     if (!state.open.has(m0.messageId) && !needReply(m0) && !m0.file && (tag === '接單' || (tag === 'AI 簽到' && authorKind(m0) === 'ai'))) return thinLineHtml(cid ? { ...m0, text: stripCardKey(m0.text, cid) } : m0); // 接單、簽到變細行（不重寫卡號）
     const m = cid ? { ...m0, text: stripCardKey(m0.text, cid) } : m0; // 卡片串內文不重寫卡號
@@ -1461,6 +1511,7 @@
       ${authHtml(m)}
       <div class="msg-foot">
         ${needReply(m) ? `<button class="reply-btn" type="button" data-reply="${esc(m.messageId)}">回覆這則</button>` : ''}
+        ${delBtn(m)}
         ${state.open.has(m.messageId) ? `<button type="button" class="link more" data-fold="${esc(m.messageId)}">收合 ▴</button>` : !m.file && !ai && isLong(m.text) ? `<button type="button" class="link more" data-more="${esc(m.messageId)}">${state.expanded.has(m.messageId) ? '收合' : '展開全文'}</button>` : ''}
         ${threadToggle(m)}
       </div>
@@ -2242,6 +2293,10 @@
     if (cap) return openCard(cap.dataset.cap, cap);
     const nc = e.target.closest('[data-newcard]');
     if (nc) return openNewCard(null, state.byId.get(nc.dataset.newcard));
+    const dl = e.target.closest('[data-msg-del]');
+    if (dl) return deleteMsg(dl.dataset.msgDel, dl.dataset.delWhy);
+    const rs = e.target.closest('[data-msg-restore]');
+    if (rs) return restoreMsg(rs.dataset.msgRestore);
     if (authClick(e)) return;
     const sha = e.target.closest('[data-sha]');
     if (sha) return copyText(sha.dataset.sha).then(ok => toast(ok ? '已複製完整 SHA' : '複製失敗'));

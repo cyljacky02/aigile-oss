@@ -29,6 +29,7 @@ const OLD = SCHEMA.split('\n').filter(l => !/^\s+wake_(day|count|at) /.test(l) &
   .replace(/\n\s*(account_id|workspace_id|workspace_role|workspace_status|visibility) [^\n]*/g, '').replace(/-- 成員與權限（docs\/adr\/0002；migrations\/008）：[\s\S]*?CREATE INDEX IF NOT EXISTS idx_project_members_participant [^\n]*\n/, '') // 008 成員與權限加的欄位與表也去掉
   .replace(/-- 稽核紀錄（docs\/adr\/0003；migrations\/010）[\s\S]*?idx_audit_log_actor [^\n]*\n/, '') // 010 稽核紀錄加的表也去掉
   .replace(/\n\s*reauth_at [^\n]*/, '') // 011 再驗證身分加的欄位也去掉
+  .replace(/\n[^\n]*migrations\/012[^\n]*/g, '') // 012 刪除訊息加的欄位與索引也去掉
   .replace(/\n[^\n]*migrations\/013[^\n]*/g, '') // 013 刪除專案加的欄位也去掉
   .replace(/(\n  status TEXT NOT NULL DEFAULT 'active',[^\n]*)/, "$1\n  is_admin INTEGER NOT NULL DEFAULT 0,     -- 群組管理員（同時只有一位人類；可以交給別人）")
   .replace(/(\n  standby_at [^\n]*)\n\);/, "$1\n  projects TEXT NOT NULL DEFAULT ''  -- 所屬專案（逗號分隔，至少一個）\n);"); // 009 拿掉的舊欄位補回來

@@ -138,13 +138,23 @@ const ACTIONS = {
   // 稽核紀錄（只能新增：沒有改、刪的動作）
   see_audit_log: { admin: true, rule: workspaceAdmin }, // 工作區（含專案）範圍的事件
   see_platform_audit_log: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 平台層的事件（任免平台管理員、停用帳號、備份還原…）
+  // 訊息（範圍帶 { project: 訊息的專案, message: { authorId, deletedBy } }）。AI 一律不行（包括自己發的）
+  // 刪除自己的訊息：人類作者；在訊息所屬專案是唯讀成員就不行（包括以前發的）。工作區管理員刪自己的也走這條
+  delete_own_message: { human: true, rule: (v, me, s) => me.kind === 'human' && s.message?.authorId === me.id && !v.readOnlyAt(me, s.project),
+    deny: d => d.readOnly() },
+  // 刪除任何人的訊息（含平台管理員、AI 發的）：工作區管理員。內容管理不是管理權，不套「不能動上層管理員」；專案管理員不行
+  delete_message: { admin: true, human: true, rule: workspaceAdmin },
+  // 復原被刪的訊息：工作區管理員復原任何一則；作者只能復原自己刪的（管理員刪的回 RESTORE_FORBIDDEN）
+  restore_message: { human: true, rule: (v, me, s) => workspaceAdmin(v, me) || (me.kind === 'human' && s.message?.authorId === me.id && s.message?.deletedBy === me.id && !v.readOnlyAt(me, s.project)),
+    deny: d => (d.s.message?.authorId !== d.me.id ? DENY.workspace({ ...d, what: '復原別人的訊息' })
+      : d.s.message?.deletedBy !== d.me.id ? d.err(403, 'RESTORE_FORBIDDEN', '這則訊息是管理員刪的，只有工作區管理員能復原。') : d.readOnly()) },
 };
 export const ACCESS_ACTIONS = Object.freeze(Object.keys(ACTIONS));
 
 const scopeOf = scope => {
-  if (scope === 'platform' || scope === 'workspace') return { kind: scope, project: null, target: null };
+  if (scope === 'platform' || scope === 'workspace') return { kind: scope, project: null, target: null, message: null };
   const s = scope || {};
-  return { kind: 'project' in s ? 'project' : 'workspace', project: s.project ?? null, target: s.target ?? null };
+  return { kind: 'project' in s ? 'project' : 'workspace', project: s.project ?? null, target: s.target ?? null, message: s.message ?? null };
 };
 
 // deps（成員資料的讀法，名字跟成員資格模組 src/membership.js 一致）：
