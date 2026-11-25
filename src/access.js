@@ -240,7 +240,9 @@ export function createAccess(deps) {
         const def = ACTIONS[action];
         if (!def) throw new Error(`沒有這個權限動作：${action}`);
         if (!me || (def.admin && me.kind !== 'human')) return false; // AI 不能做任何管理動作
-        return !!def.rule(v, me, scopeOf(scope));
+        const s = scopeOf(scope);
+        if (s.project && deps.isDeletedProject?.(s.project)) return false; // 可復原期內的專案：誰都不能對它做什麼
+        return !!def.rule(v, me, s);
       },
       implicitOnlyIn: (id, pj) => implicitOnly(people?.get(id), pj),
     };
@@ -270,7 +272,10 @@ export function createAccess(deps) {
     if (!def) throw new Error(`沒有這個權限動作：${action}`);
     if (def.human) requireHuman(me);
     const v = await load(ctx, { fresh: !!def.fresh, light: def.light });
-    if (!v.can(me, action, scope)) throw denial(v, me, action, scopeOf(scope), opts);
+    const s = scopeOf(scope);
+    // 可復原期內的專案：專案底下的動作對所有人（含管理員的隱含權限）都當專案不存在
+    if (s.project && deps.isDeletedProject?.(s.project)) throw DENY.notFound({ s, nameOf, err: (status, code, message) => new ApiError(status, code, message) });
+    if (!v.can(me, action, scope)) throw denial(v, me, action, s, opts);
     if (def.sensitive) await deps.requireRecentAuth?.(me, ctx); // 敏感動作：再驗證身分
     return v;
   }

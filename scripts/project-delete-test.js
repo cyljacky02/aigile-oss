@@ -179,6 +179,18 @@ try {
   assert.equal((await preview(boss.token)).status, 404, 'D 刪除預覽 404');
   assert.equal((await call(liu.token, `/api/projects/${enc}/unarchive`, 'POST')).status, 404, 'D 不能用「還原封存」帶回來');
   assert.equal((await call(liu.token, `/api/projects/${enc}`, 'PATCH', { name: '改名' })).status, 404, 'D 不能改名');
+  // D 專案底下的端點（看板狀態、成員、設定、文件、知識庫、技能、加入…）：工作區管理員、專案管理員都當它不存在（404）
+  const underProject = [['GET', '/statuses'], ['POST', '/statuses', { name: '新狀態', category: '進行中' }], ['PUT', '/statuses/order', { ids: [] }],
+    ['GET', '/members'], ['POST', '/members', { participantIds: [id(lin)] }], ['GET', '/events'], ['PUT', '/repo', { url: 'https://example.com/x' }],
+    ['PUT', '/visibility', { visibility: 'open' }], ['PUT', '/code', { code: 'NEW' }], ['PUT', '/slug', { slug: 'new-slug' }], ['PUT', '/dm', { enabled: true }],
+    ['PUT', '/roles/PG', { duties: 'x' }], ['GET', '/docs'], ['POST', '/doc-folders', { name: '資料夾' }], ['GET', '/kb/pages'], ['GET', '/kb/settings'],
+    ['GET', '/kb/search?q=x'], ['GET', '/skills'], ['PUT', '/join-settings', { open: true }], ['POST', '/join'], ['POST', '/join-requests'],
+    ['GET', '/messages/clear-preview'], ['POST', '/archive'], ['GET', '/delete-preview']];
+  for (const t of [liu.token, wang.token]) {
+    const leaks = [];
+    for (const [method, p, body] of underProject) { const r = await call(t, `/api/projects/${enc}${p}`, method, body); if (r.status !== 404) leaks.push(`${method} ${p} ${r.status}`); }
+    assert.deepEqual(leaks, [], `D 專案底下的端點都 404（${t === liu.token ? '工作區管理員' : '專案管理員'}）：${leaks.join('、')}`);
+  }
   // D 代碼與網址英文名保留
   assert.equal(code(await call(liu.token, '/api/projects', 'POST', { name: '新專案', code: 'DEL' })), '409 CODE_TAKEN', 'D 代碼保留');
   assert.equal(code(await call(liu.token, '/api/projects', 'POST', { name: '新專案', slug: 'to-del' })), '409 SLUG_TAKEN', 'D 網址英文名保留');
