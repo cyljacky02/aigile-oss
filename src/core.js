@@ -19,6 +19,8 @@ import { registerDemo } from './demo.js'; // 示範資料
 import { registerRoster } from './roster.js'; // 成員名冊
 import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, hasWorkspaceAdminRights, inWorkspace, effectiveProjects, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
 import { createWorkspaceSettings, CREATE_PROJECTS } from './workspace-settings.js'; // 工作區設定（誰可以建立專案）
+import { createAudit, AUDIT_ACTION, AUDIT_SCOPE } from './audit.js'; // 稽核紀錄（管理操作）
+import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js'; // 管理員異動通知
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -1583,6 +1585,12 @@ ${ending}`;
     loadProjectAdmins: membership.loadProjectAdmins, projectAdminsOf: membership.projectAdminsOf,
     loadReadOnly: membership.loadReadOnly, isReadOnly: membership.isReadOnly, isPlatformAdmin: membership.isPlatformAdmin, ownerOf,
   });
+  // 稽核紀錄（auditLog；名字跟下面檔案稽核的 audit() 分開）、管理員異動通知：跟著管理操作一起寫（先改資料、確認改成了，再寫這一批）
+  const auditLog = createAudit({ db, randId, nowIso });
+  const adminNotify = createAdminNotify({ db, randId, peopleMap, access });
+  const auditTarget = p => ({ kind: 'participant', id: p.id, name: p.name });
+  // auditLog.stmt 沒有要寫的回 null：去掉 null，清單空了就不呼叫 db.batch
+  const writeStmts = list => { const s = list.filter(Boolean); return s.length ? db.batch(s) : Promise.resolve(); };
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
   const assertWritable = (me, pj) => access.check({}, me, 'write', { project: pj || null });
@@ -2072,10 +2080,12 @@ ${ending}`;
       stmts.push(...(await workspace.setRoomCodeStmts(code)));
       stmts.push(projEvent(GROUP_EVT, me.id, code ? `${me.name} 設定房間碼` : `${me.name} 清除房間碼`, at)); // 紀錄不寫房間碼本身
     }
-    if (has('createProjects') && (await workspace.load(true)).createProjects !== body.createProjects) {
-      stmts.push(...workspace.setCreateProjectsStmts(body.createProjects), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以建立專案：${CREATE_PROJECTS_LABEL[body.createProjects]}`, at));
+    const createBefore = has('createProjects') ? (await workspace.load(true)).createProjects : null;
+    if (has('createProjects') && createBefore !== body.createProjects) {
+      stmts.push(...workspace.setCreateProjectsStmts(body.createProjects), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以建立專案：${CREATE_PROJECTS_LABEL[body.createProjects]}`, at),
+        auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'createProjects', from: createBefore, to: body.createProjects } }));
     }
-    if (stmts.length) await db.batch(stmts);
+    await writeStmts(stmts);
     workspace.invalidate();
     if (name !== null) await saveGroupName(me, name);
     return groupSettings();
@@ -2998,6 +3008,10 @@ ${ending}`;
       await assertNotLastAdmin(ctx, await db.get('SELECT * FROM participants WHERE id = ?', t.id), { platform: true });
       throw lastAdminError();
     }
+    await writeStmts([
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.ACCOUNT_DISABLE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t), detail: { revokedAiTokens: ais.length } }),
+      ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: me.id, kind: ADMIN_NOTICE.ACCOUNT_DISABLE, detail: { a: me.name, t: t.name } }),
+    ]);
     live?.dropPerson?.(t.id); // 連著的即時通道也斷掉（有實作才做）
     console.log(`成員已停用：${t.name}（${me.name} 操作）`);
     return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)), revokedAiTokens: ais.length };
@@ -3009,6 +3023,10 @@ ${ending}`;
     const at = nowIso();
     await db.batch([["UPDATE participants SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?", [at, t.id]], ...membership.accountStatusStmts(t.id, 'active', at)]);
     invalidatePeople();
+    await writeStmts([
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.ACCOUNT_ENABLE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t) }),
+      ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: me.id, kind: ADMIN_NOTICE.ACCOUNT_ENABLE, detail: { a: me.name, t: t.name } }),
+    ]);
     return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)) };
   });
   // ---------- 移出工作區（工作區管理員）----------
@@ -3038,6 +3056,7 @@ ${ending}`;
     invalidatePeople();
     const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
     if (after.workspace_status !== 'removed') throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
+    await auditLog.write({ actor: me, action: t.id === me.id ? AUDIT_ACTION.MEMBER_LEAVE : AUDIT_ACTION.MEMBER_REMOVE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t), detail: { revokedAiTokens: ais.length } });
     const [impact] = t.status === 'active' ? await applyMembership(ctx, me, [{ id: t.id, projects: [], allowEmpty: true }]) : []; // 專案成員資格結束：卡片退回、專案紀錄
     // 剩下的成員資格（封存的專案；帳號停用中時是全部）也一併結束
     await db.run("DELETE FROM project_members WHERE participant_id = ? AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')", t.id, t.id);
@@ -3083,7 +3102,13 @@ ${ending}`;
     }
     const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
     if (admin !== isWorkspaceAdmin(after)) throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
-    if (after.workspace_role !== t.workspace_role) console.log(`工作區管理員：${me.name} 把 ${t.name} ${admin ? '升為工作區管理員' : '降為成員'}`);
+    if (after.workspace_role !== t.workspace_role) {
+      console.log(`工作區管理員：${me.name} 把 ${t.name} ${admin ? '升為工作區管理員' : '降為成員'}`);
+      await writeStmts([ // 被降級的人已經不是工作區管理員，也要通知（include）
+        auditLog.stmt({ actor: me, action: admin ? AUDIT_ACTION.WORKSPACE_ADMIN_GRANT : AUDIT_ACTION.WORKSPACE_ADMIN_REVOKE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t) }),
+        ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, include: [t.id], kind: admin ? ADMIN_NOTICE.WORKSPACE_GRANT : ADMIN_NOTICE.WORKSPACE_REVOKE, detail: { a: me.name, t: t.name } }),
+      ]);
+    }
     return { participant: publicParticipant(after, await peopleMap(ctx)) };
   });
   // 升降平台管理員（只有平台管理員；AI 不行）。role：admin | none。立刻生效；不能降最後一位。平台管理員對工作區有隱含的管理權，不必是工作區管理員
@@ -3103,6 +3128,10 @@ ${ending}`;
       await membership.loadMembers(true);
       if ((role === 'admin') !== membership.isPlatformAdmin(t)) throw lastPlatformError(); // 另一位剛好同時被降：資料庫那句檢查擋下來了
       console.log(`平台管理員：${me.name} 把 ${t.name} ${role === 'admin' ? '升為平台管理員' : '降為一般帳號'}`);
+      await writeStmts([ // 被降級的人已經不是平台管理員，也要通知（include）
+        auditLog.stmt({ actor: me, action: role === 'admin' ? AUDIT_ACTION.PLATFORM_ADMIN_GRANT : AUDIT_ACTION.PLATFORM_ADMIN_REVOKE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t) }),
+        ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: me.id, include: [t.id], kind: role === 'admin' ? ADMIN_NOTICE.PLATFORM_GRANT : ADMIN_NOTICE.PLATFORM_REVOKE, detail: { a: me.name, t: t.name } }),
+      ]);
     }
     return { participant: publicParticipant(t, await peopleMap(ctx)) };
   });
@@ -3838,7 +3867,7 @@ ${ending}`;
     maxFileBytes: (Number(config.docMaxFileMb) || 0) * 1048576 || undefined,
     maxTotalBytes: (Number(config.docMaxTotalMb) || 0) * 1048576 || DOC_MAX_TOTAL_BYTES });
   const skillsApi = registerSkills({ route, db, ApiError, invalid, readJson, randId, nowIso, sha256, peopleMap, projectsOf, PROJECTS, nameOf, access, assertNoSecret, writeDm, myAi, requireHuman, setupSha: SETUP_SHA256, roleDefsMap, storage }); // 技能包放分塊儲存 // C-xxx；C-xxx 唯讀；MAIN-240 同步工具版本；MAIN-249 專案自訂角色
-  registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage,
+  registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, auditLog,
     membership, afterRestore: async () => { invalidatePeople(); await bumpPeopleVer(); membersReady = undefined; await migrateMembers(); await Promise.all([loadProjects(true), membership.loadMembers(true), loadProjectRoles(true)]); } }); // 舊版備份：成員資料匯入後再轉一次
   registerUpdateCheck({ route, db, access, requireHuman, config });
   registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership,
@@ -3958,9 +3987,14 @@ ${ending}`;
       ...(origin ? [`<meta property="og:image" content="${escHtml(origin)}/og-image.png">`, '<meta property="og:image:width" content="1200">', '<meta property="og:image:height" content="630">', '<meta name="twitter:card" content="summary_large_image">'] : [])].join('\n  ');
     return html.split(DEFAULT_GROUP_NAME).join(name).replace('</title>', `</title>\n  ${meta}`);
   };
+  // 可復原期到期的永久清除：訊息、專案各一步，各自回清除了幾筆（還沒有可復原期的東西：都是 0）
+  async function purgeDue() { return { messages: await purgeDueMessages(), projects: await purgeDueProjects() }; }
+  async function purgeDueMessages() { return 0; }
+  async function purgeDueProjects() { return 0; }
   handle.runScheduled = async () => ({ filesCleaned: await cleanupExpired(), cardsArchived: await autoArchive(db),
     proposalsExpired: (await db.run("UPDATE avatar_proposals SET status = 'expired', data = NULL WHERE status = 'pending' AND created_at < ?", Date.now() - 24 * 3600_000).catch(() => ({ changes: 0 }))).changes,
-    pendingAutoAcked: await autoAckPending().catch(() => 0) });
+    pendingAutoAcked: await autoAckPending().catch(() => 0),
+    purged: await purgeDue().catch(e => (console.error('purge', e), {})) });
   // 人寫欄位（說明見 markUntrusted）
   const UNTRUSTED_KEYS = ['text', 'preview', 'title', 'reason', 'next', 'note', 'why', 'detail', 'description', 'question', 'recommendation', 'options', 'impact', 'afterNext', 'progress', 'changes', 'nextStep', 'caution'];
   const UNTRUSTED_SET = new Set(UNTRUSTED_KEYS);

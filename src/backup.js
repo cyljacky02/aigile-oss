@@ -6,6 +6,7 @@
 //   - 匯入只在空站可用（只有你一位人類、沒有 AI、訊息、卡片、技能、文件）；先預覽數量再確認
 //   - 備份裡的平台管理員、工作區管理員原樣帶回來；匯入後你的登入（密碼、這台裝置）改掛到備份裡的平台管理員身上；其他人要你在「邀請」發重設登入連結，AI 要主人重發 Token
 import { APP_VERSION, cmpVersion } from './version.js';
+import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 
 export const BACKUP_FORMAT = 'aigile-backup';
 export const BACKUP_FORMAT_VERSION = 1;
@@ -30,7 +31,7 @@ const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s +=
 const unb64 = s => { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
 const toU8 = v => (v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new Uint8Array(v) : Array.isArray(v) ? Uint8Array.from(v) : null);
 
-export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, membership, afterRestore }) {
+export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, auditLog, membership, afterRestore }) {
   const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '備份與匯入' }); };
   const columnsOf = async t => (await db.all(`PRAGMA table_info(${t})`)).map(c => c.name);
   // 匯入中只認開始匯入的那位（備份的成員寫進來後，最早的人類會變成管理員，不能再用權限模組的管理員判斷）
@@ -195,6 +196,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     await afterRestore?.();
     const people = await peopleMap(ctx);
     const humans = [...people.values()].filter(p => p.kind === 'human').length, ais = [...people.values()].filter(p => p.kind === 'ai').length;
+    // 稽核紀錄在還原完才寫（開始匯入時表會清掉、換成備份裡的）；操作者是你現在的身分（登入改掛過去的那位）
+    await auditLog.write({ actor: { id: you, name: target ? target.name : state.name, kind: 'human' }, action: AUDIT_ACTION.BACKUP_RESTORE, scope: AUDIT_SCOPE.PLATFORM, detail: { appVersion: state.appVersion, humans, ais } });
     return { ok: true, admin: target ? { participantId: target.id, name: target.name } : { participantId: me.id, name: state.name }, humans, ais };
   });
 }

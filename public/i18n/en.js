@@ -3609,6 +3609,24 @@ window.AIGILE_EN = {
     "👑 你管理的專案": "👑 Projects you manage",
     "你管理的專案": "Projects you manage",
     "全站稽核限工作區管理員。": "The full audit log is for workspace admins only.",
-    "請工作區管理員開通。": "Ask a workspace admin to enable it."
+    "請工作區管理員開通。": "Ask a workspace admin to enable it.",
+
+    // #27 稽核紀錄
+
+    // #28 管理員異動通知
+
+    // #29 再驗證身分
+
+    // #30 可復原期設定
+
+    // #31 刪除與復原訊息
+
+    // #32 訊息永久清除
+
+    // #33 清空專案訊息
+
+    // #34 刪除專案進入可復原期
+
+    // #35 工作區政策：誰可以刪除自己的訊息
   },
 };

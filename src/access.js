@@ -12,6 +12,7 @@
 // - 隱含權限不算成員資格：工作區管理員（含平台管理員）在沒加入的專案不列為成員，只有職稱也一樣（implicitOnlyIn）
 // - 唯讀成員的 AI 跟著唯讀；明確的唯讀成員跟隱含權限取較高者：升為工作區／平台管理員就能寫，他的 AI 也是（工作區管理員不能被設成唯讀成員）
 // - AI 不能做任何管理動作
+// - 敏感動作（動作表標 sensitive: true）：權限檢查通過後，還要這台裝置剛再驗證過（deps.requireRecentAuth 不行就丟錯；沒注入時不檢查）
 // - 成員名冊：工作區成員（含 AI）看得到工作區裡所有人（see_member）；已移出的人只有工作區管理員看得到（see_removed_members；待接受的邀請走 invite）
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
 // - 專案可見度：開放＝直接加入、審核＝送申請、私人＝只有專案成員與有隱含權限的人知道它存在（discover_project；其他人各處都當它不存在，回 404）
@@ -239,6 +240,7 @@ export function createAccess(deps) {
     if (def.human) requireHuman(me);
     const v = await load(ctx, { fresh: !!def.fresh, light: def.light });
     if (!v.can(me, action, scope)) throw denial(v, me, action, scopeOf(scope), opts);
+    if (def.sensitive) await deps.requireRecentAuth?.(me, ctx); // 敏感動作：再驗證身分
     return v;
   }
 
