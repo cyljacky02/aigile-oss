@@ -235,6 +235,28 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     return { hours: FILE_TTL_CHOICES.includes(v?.hours) ? v.hours : null, log: Array.isArray(v?.log) ? v.log : [] };
   }
   const fileTtlHours = async () => { const [p, w] = await Promise.all([platformTtlCfg(), wsTtlCfg()]); return w.hours ?? p.hours; };
+  // 可復原期：東西被刪除後過多久才永久清除（天）。平台預設存 app_settings 的 recovery_days＝{ days }（沒設＝30 天），
+  // 工作區可以覆寫，存 recovery_days_ws:<工作區>＝{ days }（null＝跟平台預設）。0＝刪除當下就永久清除（注意 0 是有效值，不能用 || 或 > 0 當預設）
+  // 修改記在稽核紀錄（不像附件保存期限另存異動紀錄）
+  const RECOVERY_CHOICES = [0, 7, 14, 30, 60, 90];
+  const RECOVERY_DEFAULT_D = 30;
+  const DAY_MS = 86400_000;
+  async function platformRecoveryCfg() {
+    const v = await getJson('recovery_days');
+    return { days: RECOVERY_CHOICES.includes(v?.days) ? v.days : RECOVERY_DEFAULT_D, set: RECOVERY_CHOICES.includes(v?.days) };
+  }
+  const WS_RECOVERY_KEY = 'recovery_days_ws:' + DEFAULT_WORKSPACE;
+  async function wsRecoveryCfg() {
+    const v = await getJson(WS_RECOVERY_KEY);
+    return { days: RECOVERY_CHOICES.includes(v?.days) ? v.days : null };
+  }
+  const recoveryDays = async () => { const [p, w] = await Promise.all([platformRecoveryCfg(), wsRecoveryCfg()]); return w.days ?? p.days; };
+  // 刪除當下決定什麼時候永久清除（之後改設定不影響已刪除的東西）：回 { days, purgeAt }，purgeAt 是毫秒時間戳；
+  // days＝0 時 purgeAt＝now，呼叫端要當下就永久清除。刪除訊息、清空專案訊息、刪除專案都用這個
+  async function purgeAtFor(now = Date.now()) {
+    const days = await recoveryDays();
+    return { days, purgeAt: now + days * DAY_MS };
+  }
   // 「1 小時」「24 小時」「3 天」；不到 1 小時（測試用）寫分鐘
   const ttlLabel = ms => { const m = Math.round(ms / 60_000), h = Math.round(m / 60); return m < 60 ? `${Math.max(1, m)} 分鐘` : h >= 48 && h % 24 === 0 ? `${h / 24} 天` : `${h} 小時`; };
   const MAX_TOTAL = (Number(config.fileMaxTotalMb) || 0) * 1048576 || MAX_TOTAL_BYTES; // 測試用可調低
@@ -2148,9 +2170,38 @@ ${ending}`;
     await setJson(WS_TTL_KEY, { hours, log: [{ at: nowIso(), by: me.id, byName: me.name, from: cur.hours, to: hours }, ...cur.log].slice(0, FILE_TTL_LOG_MAX) });
     return wsTtlOut(true);
   });
+  // 可復原期：平台預設（平台設定）＋工作區覆寫（工作區設定）。誰都能讀實際生效的值；兩種修改都是敏感動作（要再驗證身分），寫進稽核紀錄
+  const readRecoveryDays = (v, field) => {
+    if (!RECOVERY_CHOICES.includes(v)) throw invalid(`${field} 只能是 ${RECOVERY_CHOICES.join('、')}（天）`);
+    return v;
+  };
+  // 工作區：days＝實際生效的值；defaultDays＝平台預設；workspaceDays＝工作區覆寫（null＝跟平台預設）
+  async function recoveryOut() {
+    const [plat, ws] = await Promise.all([platformRecoveryCfg(), wsRecoveryCfg()]);
+    return { days: ws.days ?? plat.days, defaultDays: plat.days, workspaceDays: ws.days, choices: RECOVERY_CHOICES };
+  }
+  const recoveryStmts = (me, key, from, to, scope) => [
+    ['INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [key, JSON.stringify({ days: to })]],
+    auditLog.stmt({ actor: me, action: AUDIT_ACTION.RECOVERY_WINDOW_UPDATE, scope, detail: { from, to } })];
+  route('GET', '/api/recovery-window', async () => recoveryOut());
+  // 工作區覆寫：days 是選項之一，或 null（不覆寫，跟平台預設）
+  route('PUT', '/api/recovery-window', async ({ ctx, me, req }) => {
+    await access.check(ctx, me, 'set_recovery_window', 'workspace', { what: '設定可復原期' });
+    const body = await readJson(req);
+    if (!('days' in body)) throw invalid('要帶 days（天數，或 null 跟平台預設）');
+    const days = body.days === null ? null : readRecoveryDays(body.days, 'days');
+    const cur = await wsRecoveryCfg();
+    if (cur.days === days) return recoveryOut(); // 沒變：不存、不記
+    await writeStmts(recoveryStmts(me, WS_RECOVERY_KEY, cur.days, days, AUDIT_SCOPE.WORKSPACE));
+    return recoveryOut();
+  });
   // ---------- 平台設定（只有平台管理員）：附件保存期限預設值。更新檢查、備份與還原、示範資料各有自己的端點（也只有平台管理員） ----------
-  // PUT { fileTtlHours }：平台預設的附件保存時間（工作區沒覆寫就用它）
-  const platformOut = async () => ({ fileTtl: fileTtlOut(await platformTtlCfg(), true) });
+  // PUT { fileTtlHours?, recoveryDays? }（至少一個）：平台預設的附件保存時間、可復原期（工作區沒覆寫就用它）。改可復原期是敏感動作
+  // recoveryWindow.custom：平台管理員改過（沒改過＝預設 30 天）
+  const platformOut = async () => {
+    const [ttl, rec] = await Promise.all([platformTtlCfg(), platformRecoveryCfg()]);
+    return { fileTtl: fileTtlOut(ttl, true), recoveryWindow: { days: rec.days, defaultDays: RECOVERY_DEFAULT_D, choices: RECOVERY_CHOICES, custom: rec.set } };
+  };
   route('GET', '/api/platform/settings', async ({ ctx, me }) => {
     await access.check(ctx, me, 'manage_platform', 'platform', { what: '看平台設定' });
     return platformOut();
@@ -2158,11 +2209,17 @@ ${ending}`;
   route('PUT', '/api/platform/settings', async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'manage_platform', 'platform', { what: '改平台設定' });
     const body = await readJson(req);
-    if (!('fileTtlHours' in body)) throw invalid('要帶 fileTtlHours');
-    const hours = readTtlHours(body.fileTtlHours, 'fileTtlHours');
+    const hasTtl = 'fileTtlHours' in body, hasRec = 'recoveryDays' in body;
+    if (!hasTtl && !hasRec) throw invalid('要帶 fileTtlHours 或 recoveryDays');
+    const hours = hasTtl ? readTtlHours(body.fileTtlHours, 'fileTtlHours') : null;
+    const days = hasRec ? readRecoveryDays(body.recoveryDays, 'recoveryDays') : null;
+    if (hasRec) await access.check(ctx, me, 'set_recovery_window', 'platform', { what: '設定可復原期預設值' }); // 再驗證身分
     const cur = await platformTtlCfg();
-    if (cur.hours === hours) return platformOut(); // 沒變：不存、不記（還沒改過的話照舊跟著 FILE_TTL_HOURS）
-    await setJson('file_ttl', { hours, log: [{ at: nowIso(), by: me.id, byName: me.name, from: cur.hours, to: hours }, ...cur.log].slice(0, FILE_TTL_LOG_MAX) });
+    // 沒變：不存、不記（還沒改過的話照舊跟著 FILE_TTL_HOURS）
+    if (hasTtl && cur.hours !== hours) await setJson('file_ttl', { hours, log: [{ at: nowIso(), by: me.id, byName: me.name, from: cur.hours, to: hours }, ...cur.log].slice(0, FILE_TTL_LOG_MAX) });
+    const rec = await platformRecoveryCfg();
+    // 沒變不存、不記；還沒改過時設成預設值也算沒變
+    if (hasRec && rec.days !== days) await writeStmts(recoveryStmts(me, 'recovery_days', rec.days, days, AUDIT_SCOPE.PLATFORM));
     return platformOut();
   });
   route('GET', '/api/projects/:id/events', async ({ ctx, me, params, url }) => {

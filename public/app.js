@@ -9072,6 +9072,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (e.action === 'workspace_policy.update' && d.field === 'createProjects') {
       const lab = v => (v === 'admins' ? '只有工作區管理員' : '所有成員');
       out.push(L(`誰可以建立專案：${lab(d.from)} → ${lab(d.to)}`, `Who can create projects: ${d.from === 'admins' ? 'workspace admins only' : 'all members'} → ${d.to === 'admins' ? 'workspace admins only' : 'all members'}`));
+    } else if (e.action === 'recovery_window.update') {
+      const zh = v => (v == null ? '跟平台預設' : v === 0 ? '立即永久清除' : `${v} 天`), en = v => (v == null ? 'platform default' : v === 0 ? 'purge immediately' : `${v} days`);
+      out.push(L(`可復原期：${zh(d.from)} → ${zh(d.to)}`, `Recovery window: ${en(d.from)} → ${en(d.to)}`));
     } else if (d.field) out.push(`${d.field}: ${d.from ?? '—'} → ${d.to ?? '—'}`);
     else if ('from' in d || 'to' in d) out.push(`${d.from ?? '—'} → ${d.to ?? '—'}`);
     if (d.revokedAiTokens) out.push(L(`作廢 ${d.revokedAiTokens} 個 AI 的 Token`, `Revoked ${d.revokedAiTokens} AI token(s)`));
@@ -9132,6 +9135,26 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <span class="muted small" id="adm-ttl-hint">訊息裡上傳的文件、截圖過了這段時間自動刪除（專案文件不受影響）。改了只影響之後上傳的檔；已經上傳的照上傳當時的設定到期，不會提早或延後刪除。存好立即生效，不用重新啟動或部署。</span>
       <span class="muted small adm-ttl-src">${src}</span><span class="muted small adm-ttl-ws">這是平台預設：工作區可以在「工作區設定」改成自己的保存時間。</span></div>
       <details class="pm-gs-log adm-ttl-log"${perm.ttlLogOpen ? ' open' : ''}><summary>異動紀錄</summary><ul class="pa-log">${logs || '<li class="muted small">還沒有紀錄</li>'}</ul></details></div>`;
+  }
+  // 可復原期（天）：東西被刪除後保留多久才永久清除；0＝刪除當下就永久清除。平台預設在平台設定，工作區可以覆寫（wsRecHtml）
+  // 改它是敏感操作：api() 遇到 REAUTH_REQUIRED 會跳出再驗證對話框；修改寫在稽核紀錄（這裡不另列異動紀錄）
+  const recLabel = d => (d === 0 ? L('立即永久清除', 'Purge immediately') : L(`${d} 天`, `${d} days`));
+  const recSaved = d => (d === 0 ? L('已儲存：之後刪除的東西會立即永久清除；已經刪除的照原本的時間清除', 'Saved: anything deleted from now on is purged immediately; things already deleted keep their original purge time')
+    : L(`已儲存：之後刪除的東西保留 ${d} 天後永久清除；已經刪除的照原本的時間清除`, `Saved: anything deleted from now on is kept for ${d} days, then purged; things already deleted keep their original purge time`));
+  function admRecHtml(r) {
+    if (!r) return '';
+    return `<div class="pm-card adm-rec"><div class="pm-setrow"><label for="adm-rec">可復原期</label><select id="adm-rec" aria-describedby="adm-rec-hint">${r.choices.map(d => `<option value="${d}"${d === r.days ? ' selected' : ''}>${esc(recLabel(d))}${d === r.defaultDays ? L('（預設）', ' (default)') : ''}</option>`).join('')}</select><button type="button" class="btn small primary" data-pp="platrec">儲存</button>
+      <span class="muted small" id="adm-rec-hint">訊息、專案被刪除後保留多久才永久清除，這段期間內可以復原。永久清除的時間在刪除當下決定，改了不影響已經刪除的東西。修改要再驗證身分，並寫進稽核紀錄。</span>
+      <span class="muted small adm-rec-ws">這是平台預設：工作區可以在「工作區設定」改成自己的天數。</span></div></div>`;
+  }
+  // 工作區的可復原期：跟平台預設（空值）或覆寫成自己的（GET／PUT /api/recovery-window）
+  function wsRecHtml(r) {
+    if (!r) return '';
+    const cur = r.workspaceDays ?? '';
+    const opts = [`<option value=""${cur === '' ? ' selected' : ''}>${esc(L(`跟平台預設（${recLabel(r.defaultDays)}）`, `Platform default (${recLabel(r.defaultDays)})`))}</option>`,
+      ...r.choices.map(d => `<option value="${d}"${d === cur ? ' selected' : ''}>${esc(recLabel(d))}</option>`)].join('');
+    return `<div class="pm-card ws-rec"><div class="pm-setrow"><label for="ws-rec">可復原期</label><select id="ws-rec" aria-describedby="ws-rec-hint">${opts}</select><button type="button" class="btn small primary" data-pp="wsrec">儲存</button>
+      <span class="muted small" id="ws-rec-hint">這個工作區的訊息、專案被刪除後保留多久才永久清除。預設跟著平台設定；改了只影響之後刪除的東西。修改要再驗證身分，並寫進稽核紀錄。</span></div></div>`;
   }
   // 工作區的附件保存時間：跟平台預設（空值）或覆寫成自己的（GET／PUT /api/file-ttl）
   function wsTtlHtml(t) {
@@ -9459,8 +9482,8 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   async function loadGroupSettings() {
     perm.gsLoading = true;
     try {
-      const [s, ev, tools, ttl] = await Promise.all([api('/api/workspace/settings'), api('/api/group/events?limit=30').catch(() => ({ items: [] })), api('/api/ai-tools').catch(() => null), api('/api/file-ttl').catch(() => null)]);
-      perm.gs = s; perm.gsEvents = ev.items; perm.aiTools = tools; perm.gsTtl = ttl;
+      const [s, ev, tools, ttl, rec] = await Promise.all([api('/api/workspace/settings'), api('/api/group/events?limit=30').catch(() => ({ items: [] })), api('/api/ai-tools').catch(() => null), api('/api/file-ttl').catch(() => null), api('/api/recovery-window').catch(() => null)]);
+      perm.gs = s; perm.gsEvents = ev.items; perm.aiTools = tools; perm.gsTtl = ttl; perm.gsRec = rec;
     } catch (err) { perm.gs = { error: err.message }; }
     perm.gsLoading = false;
     if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'group') drawPerm();
@@ -9493,7 +9516,8 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       ${createProjectsHtml()}
       ${groupToolsHtml()}
       ${groupJoinHtml()}
-      ${perm.gs && !perm.gs.error ? wsTtlHtml(perm.gsTtl) : ''}</div>`;
+      ${perm.gs && !perm.gs.error ? wsTtlHtml(perm.gsTtl) : ''}
+      ${perm.gs && !perm.gs.error ? wsRecHtml(perm.gsRec) : ''}</div>`;
   }
   // 誰可以建立專案：所有成員／只有工作區管理員（點了就存）
   function createProjectsHtml() {
@@ -10335,6 +10359,17 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       } catch (err) { toast(err.message); }
       return;
     }
+    if (a === 'platrec' || a === 'wsrec') { // 可復原期：平台預設／工作區覆寫（空值＝跟平台預設）；要再驗證時 api() 會先問密碼
+      const v = $(a === 'platrec' ? '#adm-rec' : '#ws-rec').value, days = v === '' ? null : Number(v);
+      try {
+        if (a === 'platrec') perm.platRec = (await api('/api/platform/settings', { method: 'PUT', body: { recoveryDays: days } })).recoveryWindow;
+        const eff = a === 'wsrec' ? await api('/api/recovery-window', { method: 'PUT', body: { days } }) : await api('/api/recovery-window').catch(() => null);
+        if (eff && perm.gsRec !== undefined) perm.gsRec = eff;
+        toast(recSaved(eff ? eff.days : days));
+        drawPerm();
+      } catch (err) { toast(err.message); }
+      return;
+    }
     if (a === 'wsttl') { // 工作區覆寫（空值＝跟平台預設）
       const v = $('#ws-ttl').value, hours = v === '' ? null : Number(v);
       try {
@@ -10993,11 +11028,12 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       : '<p class="small">這個站已經有資料，不能匯入；要搬家請在新架的空站匯入</p>';
     if (perm.platTtl === undefined) { // 平台預設的附件保存時間
       perm.platTtl = null;
-      api('/api/platform/settings').then(s => { perm.platTtl = s.fileTtl; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(err => toast(err.message));
+      api('/api/platform/settings').then(s => { perm.platTtl = s.fileTtl; perm.platRec = s.recoveryWindow; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(err => toast(err.message));
     }
     return `<div class="pm-projs">
       ${updCardHtml()}
       ${admTtlHtml(perm.platTtl)}
+      ${admRecHtml(perm.platRec)}
       ${demoCardHtml()}
       <div class="pm-card"><div class="pm-card-head"><strong>下載備份</strong><span class="muted small">整個群組的資料（成員、專案、訊息、卡片、決策、技能、設定）存成一個檔。不含 Token、密碼與登入連結：匯入後其他人要你在「成員」按「重設登入」，AI 要主人重發 Token。</span></div>
         <div class="pm-pad bk-row"><label class="bk-check"><input type="checkbox" id="bk-files" checked> 含附件與專案文件</label><button type="button" class="btn primary" data-bk="export"${bk.busy ? ' disabled' : ''}>下載備份</button></div>${bkMsgHtml('export')}</div>
