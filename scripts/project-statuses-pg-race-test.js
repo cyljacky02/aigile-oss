@@ -192,6 +192,20 @@ try {
     assert.deepEqual(await stranded(), [], '沒有卡指向不存在的狀態');
   }
 
+  // 10) 兩個人同時取同一個狀態名稱（第一個新增停在提交前）：第二個要等第一個做完，然後卡在名稱的唯一索引、回 409（不是 500），名稱不重複
+  // 第二個是新增（等專案列鎖）、或只改名（不拿專案列鎖，等的是唯一索引上還沒提交的那一列）
+  for (const [label, second, secondSql] of [
+    ['新增', () => call(boss.token, `/api/projects/${P}/statuses`, 'POST', { name: '同名', category: '進行中' }), '%UPDATE projects%'],
+    ['改名', async () => call(boss.token, `/api/projects/${P}/statuses/${(await items()).find(s => s.name === '受阻').id}`, 'PATCH', { name: '同名' }), '%UPDATE project_statuses%'],
+  ]) {
+    await fresh('競態十' + label);
+    const { r1, r2, blocked } = await race({ re: DELETE_DONE, first: () => call(boss.token, `/api/projects/${P}/statuses`, 'POST', { name: '同名', category: '進行中' }), second, secondSql });
+    assert.equal(r1.status, 201, '第一個新增：' + JSON.stringify(r1.body).slice(0, 200));
+    assert.ok(blocked, `${label}要等第一個做完`);
+    assert.equal(r2.status, 409, `後做完的${label}：` + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'CONFLICT');
+    assert.equal((await items()).filter(s => s.name === '同名').length, 1, '名稱不重複');
+  }
+
   console.log('project-statuses-pg-race-test：全部通過');
 } finally {
   await ctl.end();

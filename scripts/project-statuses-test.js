@@ -25,12 +25,13 @@ const STATUS_DELETE = /^DELETE FROM project_statuses WHERE id\b/, CARD_WRITE = /
 const isStatusDelete = sql => failStatusDelete && STATUS_DELETE.test(sql);
 const cardWriteHook = async sqls => { if (beforeCardWrite && sqls.some(q => CARD_WRITE.test(q))) { const f = beforeCardWrite; beforeCardWrite = null; await f(); } };
 const statusAddHook = async sqls => { if (beforeStatusAdd && sqls.some(q => /^INSERT INTO project_statuses\b/.test(q))) { const f = beforeStatusAdd; beforeStatusAdd = null; await f(); } };
+const statusUpdateHook = async sqls => { if (beforeStatusUpdate && sqls.some(q => /^UPDATE project_statuses SET name\b/.test(q))) { const f = beforeStatusUpdate; beforeStatusUpdate = null; await f(); } };
 const appDb = { ...db,
-  run: async (sql, ...args) => { await cardWriteHook([sql]); await statusAddHook([sql]); if (isStatusDelete(sql)) throw new Error('模擬寫入失敗'); return db.run(sql, ...args); },
+  run: async (sql, ...args) => { await cardWriteHook([sql]); await statusAddHook([sql]); await statusUpdateHook([sql]); if (isStatusDelete(sql)) throw new Error('模擬寫入失敗'); return db.run(sql, ...args); },
   batch: async stmts => {
     await cardWriteHook(stmts.map(([sql]) => sql)); await statusAddHook(stmts.map(([sql]) => sql));
     if (beforeStatusInit && stmts.some(([sql]) => /^INSERT OR IGNORE INTO project_statuses\b/.test(sql))) { const f = beforeStatusInit; beforeStatusInit = null; await f(); }
-    if (beforeStatusUpdate && stmts.some(([sql]) => /^UPDATE project_statuses SET name\b/.test(sql))) { const f = beforeStatusUpdate; beforeStatusUpdate = null; await f(); }
+    await statusUpdateHook(stmts.map(([sql]) => sql));
     if (beforeStatusDelete && stmts.some(([sql]) => STATUS_DELETE.test(sql))) { const f = beforeStatusDelete; beforeStatusDelete = null; await f(); }
     return db.batch(stmts.map(([sql, args]) => (isStatusDelete(sql) ? ['SELECT x FROM no_such_table', []] : [sql, args])));
   } };
@@ -454,6 +455,26 @@ try {
       assert.deepEqual(await confirmLeft(PJ), ['Q2'], '待確認類別還有狀態');
       assert.equal((await getCard(dc.cardId)).status, 'Q2', '決策卡還在待確認');
     }
+  }
+
+  // 26) 兩個人同時新增同名的狀態：各自讀到的清單都沒有這個名稱，後做完的那個要 409（不是 500），名稱不重複
+  {
+    const r = ok(await call(boss.token, '/api/projects', 'POST', { name: '同時同名新增', statuses: [{ name: '待', category: '待處理' }, { name: '做', category: '進行中' }, { name: '完', category: '已完成' }] }), '建專案');
+    const PJ = encodeURIComponent(r.id);
+    beforeStatusAdd = async () => ok(await add({ name: '測試', category: '進行中' }, boss.token, PJ), '另一個人先新增同名');
+    assert.equal(fail(await add({ name: '測試', category: '進行中' }, boss.token, PJ), 409, '後做完的同名新增').error.code, 'CONFLICT');
+    assert.equal(beforeStatusAdd, null, '真的有同時新增');
+    assert.deepEqual((await statuses(PJ)).map(s => s.name), ['待', '做', '完', '測試'], '只有一個「測試」');
+  }
+
+  // 27) 兩個人同時把不同的狀態改成同一個名稱：後做完的那個要 409（不是 500），名稱不重複（只改名、跟改類別都要）
+  for (const category of [undefined, '進行中']) {
+    const r = ok(await call(boss.token, '/api/projects', 'POST', { name: `同時同名改名${category ?? ''}`, statuses: [{ name: '待', category: '待處理' }, { name: 'A', category: '進行中' }, { name: 'B', category: '受阻' }, { name: '完', category: '已完成' }] }), '建專案');
+    const PJ = encodeURIComponent(r.id), sts = r.items.find(p => p.id === r.id).statuses, A = sts.find(s => s.name === 'A'), B = sts.find(s => s.name === 'B');
+    beforeStatusUpdate = async () => ok(await patchSt(A.id, { name: '同名' }, boss.token, PJ), '另一個人先改名');
+    assert.equal(fail(await patchSt(B.id, { name: '同名', ...(category ? { category } : {}) }, boss.token, PJ), 409, `後做完的改名（${category ?? '只改名'}）`).error.code, 'CONFLICT');
+    assert.equal(beforeStatusUpdate, null, '真的有同時改名');
+    assert.deepEqual((await statuses(PJ)).map(s => s.name), ['待', '同名', 'B', '完'], '只有一個「同名」');
   }
 
   console.log('project-statuses-test：全部通過');

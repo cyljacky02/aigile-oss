@@ -164,8 +164,10 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
   const eventIf = (pj, me, text, at, ok, args) => [`INSERT INTO project_events (project_id, at, actor_id, text) VALUES ((SELECT p.id FROM projects p WHERE p.id = ? AND ${ok}),?,?,?)`,
     [pj, ...args, at, me.id, `${me.name} ${text}`]];
   const catHas = 'EXISTS (SELECT 1 FROM project_statuses ps WHERE ps.project = p.id AND ps.category = ?)'; // 這個專案的類別 ? 還有狀態
-  // 交易被上面的檢查（或搬卡語句的同類檢查，都是 NOT NULL）擋下，或 Postgres 偵測到兩個交易互等（deadlock）：當成剛好有人同時在改
-  const raced = e => e?.code === '23502' || e?.code === '40P01' || /NOT NULL constraint failed/i.test(String(e?.message));
+  // 同一個專案的狀態名稱重複（idx_project_statuses_name）：讀完清單後剛好有人同時新增或改名成同一個名稱。只認這個索引，別的 UNIQUE 違規還是 500
+  const nameTaken = e => (e?.code === '23505' && e?.constraint === 'idx_project_statuses_name') || /UNIQUE constraint failed: project_statuses\.project, project_statuses\.name\b/i.test(String(e?.message));
+  // 交易被上面的檢查（或搬卡語句的同類檢查，都是 NOT NULL）擋下、狀態名稱剛被別人取走，或 Postgres 偵測到兩個交易互等（deadlock）：當成剛好有人同時在改
+  const raced = e => e?.code === '23502' || e?.code === '40P01' || /NOT NULL constraint failed/i.test(String(e?.message)) || nameTaken(e);
   const conflict = () => new ApiError(409, 'CONFLICT', '看板狀態或裡面的卡片剛好有人同時在改，這次沒有存；請重新讀取後再試。');
 
   route('GET', '/api/projects/:id/statuses', async ({ ctx, me, params }) => {
@@ -213,7 +215,8 @@ export function registerStatusRoutes({ route, db, statuses, ApiError, invalid, r
         throw conflict();
       }
     } else {
-      await db.run(update[0], ...update[1]);
+      try { await db.run(update[0], ...update[1]); }
+      catch (e) { throw nameTaken(e) ? conflict() : e; }
       if (what.length) await event(pj, me, `看板狀態${what.join('、')}`);
     }
     return reply(ctx, pj);
