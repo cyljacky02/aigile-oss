@@ -190,7 +190,8 @@ try {
   assert.equal(after[0].action, 'backup.restore', 'F 還原後多一筆 backup.restore：' + JSON.stringify(after[0]));
   assert.deepEqual([after[0].actor.name, after[0].scope.kind, after[0].detail.appVersion], ['王小美', 'platform', info.appVersion], 'F 操作者是登入改掛過去的平台管理員');
   assert.deepEqual(after.slice(1).map(x => x.id), before.map(x => x.id), 'F 還原後稽核紀錄回來了');
-  ok(await B.call(me.token, `/api/participants/${LIN}/workspace-role`, 'PUT', { role: 'member' }), '還原後照常寫（流水號接得上）');
+  const bossB = await adminSession(B.call, me.token); // 任免管理員是敏感操作：還原後也要用裝置登入、剛再驗證過
+  ok(await B.call(bossB.token, `/api/participants/${LIN}/workspace-role`, 'PUT', { role: 'member' }), '還原後照常寫（流水號接得上）');
   assert.equal((await B.call(me.token, '/api/audit-log')).body.items[0].action, 'workspace_admin.revoke', 'F 還原後新增的紀錄在最前面');
 
   console.log('audit-log-test：全部通過');
