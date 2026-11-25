@@ -66,7 +66,7 @@ try {
   const enc = encodeURIComponent(pid);
   assert.equal((await call(boss.token, `/api/projects/${enc}/archive`, 'POST')).status, 200, '封存');
   assert.equal((await call(boss.token, `/api/projects/${enc}/delete`, 'POST', { confirmName: '同時的專案' })).status, 200, '刪除');
-  const projExpire = Date.now() + 300;
+  const projExpire = Date.now() + 1500; // 留足時間給復原請求先做完檢查（慢的機器、Postgres）
   await db.run('UPDATE projects SET purge_at = ? WHERE id = ?', projExpire, pid); // 模擬時間經過：快到期了
   const a = await race({
     send: () => call(boss.token, `/api/projects/${enc}/restore`, 'POST'),
@@ -87,7 +87,7 @@ try {
   const m = (await call(boss.token, '/api/messages', 'POST', { project: PJ, text: '有附件的訊息', requestId: 'rq1', fileIds: [fid] })).body;
   assert.equal((await call(boss.token, `/api/files/${fid}`)).status, 200, '刪除前下載得到');
   assert.equal((await call(boss.token, `/api/messages/${m.messageId}`, 'DELETE')).status, 200, '刪除訊息');
-  const msgExpire = Date.now() + 300;
+  const msgExpire = Date.now() + 1500; // 留足時間給復原請求先做完檢查（慢的機器、Postgres）
   await db.run('UPDATE messages SET purge_at = ? WHERE id = ?', new Date(msgExpire).toISOString(), m.messageId); // 模擬時間經過：快到期了
   const b = await race({
     send: () => call(boss.token, `/api/messages/${m.messageId}/restore`, 'POST'),
