@@ -63,7 +63,7 @@ try {
   console.log('✓ 再驗證：輸錯留在對話框、輸對自動重送、10 分鐘內不再問');
 
   // ---- C 還沒設密碼 ----
-  await login(chen.token, '/roster'); // 陳昭宇（剛升為平台管理員）沒有密碼
+  await login(chen.token, '/roster'); // 剛升為平台管理員、還沒設密碼的人
   await until(() => js(`!!document.querySelector(${JSON.stringify(ws(Wg))})`), 10000, '陳昭宇的成員名冊');
   await confirmVia(ws(Wg));
   await until(() => js("!!document.querySelector('.pwdreq-root [data-ok]')"), 8000, '要先設密碼的說明');

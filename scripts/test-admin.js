@@ -4,10 +4,10 @@
 // 還沒有再驗證端點時那裡回 404，略過不算錯。所以測試從頭用這個 Token，再驗證功能上線前後都能過。
 // call 是各測試自己的 call(token, 路徑, method, body) → { status, body }；joinToken 是這個人目前的登入 Token
 // 用法：
-//   const wang = (await call(null, '/api/join', 'POST', { name: '王小美', role: 'PO' })).body;
-//   const boss = await adminSession(call, wang.token);   // boss.token 拿去呼叫管理端點
+//   const first = (await call(null, '/api/join', 'POST', { name, role })).body;   // 第一位註冊的人＝管理員
+//   const admin = await adminSession(call, first.token);   // admin.token 拿去呼叫管理端點
 // 注意：用帳號密碼登入會留一則 password_login 帳號提醒；數帳號提醒的測試要照 kind 篩選
-// 再驗證 10 分鐘後過期：測試裡改時間後要再呼叫一次 reauth(call, boss)
+// 再驗證 10 分鐘後過期：測試裡改時間後要再呼叫一次 reauth(call, admin)
 export async function adminSession(call, joinToken, { username, password = 'pass-word-1' } = {}) {
   const cred = await call(joinToken, '/api/me/password');
   if (cred.status !== 200) throw new Error(`adminSession：讀不到帳號密碼設定（${cred.status} ${JSON.stringify(cred.body)}）`);

@@ -50,7 +50,7 @@ try {
   const P = { wang: { ...wangJ, name: '王小美' }, lin: { ...lin, name: '林志明' }, zhao: { ...zhao, name: '趙敏' }, liu: { ...liu, name: '劉備' }, chen: { ...chen, name: '陳昭宇' } };
   const id = k => P[k].participant.participantId;
   const everyone = Object.values(P);
-  const boss = await adminSession(call, wangJ.token); // 王小美的管理端點都用裝置登入（之後要再驗證也能過）
+  const boss = await adminSession(call, wangJ.token); // 管理端點都用裝置登入、剛再驗證過的 Token
   await inbox(everyone); // 先清掉之前的
 
   // ---------- 1 任免平台管理員 ----------

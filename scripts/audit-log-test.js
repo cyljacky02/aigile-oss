@@ -124,7 +124,7 @@ try {
   assert.ok(!(await log(lin.token, 'action=account.disable')).items.length, 'C 工作區管理員篩平台層動作也拿不到');
   assert.ok((await log(boss.token, 'scope=platform')).items.every(x => x.scope.kind === 'platform'), 'C scope=platform 只有平台層');
   assert.ok((await log(boss.token, 'scope=workspace')).items.every(x => x.scope.kind !== 'platform'), 'C scope=workspace 沒有平台層');
-  const sun = (await call(null, '/api/join', 'POST', { name: '孫一般', role: 'PG' })).body; // 陳大文停用過，舊的登入碼已作廢
+  const sun = (await call(null, '/api/join', 'POST', { name: '孫一般', role: 'PG' })).body; // 停用過的成員舊登入碼已作廢：另找一位一般成員
   assert.equal((await call(sun.token, '/api/audit-log')).status, 403, 'C 一般成員 403');
   assert.equal((await call(null, '/api/audit-log')).status, 401, 'C 沒登入 401');
   ok(await call(boss.token, `/api/participants/${CHEN}/projects`, 'PUT', { projects: [PJ] }), '陳大文加進預設專案');

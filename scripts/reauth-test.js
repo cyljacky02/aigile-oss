@@ -79,7 +79,7 @@ try {
     assert.equal(code(res), '403 REAUTH_REQUIRED', 'A 沒再驗證：' + what);
     assert.match(res.body.error.message, /密碼/, 'A 說明要再輸入密碼：' + what);
   }
-  // 沒做成：李大華還不是管理員、陳小明沒被停用
+  // 被擋下的操作沒有生效：對象沒升為管理員、沒被停用
   let roster = (await call(dev1, '/api/participants')).body;
   const person = id => roster.items.find(p => p.participantId === id);
   assert.notEqual(person(lee.participant.participantId)?.workspaceRole, 'admin', 'A 被擋下的操作沒有生效');

@@ -60,7 +60,7 @@ try {
   // 內容：這個專案的訊息（含通知）、卡片、文件、上傳檔、技能、知識庫、私訊、加入申請；別的專案與跨專案頻道各一則
   const post = (project, text, extra = {}) => call(liu.token, '/api/messages', 'POST', { project, text, requestId: 'r' + (++rq), recipientIds: [id(wang)], ...extra });
   const m1 = (await post(pid, '[需確認] 這個專案的問題\n選項：\nA. 好\nB. 不好')).body;
-  const m2 = (await post(pid, '第二則', { recipientIds: [id(wang), id(lin)] })).body; // 林工作是工作區管理員（不受隔離），封存專案的通知照樣看得到
+  const m2 = (await post(pid, '第二則', { recipientIds: [id(wang), id(lin)] })).body; // 收件人含工作區管理員（不受隔離）：封存專案的通知照樣看得到
   const keepPlat = (await post('預設專案', '另一個專案的訊息')).body, keepAll = (await post('all', '跨專案頻道的訊息')).body;
   assert.ok(m1.messageId && keepPlat.messageId && keepAll.messageId, '發文成功：' + JSON.stringify([m1, keepPlat, keepAll]).slice(0, 300));
   assert.equal((await call(liu.token, `/api/decisions/${m1.messageId}/resolve`, 'POST')).status, 200, '標為已處理');
