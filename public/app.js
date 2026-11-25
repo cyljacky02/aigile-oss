@@ -1367,7 +1367,7 @@
     </article>`;
   }
   // 「刪除」按鈕：''＝可以刪；文字＝按了說明為什麼不能刪；null＝不出現（別人的訊息）
-  // 作者刪自己的（唯讀成員不行；工作區政策設為只有管理員時也不行）、工作區管理員刪任何人的；自己 AI 發的要找工作區管理員
+  // 作者刪自己的（唯讀成員不行；工作區政策設為只有工作區管理員時也不行）、工作區管理員刪任何人的；自己 AI 發的要找工作區管理員
   function delWhy(m) {
     if (state.me?.memberType !== 'human' || m.deleted) return null;
     if (isAdmin()) return '';
@@ -9668,7 +9668,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="dm">${p.dm?.on ? '關閉私訊…' : '開放成員私訊自己的 AI…'}<span class="pm-sub">${p.dm?.on ? `已開放${p.dm.at ? ' · ' + esc(mmdd(p.dm.at)) : ''}${p.dm.byName ? ' ' + esc(p.dm.byName) + ' 打開' : ''}` : '預設關'}</span></button>
           <button type="button" role="menuitem" data-pp="log">異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>封存…${blocked ? `<span class="pm-sub">${esc(why)}</span>` : ''}</button></div>` : '';
-      const last = p.archived ? `<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button>${isAdmin() ? '<button type="button" class="btn small danger-outline" data-pp="pdelete">刪除…</button>' : ''}</span>` // 封存的才能刪除（只有管理員）
+      const last = p.archived ? `<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button>${isAdmin() ? '<button type="button" class="btn small danger-outline" data-pp="pdelete">刪除…</button>' : ''}</span>` // 封存的才能刪除（只有工作區管理員）
         : `<span class="pm-more-wrap"><button type="button" class="pm-more" data-pm-more="${esc(p.id)}" aria-haspopup="menu" aria-expanded="${perm.moreOpen === p.id}" aria-label="${esc(p.name)} 的更多動作">⋯</button>${menu}</span>`;
       const log = open ? `<tr class="pm-log-tr" data-pj="${esc(p.id)}"><td colspan="6"><div class="pm-log-head"><b>異動紀錄 · ${esc(p.name)}</b><button type="button" class="link small" data-pp="log" aria-expanded="true">收起</button></div><ul class="pa-log">${(perm.events[p.id] || []).map(e => `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(e.text)}</li>`).join('') || '<li class="muted small">還沒有紀錄</li>'}</ul></td></tr>` : '';
       return `<tr class="pm-prow${p.archived ? ' archived' : ''}" data-pj="${esc(p.id)}"><td class="c-pname"><b>${esc(p.name)}</b>${p.archived ? ' <span class="pill-tag grey">已封存</span>' : ''}</td><td class="c-code" data-label="API 代號" title="${esc(p.id)}">${esc(p.id)}</td><td class="c-num" data-label="成員">${p.memberCount}</td><td class="c-num2" data-label="未結案卡">${p.openCards}</td><td class="c-repo" data-label="程式庫">${repo}</td><td class="c-more">${last}</td></tr>${log}`;
@@ -9678,7 +9678,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <table class="pm-table pm-ptable"><thead><tr><th scope="col">專案</th><th scope="col" class="c-code">API 代號</th><th scope="col" class="c-num">成員</th><th scope="col" class="c-num2">未結案卡</th><th scope="col" class="c-repo">程式庫</th><th scope="col" class="c-more"><span class="sr-only">動作</span></th></tr></thead>
         <tbody>${rows}</tbody></table></div>${permDelsHtml()}</div>`;
   }
-  // PLAT-381：leader 的專案管理：只列自己當 leader 的專案；⋯ 有改名、程式庫與分支、成員與本專案角色、封存（刪除只有管理員）
+  // 專案管理員的專案管理：只列自己是專案管理員的專案；⋯ 有改名、程式庫與分支、成員與本專案角色、封存（刪除只有工作區管理員）
   function permLeadProjectsHtml() {
     const list = myLeadRows();
     const rows = list.map(p => {
@@ -10505,7 +10505,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       perm.gsLogOpen = !!$('.pm-gs-log')?.open;
       return loadGroupSettings(); // 異動紀錄多一筆
     }
-    if (a === 'noop') { drawPerm(); return toast('只有工作區管理員能刪除專案'); } // PLAT-381
+    if (a === 'noop') { drawPerm(); return toast('只有工作區管理員能刪除專案'); } // 專案管理員的 ⋯ 選單裡灰掉的刪除
     if (a === 'members') return psetAct('members', id);
     if (a === 'statuses') { drawPerm(); return openStatusEditor(id); }
     if (a === 'visibility') { drawPerm(); return openVisibilityEditor(id); }
