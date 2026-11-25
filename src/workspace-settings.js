@@ -1,28 +1,36 @@
 // 工作區設定（GLOSSARY「成員與權限」：工作區）：第一階段只有預設工作區。
-// - 誰可以建立專案（create_projects）：存在 workspaces 表的那一列
+// - 誰可以建立專案（create_projects）、誰可以刪除自己的訊息（delete_own_messages）：存在 workspaces 表的那一列
 // - 開放自行註冊、房間碼：預設工作區的值存 app_settings 的 open_join（'1'／'0'）與 room_code（密碼雜湊，''＝清除），
 //   沒改過才用環境變數 OPEN_JOIN／ROOM_CODE（升級的站照舊）。房間碼只存雜湊，不回傳、不寫日誌。每次從資料庫讀，多份程式也立刻生效
 // 工作區名稱、AI 工具、附件保存期限還在 core.js（由工作區設定 API 一起回傳）。
-// 預設值：新安裝（schema.sql）＝所有成員；升級的站（migrations/008、匯入舊備份）＝只有管理員。
+// 預設值：建立專案：新安裝（schema.sql）＝所有成員；升級的站（migrations/008、匯入舊備份）＝只有管理員。刪除自己的訊息：都是所有成員（migrations/015）。
 // 讀：同步，看已載入的快照（10 秒快取；load(true) 重讀）。寫：回傳 [sql, args] 給呼叫端的 db.batch，執行後呼叫 load(true)。
 import { DEFAULT_WORKSPACE } from './membership.js';
 
 export const CREATE_PROJECTS = Object.freeze({ MEMBERS: 'members', ADMINS: 'admins' });
+// 誰可以刪除自己的訊息：所有成員（唯讀成員、AI 本來就不行）／只有工作區管理員（含平台管理員）
+export const DELETE_OWN_MESSAGES = Object.freeze({ MEMBERS: 'members', ADMINS: 'admins' });
 
 // env：{ openJoin（布林，預設開）, roomCode（原文，''＝沒設） }；hashPassword／verifyPassword：房間碼雜湊（src/password.js）
 export function createWorkspaceSettings({ db, env = {}, hashPassword, verifyPassword }) {
   // 讀不到（工作區還沒建好）就當只有管理員：寧可擋，不要多放
-  let snap = { createProjects: CREATE_PROJECTS.ADMINS }, at = 0;
+  let snap = { createProjects: CREATE_PROJECTS.ADMINS, deleteOwnMessages: DELETE_OWN_MESSAGES.ADMINS }, at = 0;
   async function load(force = false) {
     if (!force && at && Date.now() - at < 10_000) return snap;
-    const row = await db.get('SELECT create_projects FROM workspaces WHERE id = ?', DEFAULT_WORKSPACE).catch(() => null);
-    snap = { createProjects: row?.create_projects === CREATE_PROJECTS.MEMBERS ? CREATE_PROJECTS.MEMBERS : CREATE_PROJECTS.ADMINS };
+    const row = await db.get('SELECT create_projects, delete_own_messages FROM workspaces WHERE id = ?', DEFAULT_WORKSPACE).catch(() => null);
+    snap = {
+      createProjects: row?.create_projects === CREATE_PROJECTS.MEMBERS ? CREATE_PROJECTS.MEMBERS : CREATE_PROJECTS.ADMINS,
+      deleteOwnMessages: row?.delete_own_messages === DELETE_OWN_MESSAGES.MEMBERS ? DELETE_OWN_MESSAGES.MEMBERS : DELETE_OWN_MESSAGES.ADMINS,
+    };
     at = Date.now();
     return snap;
   }
   // 一般成員可以建立專案嗎（工作區管理員永遠可以，由權限模組判斷）
   const membersCreateProjects = () => snap.createProjects === CREATE_PROJECTS.MEMBERS;
   const setCreateProjectsStmts = value => [['UPDATE workspaces SET create_projects = ? WHERE id = ?', [value, DEFAULT_WORKSPACE]]];
+  // 一般成員可以刪除自己的訊息嗎（工作區管理員永遠可以，由權限模組判斷）
+  const membersDeleteOwn = () => snap.deleteOwnMessages === DELETE_OWN_MESSAGES.MEMBERS;
+  const setDeleteOwnStmts = value => [['UPDATE workspaces SET delete_own_messages = ? WHERE id = ?', [value, DEFAULT_WORKSPACE]]];
 
   // ---------- 自行加入：開放自行註冊、房間碼 ----------
   const OPEN_JOIN = env.openJoin !== false, ROOM_CODE = String(env.roomCode || '');
@@ -42,5 +50,5 @@ export function createWorkspaceSettings({ db, env = {}, hashPassword, verifyPass
   // code：''＝清除（之後不用房間碼，也不再看環境變數）
   const setRoomCodeStmts = async code => [[upsert, ['room_code', code ? await hashPassword(code) : '']]];
 
-  return { load, membersCreateProjects, setCreateProjectsStmts, joinRules, setOpenJoinStmts, setRoomCodeStmts, invalidate: () => { at = 0; } };
+  return { load, membersCreateProjects, setCreateProjectsStmts, membersDeleteOwn, setDeleteOwnStmts, joinRules, setOpenJoinStmts, setRoomCodeStmts, invalidate: () => { at = 0; } };
 }
