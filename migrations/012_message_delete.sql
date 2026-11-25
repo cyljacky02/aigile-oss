@@ -8,3 +8,4 @@ ALTER TABLE messages ADD COLUMN purge_at TEXT;
 ALTER TABLE messages ADD COLUMN clear_id TEXT;
 ALTER TABLE messages ADD COLUMN purged_at TEXT;
 CREATE INDEX IF NOT EXISTS idx_messages_purge ON messages (purge_at);
+CREATE INDEX IF NOT EXISTS idx_messages_clear ON messages (clear_id);
