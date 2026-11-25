@@ -3490,6 +3490,11 @@ button.ob-toggle:focus-visible { outline: 2px solid var(--primary); }
 .adm-rescue > p { margin: 0 16px 8px; }
 .adm-cmd { margin: 0 16px 8px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2, #f1f5f9); overflow-x: auto; font-size: 13px; }
 .adm-audit .table-scroll { padding: 0 16px 12px; }
+.alog-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; padding: 4px 16px 8px; }
+.alog-filters label { display: flex; flex-direction: column; gap: 2px; font-size: .85rem; color: var(--muted); min-width: 0; }
+.alog-filters select, .alog-filters input { max-width: 100%; font: inherit; color: var(--text); }
+.adm-alog .alog-table { margin: 0 16px 12px; width: calc(100% - 32px); } /* 表格自己橫向捲動（窄螢幕不撐開頁面） */
+.alog-table td.alog-detail { white-space: normal; min-width: 180px; }
 .pm-detail > .pm-acc-line { margin: 4px 0 12px; padding: 0 14px; color: var(--muted); }
 .adm-audit > p { margin: 0 16px 12px; }
 .adm-todo > .adm-todo-note { margin: 12px 0 10px; padding: 0 16px; }

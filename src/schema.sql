@@ -491,3 +491,27 @@ CREATE TABLE IF NOT EXISTS project_members (
   PRIMARY KEY (project_id, participant_id)
 );
 CREATE INDEX IF NOT EXISTS idx_project_members_participant ON project_members (participant_id);
+-- 稽核紀錄（docs/adr/0003；migrations/010）：管理與破壞性操作只能新增的紀錄；平台層，專案永久清除後仍保留。不存訊息原文
+-- 沒有修改、刪除的 API；跟著備份走（還原時換成備份裡的，再加一筆 backup.restore）
+CREATE TABLE IF NOT EXISTS audit_log (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, -- 分頁游標（新的在前）
+  id TEXT NOT NULL UNIQUE,
+  at TEXT NOT NULL,                    -- ISO 時間
+  actor_id TEXT,                       -- 操作者；系統操作是 system
+  actor_name TEXT NOT NULL DEFAULT '', -- 寫入當時的名字（系統）
+  actor_kind TEXT NOT NULL DEFAULT 'human', -- human | ai | system
+  action TEXT NOT NULL,                -- src/audit.js 的 AUDIT_ACTION（例 platform_admin.grant）
+  scope_kind TEXT NOT NULL,            -- platform | workspace | project；平台層的只有平台管理員看得到
+  workspace_id TEXT,                   -- 非平台層的事件所屬工作區（第一階段只有 default）；平台層 NULL
+  project_id TEXT,                     -- 專案層的事件
+  project_name TEXT,                   -- 寫入當時的專案名字
+  target_kind TEXT,                    -- participant | project | message | workspace
+  target_id TEXT,
+  target_name TEXT,                    -- 寫入當時的名字
+  count INTEGER,                       -- 摘要數字（例：清除了幾則訊息）
+  detail TEXT                          -- 細節 JSON；不放訊息原文
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log (at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_workspace ON audit_log (workspace_id, seq);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log (action, seq);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log (actor_id, seq);

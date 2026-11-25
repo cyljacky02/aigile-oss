@@ -250,7 +250,7 @@ B. 不接受，等全部完成
 - **將移除（保留這一版）**：participant 的 `isAdmin`；`GET /api/projects` 的 `leaders`、`archivedLeaders`、`readOnly`（改看 `projectAdmins`、`archivedProjectAdmins`、`viewers`，內容一樣）；`adminId`／`adminName` 只是顯示用（最早加入的工作區管理員），權限改看各人的 `workspaceRole`。
 
 ### 3.21 1.2 版：刪除、可復原期、稽核紀錄、再驗證
-- **稽核紀錄**（#27）：待補。
+- **稽核紀錄**（#27）：平台層、只能新增的管理操作紀錄（沒有修改或刪除的 API；包含在備份與還原裡，還原後多一筆 `backup.restore`）。`GET /api/audit-log?scope=&action=&actor=&from=&to=&before=&limit=`（只給人類管理員）：平台管理員看全部，工作區管理員只看自己工作區（含專案）的事件，平台層事件不給；其他人與 AI 403 `NOT_ADMIN`。`scope`：`all`（看得到的全部，預設）｜`workspace`（只要工作區與專案的事件）｜`platform`（只要平台層，平台管理員）；`action` 篩動作、`actor` 篩操作者 id（系統是 `system`）、`from`／`to` 是 ISO 時間（`from` 含、`to` 不含）；新的在前，一頁 `limit` 筆（1–200，預設 50），下一頁帶上一頁的 `before=next`；不認得的參數或值 400。回 `{ items: [{ id, at, action, actor: { id, name, kind: human|ai|system }, scope: { kind: platform|workspace|project, workspaceId, projectId, projectName }, target: { kind, id, name } | null, count, detail }], next, includesPlatform, actors? }`（`actors` 只在第一頁：篩選用的操作者清單）。名字是寫入當時的快照，對象之後被移出、改名或清除也照舊；不存訊息原文。動作：`platform_admin.grant|revoke`、`account.disable|enable`、`backup.restore`（平台層）；`workspace_admin.grant|revoke`、`member.remove|leave`、`workspace_policy.update`（`detail: { field, from, to }`）（工作區）；`project.purge`（專案；刪除專案目前立即清除）；`recovery_window.update`、`message.delete|restore|purge`、`project_messages.clear|restore`、`project.delete|restore` 由之後的功能寫入。舊的專案刪除紀錄（設定表的 `pdel:` 鍵）在升級後第一個請求轉成 `project.purge`（`detail.legacy: true`）並移除，重複啟動不會重複；`GET /api/project-deletions` 改從稽核紀錄讀，回傳形狀不變。
 - **管理員異動通知**（#28）：待補。
 - **再驗證身分**（#29）：待補。
 - **可復原期設定**（#30）：待補。

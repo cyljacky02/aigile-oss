@@ -2,6 +2,9 @@
 // 介面（core.js 建一個 auditLog，傳給需要記錄的模組）：
 //   auditLog.stmt(evt)   回一句 [sql, args]，跟資料異動放進同一個 db.batch；沒有要寫的回 null
 //   auditLog.write(evt)  單獨寫一筆（就是 stmt 那一句的 db.run）
+//   auditLog.list(q)     查詢（GET /api/audit-log 用；可見範圍由呼叫端依權限決定）
+//   auditLog.migrateLegacy()  舊的專案刪除紀錄（app_settings 的 pdel:）轉進來；core.js 每份程式第一個請求跑一次
+// 只能新增：這裡沒有修改或刪除的方法（還原備份時整張換成備份裡的，在 src/backup.js）
 // 呼叫端把 stmt 的結果放進清單時要去掉 null（core.js 的 writeStmts 會去掉；清單空了就不呼叫 db.batch）
 // 資料表還沒建立前 stmt 一律回 null（什麼都不寫）
 //
@@ -32,12 +35,88 @@ export const AUDIT_ACTION = Object.freeze({
 });
 export const AUDIT_SCOPE = Object.freeze({ PLATFORM: 'platform', WORKSPACE: 'workspace', PROJECT: 'project' });
 
-// randId、nowIso：寫入時的 id 與時間（資料表建立後才會用到）
+export const AUDIT_ACTIONS = Object.freeze(Object.values(AUDIT_ACTION));
+const SYSTEM = { id: 'system', name: '系統', kind: 'system' }; // 系統操作（例：到期的永久清除）
+const DEFAULT_WS = 'default';
+const COLS = 'id, at, actor_id, actor_name, actor_kind, action, scope_kind, workspace_id, project_id, project_name, target_kind, target_id, target_name, count, detail';
+const INSERT = `INSERT INTO audit_log (${COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+const LEGACY_FROM = 'pdel:', LEGACY_TO = 'pdel;'; // 舊的專案刪除紀錄：app_settings 的 pdel:<時間>:<專案 id>
+const str = v => (v == null ? null : String(v));
+const parse = s => { if (s == null) return null; try { return JSON.parse(s); } catch { return null; } };
+
+// 一筆的欄位值（照 COLS 的順序）
+function values(evt, id, at) {
+  const a = evt.actor || SYSTEM, platform = evt.scope === AUDIT_SCOPE.PLATFORM, t = evt.target || null;
+  return [id, at, str(a.id), String(a.name ?? ''), a.kind === 'ai' ? 'ai' : a.kind === 'system' || !evt.actor ? 'system' : 'human', evt.action, evt.scope,
+    platform ? null : evt.workspaceId || DEFAULT_WS, str(evt.project?.id), str(evt.project?.name),
+    t ? str(t.kind) : null, t ? str(t.id) : null, t ? str(t.name) : null,
+    Number.isInteger(evt.count) ? evt.count : null, evt.detail == null ? null : JSON.stringify(evt.detail)];
+}
+// API 輸出的一筆
+const view = r => ({
+  id: r.id, at: r.at, action: r.action,
+  actor: { id: r.actor_id, name: r.actor_name, kind: r.actor_kind },
+  scope: { kind: r.scope_kind, workspaceId: r.workspace_id ?? null, projectId: r.project_id ?? null, projectName: r.project_name ?? null },
+  target: r.target_kind ? { kind: r.target_kind, id: r.target_id, name: r.target_name } : null,
+  count: r.count ?? null, detail: parse(r.detail),
+});
+
+// randId、nowIso：寫入時的 id 與時間
 export function createAudit({ db, randId, nowIso }) {
-  const stmt = evt => null;
+  // 資料表在不在：Cloudflare 可能先部署程式、後跑資料庫升級；還沒有表時什麼都不寫（不擋管理操作）。轉換舊紀錄時確認
+  let ready = true;
+  const stmt = evt => (ready && evt?.action ? [INSERT, values(evt, randId('aud'), evt.at || nowIso())] : null);
   async function write(evt) {
     const s = stmt(evt);
     if (s) await db.run(s[0], ...s[1]);
   }
-  return { stmt, write };
+
+  // 查詢（新的在前）。看得到哪些：platform＝平台管理員看全部；否則只有 workspaceId 這個工作區、非平台層的
+  // only：'workspace'＝只要工作區（含專案）事件、'platform'＝只要平台層事件；before：上一頁的 next 游標（時間|序號）
+  async function list({ platform = false, workspaceId = DEFAULT_WS, only = null, action, actor, from, to, before, limit = 50, withActors = false }) {
+    const vis = [], args = [];
+    if (!platform || only === 'workspace') { vis.push("scope_kind != 'platform'", 'workspace_id = ?'); args.push(workspaceId); }
+    if (only === 'platform') vis.push("scope_kind = 'platform'");
+    const where = [...vis], wargs = [...args];
+    if (action) { where.push('action = ?'); wargs.push(action); }
+    if (actor) { where.push('actor_id = ?'); wargs.push(actor); }
+    if (from) { where.push('at >= ?'); wargs.push(from); }
+    if (to) { where.push('at < ?'); wargs.push(to); }
+    if (before) { where.push('(at < ? OR (at = ? AND seq < ?))'); wargs.push(before.at, before.at, before.seq); }
+    const cond = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const rows = await db.all(`SELECT seq, ${COLS} FROM audit_log ${cond} ORDER BY at DESC, seq DESC LIMIT ?`, ...wargs, limit + 1);
+    const more = rows.length > limit, page = rows.slice(0, limit), last = page[page.length - 1];
+    const out = { items: page.map(view), next: more ? `${last.at}|${last.seq}` : null };
+    if (withActors) { // 篩選用：看得到的紀錄裡出現過的操作者（名字取最新一筆）
+      const vc = vis.length ? 'WHERE ' + vis.join(' AND ') : '';
+      const as = await db.all(`SELECT actor_id, actor_name, actor_kind FROM audit_log ${vc} ORDER BY seq DESC LIMIT 5000`, ...args);
+      const seen = new Map();
+      for (const a of as) if (!seen.has(a.actor_id)) seen.set(a.actor_id, { id: a.actor_id, name: a.actor_name, kind: a.actor_kind });
+      out.actors = [...seen.values()];
+    }
+    return out;
+  }
+
+  // 舊的專案刪除紀錄（pdel:）轉進稽核紀錄後移除：一筆一批（新增＋刪鍵），id 由鍵決定，重跑、多份程式同時跑都不會重複
+  // 回 false＝這次沒做完（匯入備份中、還沒有資料表），下個請求再試
+  async function migrateLegacy() {
+    if (await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
+    try { await db.get('SELECT seq FROM audit_log LIMIT 1'); ready = true; } catch { ready = false; return false; }
+    const rows = await db.all('SELECT key, value FROM app_settings WHERE key >= ? AND key < ?', LEGACY_FROM, LEGACY_TO);
+    for (let i = 0; i < rows.length; i += 20) {
+      const stmts = [];
+      for (const { key, value } of rows.slice(i, i + 20)) {
+        const v = parse(value) || {}, rest = key.slice(LEGACY_FROM.length), cut = rest.lastIndexOf(':');
+        const pid = v.projectId || rest.slice(cut + 1), at = v.at || rest.slice(0, cut), name = v.name ?? '';
+        const evt = { actor: v.by ? { id: v.by, name: v.byName ?? '', kind: 'human' } : null, action: AUDIT_ACTION.PROJECT_PURGE, scope: AUDIT_SCOPE.PROJECT,
+          project: { id: pid, name }, target: { kind: 'project', id: pid, name },
+          detail: { legacy: true, code: v.code ?? null, counts: v.counts || {}, aisDeleted: v.aisDeleted || [] } };
+        stmts.push([INSERT.replace('INSERT INTO', 'INSERT OR IGNORE INTO'), values(evt, 'aud_pdel_' + rest, at)], ['DELETE FROM app_settings WHERE key = ?', [key]]);
+      }
+      await db.batch(stmts);
+    }
+    if (rows.length) console.log(`舊的專案刪除紀錄轉進稽核紀錄：${rows.length} 筆`);
+    return true;
+  }
+  return { stmt, write, list, migrateLegacy };
 }
