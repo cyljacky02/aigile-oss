@@ -155,7 +155,7 @@ try {
   assert.ok(await js("!document.querySelector('.adm-nav, [data-adm]')"), 'leader 看不到管理員設定');
   const wav = await avItems();
   assert.ok(!wav.includes('admin=') && !wav.includes('pm-projects=') && /perm=👥成員管理/.test(wav), 'leader 頭像只有成員管理：' + wav);
-  for (const [u, m, b] of [['/api/invites', 'GET'], ['/api/group', 'PUT', { name: 'x' }], ['/api/group/settings', 'GET'], ['/api/project-deletions', 'GET'], ['/api/participants/disabled', 'GET'], ['/api/admin/backup/status', 'GET']]) assert.equal((await call(wang.token, u, m, b)).status, 403, `非管理員打 ${m} ${u} 照樣擋`);
+  for (const [u, m, b] of [['/api/invites', 'GET'], ['/api/group', 'PUT', { name: 'x' }], ['/api/group/settings', 'GET'], ['/api/deleted-projects', 'GET'], ['/api/participants/disabled', 'GET'], ['/api/admin/backup/status', 'GET']]) assert.equal((await call(wang.token, u, m, b)).status, 403, `非管理員打 ${m} ${u} 照樣擋`);
 
   // ---------- E 手機 375：一頁清單點進去 ----------
   await size(375, 812);

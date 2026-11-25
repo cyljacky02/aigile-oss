@@ -158,7 +158,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
     return [...out].map(([id, projects]) => ({ id, projects }));
   }
 
-  // ---------- 永久刪除專案：所有人的專案歸屬與角色都拿掉它 ----------
+  // ---------- 永久清除專案：所有人的專案歸屬與角色都拿掉它 ----------
   // people：要檢查的成員列（含停用、已刪除的；改到的人更新 updated_at）
   async function removeProjectStmts(pj, people, at) {
     const stmts = [];

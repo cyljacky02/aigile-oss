@@ -237,6 +237,10 @@ CREATE TABLE IF NOT EXISTS projects (
   archived INTEGER NOT NULL DEFAULT 0,
   workspace_id TEXT,                   -- 所屬工作區（migrations/008）
   visibility TEXT NOT NULL DEFAULT 'review', -- 專案可見度：open（開放，工作區成員直接加入）| review（審核，申請後核准；預設）| private（私人，只有專案成員與有隱含權限的人看得到）
+  deleted_at TEXT,                     -- 刪除時間（ISO）；有值＝在可復原期，只有工作區管理員看得到（migrations/013）
+  deleted_by TEXT,                     -- 刪除者 participant id（migrations/013）
+  purge_at INTEGER,                    -- 預計永久清除時間（epoch 毫秒，刪除當下決定；migrations/013）
+  paused_ais TEXT,                     -- 刪除時暫停的 AI id（JSON 陣列；participants.status 改 paused，復原時恢復 active；migrations/013）
   created_by TEXT,
   created_at TEXT NOT NULL
 );
