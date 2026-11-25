@@ -477,7 +477,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,                 -- 第一階段只有 default
   name TEXT NOT NULL DEFAULT '',       -- 工作區名稱（升級時取群組名稱）
   create_projects TEXT NOT NULL DEFAULT 'members', -- 誰可以建立專案：members | admins
-  delete_own_messages TEXT NOT NULL DEFAULT 'members', -- 誰可以刪除自己的訊息：members | admins（migrations/015）
+  delete_own_messages TEXT NOT NULL DEFAULT 'members', -- 誰可以刪除自己的訊息：members | admins（migrations/014）
   created_at TEXT NOT NULL DEFAULT ''
 );
 INSERT OR IGNORE INTO workspaces (id, name, create_projects) VALUES ('default', '', 'members');

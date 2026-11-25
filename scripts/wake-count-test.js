@@ -31,7 +31,7 @@ const OLD = SCHEMA.split('\n').filter(l => !/^\s+wake_(day|count|at) /.test(l) &
   .replace(/\n\s*reauth_at [^\n]*/, '') // 011 再驗證身分加的欄位也去掉
   .replace(/\n[^\n]*migrations\/012[^\n]*/g, '') // 012 刪除訊息加的欄位與索引也去掉
   .replace(/\n[^\n]*migrations\/013[^\n]*/g, '') // 013 刪除專案加的欄位也去掉
-  .replace(/\n[^\n]*migrations\/015[^\n]*/g, '') // 015 工作區政策（誰可以刪除自己的訊息）加的欄位也去掉
+  .replace(/\n[^\n]*migrations\/014[^\n]*/g, '') // 014 工作區政策（誰可以刪除自己的訊息）加的欄位也去掉
   .replace(/(\n  status TEXT NOT NULL DEFAULT 'active',[^\n]*)/, "$1\n  is_admin INTEGER NOT NULL DEFAULT 0,     -- 群組管理員（同時只有一位人類；可以交給別人）")
   .replace(/(\n  standby_at [^\n]*)\n\);/, "$1\n  projects TEXT NOT NULL DEFAULT ''  -- 所屬專案（逗號分隔，至少一個）\n);"); // 009 拿掉的舊欄位補回來
 assert.notEqual(OLD, SCHEMA, '測試用的舊結構真的少了叫醒欄位');
