@@ -4,6 +4,7 @@
 // 3. 任免工作區管理員：該工作區所有工作區管理員收到通知，包括被降級的人；操作者本人不收
 // 4. 通知寫明誰（操作者）、對誰（對象）、做了什麼（kind）、什麼時候（createdAt）
 // 5. 沒有真的改到東西（已經是管理員、已經停用）不通知；一般成員收不到這些通知
+// 6. 把工作區管理員移出工作區也是解除工作區管理員：要再驗證身分、通知其他工作區管理員、稽核紀錄記降級與移出；移出一般成員不用再驗證、不通知
 // 收件人一律從帳號提醒的讀取端點（GET /api/me/notices）看；只看 admin_ 開頭的（帳號密碼登入另外會留 password_login）
 // SQLite 與 Postgres（設了 AIGILE_TEST_PG_URL）都跑。用法：node scripts/admin-notify-test.js
 import './test-home.mjs'; // 不寫到真的家目錄
@@ -111,6 +112,23 @@ try {
     '3 降工作區管理員：其他工作區管理員收到，操作者不收');
   ok(await setWs(boss.token, id('chen'), 'admin'), '已經是工作區管理員再升一次');
   assert.deepEqual(await inbox(everyone), { 王小美: [], 林志明: [], 趙敏: [], 劉備: [], 陳昭宇: [] }, '5 沒變就不通知');
+
+  // ---------- 6 把工作區管理員移出工作區＝也解除了他的工作區管理員 ----------
+  // 要再驗證身分（跟降級一樣）；其他工作區管理員收到降級通知；稽核紀錄有 workspace_admin.revoke 與 member.remove。移出一般成員不用再驗證
+  // 修正前：不用再驗證、沒有通知、稽核紀錄只有 member.remove
+  ok(await setWs(boss.token, id('liu'), 'admin'), '王小美把劉備升為工作區管理員');
+  await inbox(everyone);
+  const removeWs = tok => call(tok, `/api/participants/${id('chen')}/remove`, 'POST');
+  assert.equal((await removeWs(wangJ.token)).body?.error?.code, 'DEVICE_REQUIRED', '6 移出工作區管理員：登入碼沒有裝置，不行');
+  const stale = (await call(null, '/api/auth/password', 'POST', { username: boss.username, password: boss.password })).body.token;
+  assert.equal((await removeWs(stale)).body?.error?.code, 'REAUTH_REQUIRED', '6 移出工作區管理員：沒再驗證的裝置不行');
+  ok(await removeWs(boss.token), '王小美（剛再驗證）把陳昭宇移出工作區');
+  const stay = [P.wang, P.lin, P.zhao, P.liu];
+  assert.deepEqual(await inbox(stay), { 王小美: [], 林志明: [], 趙敏: [], 劉備: ['admin_workspace_revoke'] }, '6 其他工作區管理員收到降級通知，操作者不收');
+  const audit = (await call(boss.token, '/api/audit-log?limit=2')).body.items.filter(e => e.target?.id === id('chen')).map(e => [e.action, e.actor.name]);
+  assert.deepEqual(audit.sort(), [['member.remove', '王小美'], ['workspace_admin.revoke', '王小美']], '6 稽核紀錄有降級與移出：' + JSON.stringify(audit));
+  ok(await call(wangJ.token, `/api/participants/${QIAN}/remove`, 'POST'), '6 移出一般成員不用再驗證（登入碼也行）');
+  assert.deepEqual(await inbox(stay), { 王小美: [], 林志明: [], 趙敏: [], 劉備: [] }, '6 移出一般成員不通知');
 
   console.log('admin-notify-test：全部通過（任免平台管理員、停用與恢復帳號通知所有平台管理員；任免工作區管理員通知工作區管理員；包含被降級的人、不含操作者；寫明誰對誰、什麼時候；沒改到不通知）');
 } catch (err) {

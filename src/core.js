@@ -3295,9 +3295,11 @@ ${ending}`;
     if (t.id === me.id) throw new ApiError(400, 'SELF', '不能把自己移出工作區。');
     if (t.workspace_status === 'removed') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyRemoved: true };
     await access.check(ctx, me, 'remove_member', { target: t }); // 不能動上層管理權：移出平台管理員要是平台管理員
+    if (isWorkspaceAdmin(t)) await access.check(ctx, me, 'assign_workspace_admin', 'workspace', { what: '移出工作區管理員' }); // 也是解除工作區管理員：要再驗證身分
     return removeFromWorkspace(ctx, me, t);
   });
   // 移出工作區（工作區管理員移出別人、自己離開都走這裡）：t 是資料庫裡最新的那列
+  // t 是工作區管理員時也是解除工作區管理員：另記 workspace_admin.revoke、通知其他工作區管理員（跟降級一樣），跟移出同一批
   async function removeFromWorkspace(ctx, me, t) {
     await assertNotLastAdmin(ctx, t);
     const at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
@@ -3313,6 +3315,8 @@ ${ending}`;
         [await tokenKey(newToken()), at, a.id, t.id]])),
       ["DELETE FROM join_requests WHERE participant_id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')", [t.id, t.id]], // 還在審核的加入申請一併清掉
       auditLog.stmt({ actor: me, action: t.id === me.id ? AUDIT_ACTION.MEMBER_LEAVE : AUDIT_ACTION.MEMBER_REMOVE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t), detail: { revokedAiTokens: ais.length } }),
+      ...(isWorkspaceAdmin(t) ? [auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_ADMIN_REVOKE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t) }),
+        ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, include: [t.id], kind: ADMIN_NOTICE.WORKSPACE_REVOKE, detail: { a: me.name, t: t.name } })] : []),
     ]);
     invalidatePeople();
     const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
