@@ -1,7 +1,8 @@
 // 刪除與復原單則訊息（詞彙見 GLOSSARY「協作訊息」「刪除與稽核」；決策見 docs/adr/0003）
 // A. 人類作者可以刪自己的訊息；工作區管理員（含平台管理員的隱含權）可以刪任何人的，包括平台管理員與 AI 發的（不受「不能動上層管理員」限制）
 // B. 專案管理員、專案成員不能刪別人的；唯讀成員不能刪任何訊息（包括自己以前發的）；AI 一律不能刪（包括自己發的）
-// C. 刪除後在單則、列表、前後文、卡片關聯都是佔位：text＝「（此訊息已刪除）」、deleted: true，人類看得到刪除者與時間；附件不露出
+// C. 刪除後在單則、列表、前後文、卡片關聯都是佔位：text＝「（此訊息已刪除）」、deleted: true，人類看得到刪除者與時間；
+//    附件形狀不變（file、多個檔的 files 照舊在），但 available: false、拿不到內容
 // D. 給 AI 的 API 與 MCP（讀單則、歷史、收件匣）形狀不變，只多 deleted；任何 AI 都拿不到原文（管理員名下的 AI 也一樣）
 // E. 搜尋找不到被刪的訊息；團隊狀態也不露出原文
 // F. 被刪訊息的待處理通知自動確認；復原時不重發
@@ -122,6 +123,10 @@ try {
   const cur0 = (await call(wangAi.token, '/api/messages?limit=1')).body.nextCursor; // 收件匣從這裡往後讀
   const secret = await post(chen.token, '秘密字串 ZQX 請看附件', { recipientIds: [zhao.id, wangAi.id], replyFrom: [zhao.id], fileIds: [fid], cardId: card.cardId });
   const reply = await post(lin.token, '收到', { replyToMessageId: secret.messageId });
+  const upload = async (name, n) => (await call(chen.token, `/api/files?${new URLSearchParams({ name, declared: 'true', project: PJ, post: 'false' })}`, 'POST', png(n), true)).body.file.fileId;
+  const multi = await post(chen.token, '兩個附件', { recipientIds: [wangAi.id], fileIds: [await upload('一.png', 8), await upload('二.png', 9)] });
+  const liveSecret = await read(chen.token, secret.messageId), liveMulti = await read(chen.token, multi.messageId), liveMultiAi = await read(wangAi.token, multi.messageId);
+  assert.equal(liveMulti.files?.length, 2, '多個附件有 files');
   assert.equal((await call(lin.token, `/api/files/${fid}`)).status, 200, 'H 刪除前下載得到');
   const pending = async who => (await call(who.token, '/api/notifications?status=pending')).body.items.filter(n => n.messageId === secret.messageId).length;
   assert.equal(await pending(zhao), 1, 'F 趙專案有一則待處理通知');
@@ -146,7 +151,14 @@ try {
   x = await read(chen.token, secret.messageId);
   assert.deepEqual([x.text, x.deleted, x.deletedBy.participantId, x.deletedBy.name], [GONE, true, WANG, '王小美'], 'C 單則：' + JSON.stringify(x));
   assert.ok(x.purgeAt > x.deletedAt, 'C 帶預計永久清除時間');
-  assert.deepEqual(x.file, { fileId: fid, available: false }, 'C 附件不露出名稱與內容');
+  assert.deepEqual(x.file, { ...liveSecret.file, available: false }, 'C 附件形狀不變、拿不到內容：' + JSON.stringify(x.file));
+  assert.equal((await del(chen.token, multi.messageId)).status, 200, '作者刪掉有兩個附件的訊息');
+  const xm = await read(chen.token, multi.messageId);
+  assert.deepEqual([xm.file, xm.files], [{ ...liveMulti.file, available: false }, liveMulti.files.map(f => ({ ...f, available: false }))], 'C 多個附件：file 與 files 照舊在、available: false：' + JSON.stringify([xm.file, xm.files]));
+  const multiAi = await read(wangAi.token, multi.messageId);
+  assert.deepEqual(Object.keys(multiAi).filter(k => !Object.keys(liveMultiAi).includes(k)), ['deleted'], 'D 給 AI 的形狀只多 deleted（含 files）：' + JSON.stringify(Object.keys(multiAi)));
+  assert.deepEqual(Object.keys(liveMultiAi).filter(k => !Object.keys(multiAi).includes(k)), [], 'D 給 AI 的欄位一個都沒少');
+  assert.ok(multiAi.files.every(f => f.available === false), 'D AI 看到的附件都拿不到內容');
   assert.deepEqual([x.recipients.map(p => p.participantId).sort(), x.author.participantId], [[zhao.id, wangAi.id].sort(), chen.id], 'C 收件人、作者照舊');
   const list = (await call(chen.token, `/api/messages?project=${encodeURIComponent(PJ)}&limit=50`)).body.items;
   const inList = list.find(m => m.messageId === secret.messageId);
@@ -167,7 +179,7 @@ try {
   x = await read(wangAi.token, secret.messageId);
   assert.deepEqual([x.text, x.deleted], [GONE, true], 'D AI 讀單則是佔位');
   assert.deepEqual(Object.keys(x).filter(k => !before.includes(k)), ['deleted'], 'D 給 AI 的形狀只多 deleted：' + JSON.stringify(Object.keys(x)));
-  const leaks = s => /ZQX|密碼截圖/.test(JSON.stringify(s));
+  const leaks = s => /ZQX/.test(JSON.stringify(s));
   const mRead = await tool(wangAi.token, 'aigile_read', { messageId: secret.messageId, context: true });
   assert.deepEqual([mRead.message.text, mRead.message.deleted], [GONE, true], 'D MCP aigile_read 是佔位');
   assert.ok(!leaks(mRead), 'D MCP aigile_read（含前後文）沒有原文：' + JSON.stringify(mRead));
@@ -182,6 +194,8 @@ try {
   const inInbox = inbox.messages.find(m => m.messageId === secret.messageId);
   assert.equal(inInbox?.deleted, true, 'D MCP aigile_inbox 帶 deleted：' + JSON.stringify(inbox));
   assert.ok(!leaks(inbox), 'D MCP aigile_inbox 沒有原文');
+  const mMulti = inbox.messages.find(m => m.messageId === multi.messageId);
+  assert.deepEqual([mMulti?.file, mMulti?.files], [{ fileId: liveMulti.files[0].fileId, name: '一.png', available: false }, liveMulti.files.map(f => ({ fileId: f.fileId, name: f.name, available: false }))], 'D MCP 精簡格式的附件形狀不變、available: false：' + JSON.stringify(mMulti));
   assert.ok(!(await teamHas()), 'E 團隊狀態不露出被刪訊息的標題');
   const done = (await call(wangAi.token, '/api/notifications?status=confirmed&limit=50')).body.items.find(n => n.messageId === secret.messageId);
   assert.equal(done?.preview, GONE, 'F 已確認的通知還在，預覽是佔位：' + JSON.stringify(done));
@@ -241,7 +255,7 @@ try {
   const one = dels.find(e => e.target?.id === secret.messageId);
   assert.deepEqual([one?.actor.id, one?.scope.kind, one?.scope.projectId, one?.target.kind, one?.target.name, one?.detail?.authorId], [WANG, 'project', PJ, 'message', '陳大文', chen.id], 'K 刪除紀錄操作者、專案、對象與作者：' + JSON.stringify(one));
   assert.equal(dels.find(e => e.target?.id === cross.messageId)?.scope.kind, 'workspace', 'K 跨專案頻道的訊息記在工作區層');
-  assert.equal(dels.length, 11, 'K 每次刪除一筆（被擋下的不記）：' + dels.length);
+  assert.equal(dels.length, 12, 'K 每次刪除一筆（被擋下的不記）：' + dels.length);
   assert.deepEqual(ress.map(e => [e.actor.id, e.target.id]).sort(), [[chen.id, m1.messageId], [lin.id, secret.messageId]].sort(), 'K 復原紀錄');
   assert.ok(!/ZQX|hunter2|七天的/.test(JSON.stringify([dels, ress])), 'K 稽核紀錄不含原文');
   assert.equal((await call(lin.token, '/api/me/notices')).body.items?.filter(n => /message/.test(n.kind)).length ?? 0, 0, 'K 不發帳號提醒');

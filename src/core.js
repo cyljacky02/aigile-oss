@@ -517,17 +517,19 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const resRows = waitIds.length ? await db.all('SELECT message_id, resolved_by, resolved_at FROM decision_resolutions WHERE message_id IN (SELECT value FROM json_each(?))', JSON.stringify(waitIds)) : [];
     const resBy = new Map(resRows.map(r => [r.message_id, r]));
     const people = await peopleMap(ctx, [...rows.map(m => m.author_id), ...recRows.map(r => r.participant_id), ...resRows.map(r => r.resolved_by), ...rows.map(m => m.deleted_by).filter(Boolean)]);
-    const fileIds = rows.filter(m => !m.deleted_at).map(m => m.file_id).filter(Boolean); // 被刪的訊息不露出附件
+    const fileIds = rows.map(m => m.file_id).filter(Boolean);
     const fileRows = fileIds.length
       ? await db.all('SELECT * FROM files WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(fileIds)) : [];
     const filesById = new Map(fileRows.map(x => [x.id, x]));
     // 一則訊息可掛多個檔（files.message_id）；file＝第一個（舊版照讀），files＝全部、照上傳順序
-    const withFile = rows.filter(m => m.file_id && !m.deleted_at).map(m => m.id);
+    const withFile = rows.filter(m => m.file_id).map(m => m.id);
     const moreRows = withFile.length
       ? await db.all('SELECT * FROM files WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, rowid', JSON.stringify(withFile)) : [];
     const filesByMsg = new Map();
     for (const x of moreRows) { if (!filesByMsg.has(x.message_id)) filesByMsg.set(x.message_id, []); filesByMsg.get(x.message_id).push(x); }
-    const filesOf = m => filesByMsg.get(m.id).map(x => fileView(x));
+    // 被刪的訊息：附件形狀不變（file、files 照舊），但 available: false、下載回 MESSAGE_DELETED
+    const gone = (m, v) => (m.deleted_at ? { ...v, available: false } : v);
+    const filesOf = m => filesByMsg.get(m.id).map(x => gone(m, fileView(x)));
     const byMsg = new Map();
     for (const r of recRows) {
       if (!byMsg.has(r.message_id)) byMsg.set(r.message_id, []);
@@ -545,7 +547,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       replyFrom: ask ? [...ask] : null, // null＝沒標（舊訊息、多人沒指定）
       replyToMessageId: m.reply_to,
       project: m.project || null,
-      file: m.file_id ? fileView(filesById.get(m.file_id), m.file_id) : null,
+      file: m.file_id ? gone(m, fileView(filesById.get(m.file_id), m.file_id)) : null,
       ...(filesByMsg.get(m.id)?.length > 1 ? { files: filesOf(m) } : {}), // 只有多個檔才帶（單檔跟 file 一樣，不重複佔 AI 的上下文）
       createdAt: m.created_at,
       ...(AUTO_MSG_RE.test(m.request_id || '') ? { auto: true } : {}), // 平台自動組的通知（卡片異動、退回、交接…）：網頁英文介面照固定句型翻，內容不動
@@ -553,11 +555,11 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
       ...(m.deleted_at ? deletedView(ctx, m, people) : {}),
     }; });
   }
-  // 被刪除的訊息：留佔位（回覆串、卡片關聯、決策結果的參照不斷），text 換成固定文字、多 deleted: true，附件只留 fileId（available: false）。
+  // 被刪除的訊息：留佔位（回覆串、卡片關聯、決策結果的參照不斷），text 換成固定文字、多 deleted: true，附件形狀不變但 available: false（serializeMessages）。
   // 人類另外看得到刪除者、時間、預計永久清除時間（畫面的「此訊息已被 X 於 T 刪除」）；給 AI 的形狀不變，只多 deleted
   const DELETED_TEXT = '（此訊息已刪除）';
   function deletedView(ctx, m, people) {
-    const out = { text: DELETED_TEXT, deleted: true, ...(m.file_id ? { file: fileView(undefined, m.file_id) } : {}) };
+    const out = { text: DELETED_TEXT, deleted: true };
     if (ctx.viewerKind === 'ai') return out;
     const p = people.get(m.deleted_by);
     return { ...out, deletedBy: { participantId: m.deleted_by, name: p ? p.name : '?' }, deletedAt: m.deleted_at, purgeAt: m.purge_at || null, ...(m.purged_at ? { purged: true } : {}) };
