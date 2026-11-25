@@ -2867,7 +2867,7 @@ ${ending}`;
     ]);
     invalidatePeople();
     await loadProjects(true);
-    const purged = days === 0 ? await purgeProject({ ...row, deleted_at: at, purge_at: purgeAt, paused_ais: JSON.stringify(paused.map(p => p.id)) }, { actor: me }) : null;
+    const purged = days === 0 ? await purgeProject({ ...row, deleted_at: at, purge_at: purgeAt, paused_ais: JSON.stringify(paused.map(p => p.id)) }) : null;
     return projectsSeenBy(ctx, me, { deleted: { projectId: id, name: row.name, code, counts, recoveryDays: days, purgeAt: iso(purgeAt), aisPaused: paused.map(p => p.name), purged: !!purged } });
   });
   // 已刪除的專案（可復原期內）：預計永久清除時間早的在前
@@ -2911,8 +2911,8 @@ ${ending}`;
   // 只屬於這個專案的 AI（AI 至少要一個專案）此時才刪除：跟「刪除 AI」一樣，狀態改 deleted、Token 失效
   // 可復原期內被加進別的專案、不再只屬於它的暫停 AI：不刪，恢復啟用
   // 跨專案頻道（project=all）的訊息不動。D1：每張表一句（沒有索引的表只掃一次），不逐筆刪
-  // actor：操作者（null＝系統）。稽核紀錄的 project.purge 記名稱快照與數量（專案事件會跟著刪掉）
-  async function purgeProject(row, { actor = null } = {}) {
+  // 稽核紀錄的 project.purge 記名稱快照與數量（專案事件會跟著刪掉）；永久清除的操作者一律是系統（可復原期 0 天的刪除也是，刪除那筆才記操作的人）
+  async function purgeProject(row) {
     const id = row.id, at = nowIso(), code = projCodes[id] || null;
     invalidatePeople(); // 用最新的成員資料算「只屬於這個專案的 AI」
     const people = [...(await peopleMap({})).values()].filter(p => p.kind !== 'system');
@@ -2981,7 +2981,7 @@ ${ending}`;
       settings.push(['UPDATE invites SET projects = ? WHERE id = ?', [String(inv.projects).split(',').filter(x => x && x !== id).join(','), inv.id]]);
     settings.push(['DELETE FROM projects WHERE id = ?', [id]]);
     const pj = { id, name: row.name }, aisDeleted = onlyHere.map(p => p.name);
-    await writeStmts([...settings, auditLog.stmt({ actor, action: AUDIT_ACTION.PROJECT_PURGE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
+    await writeStmts([...settings, auditLog.stmt({ actor: null, action: AUDIT_ACTION.PROJECT_PURGE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
       detail: { code, counts, aisDeleted } })]);
     titlesAt = 0;
     invalidatePeople(); invalidateProjects();
@@ -3463,7 +3463,7 @@ ${ending}`;
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_DELETE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, days, purgeAt: purgeIso }, at }),
     ]);
     messagesChanged();
-    if (days === 0) await purgeMessages([m.id], { actor: me });
+    if (days === 0) await purgeMessages([m.id]);
     await liveMessageChange(ctx, m, 'message_deleted').catch(() => {});
     return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
   });
@@ -3484,16 +3484,16 @@ ${ending}`;
   });
   // 永久清除訊息（ids 中已刪除、還沒清除的）：清掉內文，附件本體與附件列刪掉（檔案稽核記 purge）；
   // 佔位要的欄位（id、作者、時間、刪除者）留著，回應、卡片關聯、決策結果、收件人、request_id（重送不會變新訊息）不動
-  // actor：操作者（null＝系統，到期清除）。回清除了幾則。可復原期 0 天的刪除、到期清除、清空專案訊息都走這裡
+  // 操作者一律是系統（可復原期 0 天的刪除、清空也是；刪除、清空那筆才記操作的人）。回清除了幾則。可復原期 0 天的刪除、到期清除、清空專案訊息都走這裡
   // 一次最多 MESSAGE_PURGE_BATCH 則一批（資料與稽核紀錄同一批寫入）；稽核紀錄每批、每個專案一筆 message.purge（count＝幾則，detail 只有 id 與附件數，不存原文）
   const MESSAGE_PURGE_BATCH = Math.max(1, Number(config.purgeBatch) || 200); // 測試可調小
-  async function purgeMessages(ids, { actor = null } = {}) {
+  async function purgeMessages(ids) {
     let total = 0;
-    for (let i = 0; i < ids.length; i += MESSAGE_PURGE_BATCH) total += await purgeMessageBatch(ids.slice(i, i + MESSAGE_PURGE_BATCH), actor);
+    for (let i = 0; i < ids.length; i += MESSAGE_PURGE_BATCH) total += await purgeMessageBatch(ids.slice(i, i + MESSAGE_PURGE_BATCH));
     if (total) messagesChanged();
     return total;
   }
-  async function purgeMessageBatch(ids, actor) {
+  async function purgeMessageBatch(ids) {
     const rows = await db.all('SELECT id, project, file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL', JSON.stringify(ids));
     if (!rows.length) return 0;
     const mids = JSON.stringify(rows.map(m => m.id)), at = nowIso();
@@ -3511,11 +3511,11 @@ ${ending}`;
     await writeStmts([
       [`INSERT INTO file_audit (id, file_id, action, actor_id, actor_kind, at, name, size, sha256, declared, detail)
         SELECT ? || id, id, 'purge', ?, ?, ?, name, size, sha256, declared, 'MESSAGE_PURGED' FROM files WHERE id IN (SELECT value FROM json_each(?))`,
-        [randId('aud') + '_', actor?.id ?? 'system', actor?.kind ?? 'system', at, fids]],
+        [randId('aud') + '_', 'system', 'system', at, fids]],
       ['DELETE FROM file_chunks WHERE file_id IN (SELECT value FROM json_each(?))', [fids]], // dbStorage 的本體（其他儲存上面已刪）
       ['DELETE FROM files WHERE id IN (SELECT value FROM json_each(?))', [fids]],
       ["UPDATE messages SET text = '', purged_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL", [at, mids]],
-      ...[...groups.values()].map(g => auditLog.stmt({ actor, action: AUDIT_ACTION.MESSAGE_PURGE, ...msgAuditScope(g.m), count: g.ids.length, detail: { messageIds: g.ids, files: g.files }, at })),
+      ...[...groups.values()].map(g => auditLog.stmt({ actor: null, action: AUDIT_ACTION.MESSAGE_PURGE, ...msgAuditScope(g.m), count: g.ids.length, detail: { messageIds: g.ids, files: g.files }, at })),
     ]);
     return rows.length;
   }
@@ -3564,7 +3564,7 @@ ${ending}`;
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_CLEAR, detail: { a: me.name, p: row.name } }),
     ]);
     messagesChanged();
-    if (days === 0) await purgeMessages((await db.all('SELECT id FROM messages WHERE clear_id = ?', clearId)).map(x => x.id), { actor: me });
+    if (days === 0) await purgeMessages((await db.all('SELECT id FROM messages WHERE clear_id = ?', clearId)).map(x => x.id));
     await liveProjectMessages(ctx, row.id, 'messages_cleared', { clearId }).catch(() => {});
     return { ok: true, clear: { clearId, projectId: row.id, name: row.name, messages: r.changes, files, recoveryDays: days, purgeAt: purgeIso, purged: days === 0 } };
   });

@@ -5,7 +5,7 @@
 // C. 永久清除後不能復原（作者、管理員都是 RECOVERY_EXPIRED）
 // D. 每次清除寫稽核紀錄 message.purge（排程的操作者是系統，附數量，不含原文）；附件寫進檔案稽核 purge
 // E. 每次處理有上限，沒處理完的下次繼續
-// F. 可復原期 0 天：刪除當下就永久清除（同樣清掉附件、寫稽核紀錄）
+// F. 可復原期 0 天：刪除當下就永久清除（同樣清掉附件、寫稽核紀錄）；刪除記操作的人，永久清除的操作者是系統
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres
 // 本機暫存資料庫，不連任何站。用法：node scripts/message-purge-test.js
 import './test-home.mjs'; // 不寫到真的家目錄
@@ -156,7 +156,10 @@ try {
   assert.ok(!(await inBackup('ZQ0')), 'F 內文當下消失');
   assert.equal(code(await restore(chen.token, now0.messageId)), '409 RECOVERY_EXPIRED', 'F 不能復原');
   const zero = (await purgeLogs()).find(l => l.detail?.messageIds?.includes(now0.messageId));
-  assert.deepEqual([zero?.count, zero?.actor.id], [1, chen.id], 'F 寫稽核紀錄（操作者是刪除的人）：' + JSON.stringify(zero));
+  assert.deepEqual([zero?.count, zero?.actor.id, zero?.actor.kind], [1, 'system', 'system'], 'F 寫稽核紀錄（永久清除的操作者是系統）：' + JSON.stringify(zero));
+  const zeroDel = (await call(boss.token, '/api/audit-log?action=message.delete&limit=200')).body.items.find(l => l.target?.id === now0.messageId);
+  assert.equal(zeroDel?.actor.id, chen.id, 'F 刪除的稽核紀錄是刪除的人：' + JSON.stringify(zeroDel));
+  assert.ok((await call(boss.token, '/api/files/audit')).body.items.filter(a => a.fileId === f0 && a.action === 'purge').every(a => a.actor.memberType === 'system'), 'F 檔案稽核的清除也是系統');
   assert.equal(await run(), 0, 'F 排程沒有剩下要清的');
   assert.equal((await call(boss.token, '/api/recovery-window', 'PUT', { days: null })).status, 200, '改回跟平台預設');
 

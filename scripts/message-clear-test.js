@@ -6,7 +6,7 @@
 // E. 每次清空是一筆有 id 的操作；工作區管理員看得到最近可復原的清空，可在可復原期內整批復原；
 //    清空前已被單獨刪除的不會被帶回來；清空後單獨復原的一則不再屬於那次清空；過了可復原期 RECOVERY_EXPIRED
 // F. 清空、整批復原都通知所有工作區管理員（不含操作者本人），寫稽核紀錄（附數量、不含原文）
-// G. 可復原期 0 天：清空當下就永久清除，不能整批復原
+// G. 可復原期 0 天：清空當下就永久清除，不能整批復原；清空記操作的人，永久清除的操作者是系統
 // H. 即時通道：一個專案推一則（messages_cleared／messages_restored）
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres
 // 本機暫存資料庫，不連任何站。用法：node scripts/message-clear-test.js
@@ -202,6 +202,10 @@ try {
   assert.deepEqual([zz.text, zz.deleted, zz.purged], [GONE, true, true], 'G 已永久清除，佔位留著');
   assert.equal((await read(chen.token, other.messageId)).purged, true, 'G 同專案的都清除');
   assert.equal(code(await restoreClear(lin.token, r.body.clear.clearId)), '409 RECOVERY_EXPIRED', 'G 0 天的清空不能復原');
+  const zl = async action => (await call(boss.token, `/api/audit-log?action=${action}&limit=200`)).body.items.filter(e => e.scope.projectId === PJ2);
+  assert.deepEqual((await zl('project_messages.clear')).filter(e => e.detail?.clearId === r.body.clear.clearId).map(e => e.actor.id), [lin.id], 'G 清空的稽核紀錄是操作的人');
+  const zp = (await zl('message.purge')).filter(e => e.detail?.messageIds?.includes(z.messageId));
+  assert.deepEqual(zp.map(e => [e.actor.id, e.actor.kind]), [['system', 'system']], 'G 永久清除的稽核紀錄是系統：' + JSON.stringify(zp));
 
   console.log('message-clear-test：全部通過');
 } finally {

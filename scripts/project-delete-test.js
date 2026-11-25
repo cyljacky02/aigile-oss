@@ -9,7 +9,7 @@
 // G. 刪除與復原通知其他工作區管理員（不含操作者）；刪除、復原、永久清除都寫稽核紀錄（專案名稱快照與數量；清除的操作者是系統）
 // H. 期滿由排程（runScheduled）永久清除：卡片與紀錄、訊息與通知、決策、上傳檔與文件（含本體）、技能、知識庫、加入申請、私訊、
 //    專案事件與設定；人和 AI 帳號留著，只屬於這個專案的 AI 此時才刪除；跨專案頻道與其他專案不動；清除後代碼與名稱可以再用
-// I. 可復原期為 0：刪除當下就永久清除
+// I. 可復原期為 0：刪除當下就永久清除（刪除記操作的人，永久清除的操作者是系統）
 // 修正前：刪除當下就清除，救不回來
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres。本機暫存資料庫，不連正式站。用法：node scripts/project-delete-test.js
 import './test-home.mjs'; // 不寫到真的家目錄
@@ -286,8 +286,8 @@ try {
   assert.equal(await n('SELECT COUNT(*) AS n FROM messages WHERE project = ?', p0), 0, 'I 訊息當下就清除了');
   assert.deepEqual((await deletedList()).body.items, [], 'I 不會出現在已刪除的清單');
   L = (await audit('project.purge')).filter(e => e.scope.projectId === p0);
-  assert.deepEqual([L.length, L[0]?.actor.name], [1, '林志明'], 'I 立即清除也寫稽核紀錄：' + JSON.stringify(L));
-  assert.equal((await audit('project.delete')).filter(e => e.scope.projectId === p0).length, 1, 'I 刪除也有紀錄');
+  assert.deepEqual([L.length, L[0]?.actor.kind, L[0]?.actor.name], [1, 'system', '系統'], 'I 立即清除也寫稽核紀錄（操作者是系統）：' + JSON.stringify(L));
+  assert.deepEqual((await audit('project.delete')).filter(e => e.scope.projectId === p0).map(e => e.actor.name), ['林志明'], 'I 刪除也有紀錄（操作的人）');
   r = await call(liu.token, '/api/projects', 'POST', { name: '馬上清除', code: 'NOW' });
   assert.ok(r.status < 300, 'I 代碼馬上可以再用：' + JSON.stringify(r.body).slice(0, 200));
   console.log('project-delete-test：全部通過');
