@@ -15,10 +15,14 @@ npm start      # http://localhost:3000，資料存在 ./data
 ## 測試
 
 ```bash
-npm test                 # 全部測試（約 4 分鐘），最後列出沒過的
+npm test                 # 全部測試，一次一支（約 14 分鐘），最後列出沒過的
+TEST_JOBS=8 npm test     # 同時跑 8 支（16 核心約 4 分鐘）
 npm test -- skill        # 只跑檔名含 skill 的測試
+npm test -- --jobs 8 kb  # 也可以用 --jobs，跟篩選一起用
 node scripts/<名稱>-test.js   # 單獨跑一支
 ```
+
+- 每支測試各有自己的暫存家目錄（外面設了 `AIGILE_HOME` 就在它底下各開一個子資料夾，跑完刪掉），`run-all-isolation-test` 會檢查；寫死埠號的舊測試輪流跑，機器忙就會失敗的測試留到最後單獨跑（清單與原因在 `scripts/run-all.js` 開頭的 `FIXED_PORT`、`SERIAL`）。新測試請用隨機埠、用 `until` 等畫面，不要靠固定的 `sleep`。
 
 - 測試會在暫存資料夾開獨立的本機伺服器，不會碰你的 `./data`。
 - 需要兩個專案的測試會設 `AIGILE_TEST_PROJECTS=1`，讓伺服器先建「預設專案」「第二專案」兩個固定代號的專案。
