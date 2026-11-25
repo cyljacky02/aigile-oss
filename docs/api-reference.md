@@ -251,7 +251,7 @@ B. 不接受，等全部完成
 
 ### 3.21 1.2 版：刪除、可復原期、稽核紀錄、再驗證
 - **稽核紀錄**（#27）：待補。
-- **管理員異動通知**（#28）：待補。
+- **管理員異動通知**（#28）：管理權有變動時寫進相關管理員的帳號提醒（`GET /api/me/notices`，沒有新端點）。`kind` 都以 `admin_` 開頭：任免平台管理員 `admin_platform_grant`／`admin_platform_revoke`、停用／恢復帳號 `admin_account_disable`／`admin_account_enable` 通知所有平台管理員；任免工作區管理員 `admin_workspace_grant`／`admin_workspace_revoke` 通知該工作區所有工作區管理員（只有平台管理員的隱含權限不算）。任免時被升降的人也收到（包括被降級、已經不是管理員的人）；操作者本人不收；停用中的帳號不收。沒有真的改到（已經是管理員、已經停用）或被競態檢查擋下（409）時不通知。`detail` 是 JSON 字串 `{"a": 操作者名字, "t": 對象名字, "p"?: 專案名字}`（名字是當時的快照，整串最多 200 字），時間看 `createdAt`。之後的清空專案訊息、刪除專案也走同一個通道（`admin_project_messages_clear`／`_restore`、`admin_project_delete`／`_restore`，通知工作區管理員）。沒有新的錯誤碼。
 - **再驗證身分**（#29）：敏感的管理操作在權限檢查通過後，還要**這台裝置的登入**在 10 分鐘內再驗證過（別台裝置不受影響）。目前是：任免平台管理員 `PUT /api/participants/:id/platform-role`、任免工作區管理員 `PUT /api/participants/:id/workspace-role`、停用帳號 `POST /api/participants/:id/disable`（恢復帳號、已停用清單不用）。再驗證 `POST /api/auth/reauth {password}`（人類、裝置登入）→ `{ ok, reauthUntil }`；輸錯 400 `WRONG_PASSWORD`，計入帳號密碼登入的失敗次數，連錯 5 次 429 `ACCOUNT_LOCKED`（15 分鐘，帳號密碼登入一起鎖）。錯誤碼：403 `REAUTH_REQUIRED`（這台裝置還沒再驗證或已超過 10 分鐘；網頁跳出輸入密碼的對話框、通過後自動重送）、403 `PASSWORD_REQUIRED`（帳號沒有密碼，只用配對碼或登入碼登入：先到個人設定設定帳號密碼）、403 `DEVICE_REQUIRED`（直接拿登入碼呼叫 API，沒有裝置可以再驗證：要用帳號密碼登入拿到裝置的登入）。權限不夠時照舊回權限錯誤（例如 403 `NOT_ADMIN`），不會先要求再驗證。
 - **可復原期設定**（#30）：待補。
 - **刪除與復原訊息**（#31）：待補。
