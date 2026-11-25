@@ -1,3 +1,11 @@
+import fs from 'node:fs';
+
+// 遷移測試共用：1.0.0～1.0.2 的 src/schema.sql 原檔（固定一份在 scripts/fixtures，不從現在的 schema.sql 拿掉新欄位回推，
+// 之後再加升級檔也不用改這裡）。那時附的升級檔只有 001：用它建表、標 001 已套，就是 1.0.x 的資料庫
+export const schema10 = () => fs.readFileSync(new URL('./fixtures/schema-1.0.sql', import.meta.url), 'utf8');
+// 001 之前的結構：1.0 的原檔拿掉 001 加的 is_admin
+export const schemaPre001 = () => schema10().replace(/\n\s*is_admin INTEGER[^\n]*/, '');
+
 // 遷移測試共用：把剛建好的最新資料庫改回「成員與權限」第一階段之前的樣子（docs/adr/0002）。
 // 舊結構：participants.is_admin（單一管理員）、participants.projects（逗號字串的專案歸屬），
 // app_settings 的 project_leaders／read_only／cross_roles 由各測試自己寫。沒有帳號、工作區、專案成員表，

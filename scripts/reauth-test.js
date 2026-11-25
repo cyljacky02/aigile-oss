@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert';
 import { createApp } from '../src/core.js';
+import { appCaller } from './test-call.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { scriptHashes } from './script-hashes.mjs';
@@ -27,10 +28,7 @@ let db;
 try {
   db = await openTestDb(path.join(dataDir, 'switch.db'));
   const app = createApp({ db, storage: dbStorage(db), docText: '', scriptHashes: scriptHashes(), config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', authFailLimit: '1000' } });
-  const call = async (token, p, method = 'GET', body) => {
-    const r = await app(new Request('http://localhost' + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
-    return { status: r.status, body: await r.json().catch(() => null) };
-  };
+  const call = appCaller(app);
   const code = r => `${r.status} ${r.body?.error?.code || ''}`;
   const login = async (username, password) => {
     const r = await call(null, '/api/auth/password', 'POST', { username, password });
@@ -79,7 +77,7 @@ try {
     assert.equal(code(res), '403 REAUTH_REQUIRED', 'A 沒再驗證：' + what);
     assert.match(res.body.error.message, /密碼/, 'A 說明要再輸入密碼：' + what);
   }
-  // 沒做成：李大華還不是管理員、陳小明沒被停用
+  // 被擋下的操作沒有生效：對象沒升為管理員、沒被停用
   let roster = (await call(dev1, '/api/participants')).body;
   const person = id => roster.items.find(p => p.participantId === id);
   assert.notEqual(person(lee.participant.participantId)?.workspaceRole, 'admin', 'A 被擋下的操作沒有生效');

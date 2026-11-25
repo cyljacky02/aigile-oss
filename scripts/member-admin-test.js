@@ -17,6 +17,7 @@ import { dbStorage } from '../src/storage-db.js';
 import { migrateNode } from '../src/migrations.js';
 import { hashOf } from './test-token.js';
 import { adminSession, reauth } from './test-admin.js';
+import { schemaPre001 } from './legacy-db.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-member-'));
 const db = openNodeDb(path.join(dataDir, 'switch.db'));
@@ -133,11 +134,7 @@ try {
 
   // 舊資料庫升級：001 把原本的管理員（最早加入的人類）標起來
   {
-    const OLD = fs.readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8').replace(/\n\s*is_admin INTEGER[^\n]*/, '').replace(/\n\s*wake_(day|count|at) [^\n]*/g, '').replace(/\n\s*reauth_at [^\n]*/, '').replace(/,\n\s*kb_status TEXT[\s\S]*?kb_card INTEGER[^\n]*/, '').replace(/\n\s*status_id INTEGER[^\n]*/, '').replace(/-- 專案看板狀態：[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS idx_project_statuses_name [^\n]*\n/, '')
-      .replace(/\n\s*(account_id|workspace_id|workspace_role|workspace_status|visibility) [^\n]*/g, '').replace(/-- 成員與權限（docs\/adr\/0002；migrations\/008）：[\s\S]*?CREATE INDEX IF NOT EXISTS idx_project_members_participant [^\n]*\n/, '')
-      .replace(/-- 稽核紀錄（docs\/adr\/0003；migrations\/010）[\s\S]*?idx_audit_log_actor [^\n]*\n/, '')
-      .replace(/\n[^\n]*migrations\/01[234][^\n]*/g, '')
-      .replace(/(\n  standby_at [^\n]*)\n\);/, "$1\n  projects TEXT NOT NULL DEFAULT ''\n);"); // 1.0 就有的專案歸屬欄位（009 才拿掉）補回來。之後的升級（002 叫醒次數、004／005 知識庫、007 看板狀態、008 成員與權限、010 稽核紀錄、011 再驗證身分、012 刪除訊息、013 刪除專案、014 刪除訊息政策）加的欄位也拿掉
+    const OLD = schemaPre001(); // 固定的 1.0 schema.sql 原檔、還沒有 001 加的 is_admin
     assert.ok(!OLD.includes('is_admin'), '1.0 的結構沒有 is_admin');
     const odb = new DatabaseSync(path.join(dataDir, 'old.db'));
     odb.exec(OLD);

@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert';
 import { createApp } from '../src/core.js';
+import { appCaller } from './test-call.js';
 import { openTestDb } from './test-db.js';
 import { dbStorage } from '../src/storage-db.js';
 import { scriptHashes } from './script-hashes.mjs';
@@ -27,12 +28,7 @@ async function site(name) {
   const db = await openTestDb(path.join(dataDir, name + '.db'));
   dbs.push(db);
   const app = createApp({ db, storage: dbStorage(db), docText: '', scriptHashes: scriptHashes(), config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', peopleCheckMs: '1' } });
-  const call = async (token, p, method = 'GET', body) => {
-    const r = await app(new Request('http://localhost' + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
-    const type = r.headers.get('content-type') || '';
-    return { status: r.status, body: type.includes('json') ? await r.json().catch(() => null) : null };
-  };
-  return { db, app, call };
+  return { db, app, call: appCaller(app) };
 }
 const ok = (r, what) => { assert.ok(r.status >= 200 && r.status < 300, `${what}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r.body; };
 
@@ -124,7 +120,7 @@ try {
   assert.ok(!(await log(lin.token, 'action=account.disable')).items.length, 'C 工作區管理員篩平台層動作也拿不到');
   assert.ok((await log(boss.token, 'scope=platform')).items.every(x => x.scope.kind === 'platform'), 'C scope=platform 只有平台層');
   assert.ok((await log(boss.token, 'scope=workspace')).items.every(x => x.scope.kind !== 'platform'), 'C scope=workspace 沒有平台層');
-  const sun = (await call(null, '/api/join', 'POST', { name: '孫一般', role: 'PG' })).body; // 陳大文停用過，舊的登入碼已作廢
+  const sun = (await call(null, '/api/join', 'POST', { name: '孫一般', role: 'PG' })).body; // 停用過的成員舊登入碼已作廢：另找一位一般成員
   assert.equal((await call(sun.token, '/api/audit-log')).status, 403, 'C 一般成員 403');
   assert.equal((await call(null, '/api/audit-log')).status, 401, 'C 沒登入 401');
   ok(await call(boss.token, `/api/participants/${CHEN}/projects`, 'PUT', { projects: [PJ] }), '陳大文加進預設專案');

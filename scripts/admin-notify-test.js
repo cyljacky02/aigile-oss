@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert';
 import { createApp } from '../src/core.js';
+import { appCaller } from './test-call.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
 import { adminSession } from './test-admin.js';
@@ -19,10 +20,7 @@ import { adminSession } from './test-admin.js';
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-adminnotify-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
 const app = createApp({ db, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' } });
-const call = async (token, p, method = 'GET', body) => {
-  const r = await app(new Request('http://localhost' + encodeURI(p), { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
-  return { status: r.status, body: await r.json().catch(() => ({})) };
-};
+const call = appCaller(app);
 const join = async (name, role) => (await call(null, '/api/join', 'POST', { name, role })).body;
 const setPlat = (tok, id, role) => call(tok, `/api/participants/${id}/platform-role`, 'PUT', { role });
 const setWs = (tok, id, role) => call(tok, `/api/participants/${id}/workspace-role`, 'PUT', { role });
@@ -50,7 +48,7 @@ try {
   const P = { wang: { ...wangJ, name: '王小美' }, lin: { ...lin, name: '林志明' }, zhao: { ...zhao, name: '趙敏' }, liu: { ...liu, name: '劉備' }, chen: { ...chen, name: '陳昭宇' } };
   const id = k => P[k].participant.participantId;
   const everyone = Object.values(P);
-  const boss = await adminSession(call, wangJ.token); // 王小美的管理端點都用裝置登入（之後要再驗證也能過）
+  const boss = await adminSession(call, wangJ.token); // 管理端點都用裝置登入、剛再驗證過的 Token
   await inbox(everyone); // 先清掉之前的
 
   // ---------- 1 任免平台管理員 ----------

@@ -18,23 +18,14 @@ import { migrateNode, listMigrations, versionOf, TRACK_SQL } from '../src/migrat
 import { d1Steps } from './migrate.js';
 import { startServer, sleep } from './browser-kit.js';
 import { scriptHashes } from './script-hashes.mjs';
+import { schema10 } from './legacy-db.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const MIG_DIR = path.join(ROOT, 'migrations');
 const SCHEMA = fs.readFileSync(path.join(ROOT, 'src/schema.sql'), 'utf8');
-// 1.0.x 的結構＝現在的 schema.sql 去掉 002 加的三欄（有 git 與版本標籤時，再對一次 v1.0.0、v1.0.2 的原檔）
-const OLD = SCHEMA.split('\n').filter(l => !/^\s+wake_(day|count|at) /.test(l) && !/^CREATE INDEX IF NOT EXISTS idx_files_message /.test(l)).join('\n') // 003 加的索引也去掉
-  .replace(/,\n\s*kb_status TEXT[\s\S]*?kb_card INTEGER[^\n]*(\n\s+in_kb [^\n]*)?/, '').replace(/-- 知識庫底層：[\s\S]*?CREATE INDEX IF NOT EXISTS idx_kb_pages [^\n]*\n/, '') // 004、005、006 知識庫加的欄位與表也去掉
-  .replace(/\n\s*status_id INTEGER[^\n]*/, '').replace(/-- 專案看板狀態：[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS idx_project_statuses_name [^\n]*\n/, '') // 007 看板狀態加的欄位與表也去掉
-  .replace(/\n\s*(account_id|workspace_id|workspace_role|workspace_status|visibility) [^\n]*/g, '').replace(/-- 成員與權限（docs\/adr\/0002；migrations\/008）：[\s\S]*?CREATE INDEX IF NOT EXISTS idx_project_members_participant [^\n]*\n/, '') // 008 成員與權限加的欄位與表也去掉
-  .replace(/-- 稽核紀錄（docs\/adr\/0003；migrations\/010）[\s\S]*?idx_audit_log_actor [^\n]*\n/, '') // 010 稽核紀錄加的表也去掉
-  .replace(/\n\s*reauth_at [^\n]*/, '') // 011 再驗證身分加的欄位也去掉
-  .replace(/\n[^\n]*migrations\/012[^\n]*/g, '') // 012 刪除訊息加的欄位與索引也去掉
-  .replace(/\n[^\n]*migrations\/013[^\n]*/g, '') // 013 刪除專案加的欄位也去掉
-  .replace(/\n[^\n]*migrations\/014[^\n]*/g, '') // 014 工作區政策（誰可以刪除自己的訊息）加的欄位也去掉
-  .replace(/(\n  status TEXT NOT NULL DEFAULT 'active',[^\n]*)/, "$1\n  is_admin INTEGER NOT NULL DEFAULT 0,     -- 群組管理員（同時只有一位人類；可以交給別人）")
-  .replace(/(\n  standby_at [^\n]*)\n\);/, "$1\n  projects TEXT NOT NULL DEFAULT ''  -- 所屬專案（逗號分隔，至少一個）\n);"); // 009 拿掉的舊欄位補回來
-assert.notEqual(OLD, SCHEMA, '測試用的舊結構真的少了叫醒欄位');
+// 1.0.x 的結構＝固定的 1.0 schema.sql 原檔（scripts/legacy-db.js）；有 git 與版本標籤時，再對一次 v1.0.0、v1.0.2 的原檔
+const OLD = schema10();
+assert.ok(!/\bwake_count\b/.test(OLD) && SCHEMA.includes('wake_count'), '測試用的舊結構真的少了叫醒欄位');
 for (const tag of ['v1.0.0', 'v1.0.2']) {
   const g = spawnSync('git', ['show', `${tag}:src/schema.sql`], { cwd: ROOT, encoding: 'utf8' });
   if (g.status === 0) assert.equal(g.stdout.replace(/\r\n/g, '\n'), OLD.replace(/\r\n/g, '\n'), `舊結構跟 ${tag} 的 schema.sql 一樣`);

@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert';
 import { createApp } from '../src/core.js';
+import { appCaller } from './test-call.js';
 import { openTestDb } from './test-db.js';
 import { adminSession } from './test-admin.js';
 import { dbStorage } from '../src/storage-db.js';
@@ -26,12 +27,7 @@ const SETTINGS = '/api/workspace/settings';
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-delpol-'));
 const mkCall = db => {
   const app = createApp({ db, storage: dbStorage(db), docText: '', scriptHashes: scriptHashes(), config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0' } });
-  return async (token, p, method = 'GET', body) => {
-    const r = await app(new Request('http://localhost' + encodeURI(p), { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
-    const text = await r.text();
-    let json = null; try { json = JSON.parse(text); } catch { /* 不是 JSON */ }
-    return { status: r.status, body: json };
-  };
+  return appCaller(app);
 };
 const code = r => `${r.status} ${r.body?.error?.code || ''}`;
 
