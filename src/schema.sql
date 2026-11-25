@@ -149,6 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_notif_status_created ON notifications (status, cr
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages (reply_to);
 CREATE INDEX IF NOT EXISTS idx_messages_project_seq ON messages (project, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_purge ON messages (purge_at); -- migrations/012
+CREATE INDEX IF NOT EXISTS idx_messages_clear ON messages (clear_id); -- migrations/012 的欄位：清空專案訊息的清單與整批復原
 
 -- 「等你決定」清單：人類按「已處理」的紀錄
 CREATE TABLE IF NOT EXISTS decision_resolutions (

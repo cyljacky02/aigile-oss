@@ -37,10 +37,10 @@ try {
     return js("[...document.querySelectorAll('#av-menu [data-av]')].map(b => b.dataset.av + '=' + b.textContent.trim()).join('|')");
   };
 
-  // 1. 管理員：專案卡 ⚙ 五項
+  // 1. 管理員：專案卡 ⚙ 六項
   await login(liu.token, '/p/main/messages');
   await openGear();
-  assert.equal(await menuItems(), 'rename,repo,visibility,members,kbai', '管理員五項（封存只在專案管理頁；專案可見度；知識庫整理 AI）');
+  assert.equal(await menuItems(), 'rename,repo,visibility,members,kbai,clearmsgs', '管理員六項（封存只在專案管理頁；專案可見度；知識庫整理 AI；清空專案訊息）');
   assert.match(await text('#pset-menu .pset-head'), /預設專案 · 專案設定/);
   // 成員與本專案角色 → 成員管理、選好預設專案
   await click('#pset-menu [data-pset-act="members"]');

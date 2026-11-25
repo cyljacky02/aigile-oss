@@ -148,6 +148,10 @@ const ACTIONS = {
   restore_message: { human: true, rule: (v, me, s) => workspaceAdmin(v, me) || (me.kind === 'human' && s.message?.authorId === me.id && s.message?.deletedBy === me.id && !v.readOnlyAt(me, s.project)),
     deny: d => (d.s.message?.authorId !== d.me.id ? DENY.workspace({ ...d, what: '復原別人的訊息' })
       : d.s.message?.deletedBy !== d.me.id ? d.err(403, 'RESTORE_FORBIDDEN', '這則訊息是管理員刪的，只有工作區管理員能復原。') : d.readOnly()) },
+  // 清空專案訊息（一次刪除一個專案所有群組訊息）：只有工作區管理員；專案管理員不行
+  clear_project_messages: { admin: true, human: true, sensitive: true, rule: workspaceAdmin }, // 清空（敏感：要再驗證身分）
+  preview_messages_clear: { admin: true, human: true, rule: workspaceAdmin }, // 清空前的預覽：會刪掉幾則訊息、幾個附件（不用再驗證）
+  restore_project_messages: { admin: true, human: true, rule: workspaceAdmin }, // 可復原期內的清空清單、整批復原一次清空
 };
 export const ACCESS_ACTIONS = Object.freeze(Object.keys(ACTIONS));
 

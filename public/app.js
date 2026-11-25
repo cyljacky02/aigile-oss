@@ -1023,6 +1023,7 @@
   function liveEvent(kind, raw) {
     if (!kind || kind === 'hello' || kind === 'bye') return;
     if (kind === 'join') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} return onJoinDecided(x).catch(() => {}); }
+    if (kind === 'messages_cleared' || kind === 'messages_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return reloadProjMsgs(x.project); } // 整個專案的訊息被清空或整批復原
     if (kind === 'message_deleted' || kind === 'message_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return x.id ? reloadMsg(x.id).catch(() => {}) : undefined; } // 別人刪除或復原：重讀那一則
     liveConn.kinds.add(kind);
     clearTimeout(liveConn.timer);
@@ -7567,6 +7568,46 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       } catch (err) { body.querySelector('#vis-err').textContent = err.message; }
     });
   }
+  // 清空專案訊息（只有工作區管理員）：先看會刪掉幾則訊息、幾個附件，輸入專案名稱確認（再驗證身分由 api() 跳出）；
+  // 下面列這個專案可復原期內的清空，可以整批復原
+  async function openMsgClear(pj) {
+    const enc = encodeURIComponent(pj);
+    const [pv, cl] = await Promise.all([api(`/api/projects/${enc}/messages/clear-preview`), api(`/api/message-clears?project=${enc}`)]);
+    const c = pv.counts, now = !pv.recoveryDays;
+    const list = cl.items.length ? `<ul class="mc-list">${cl.items.map(x => `<li data-mc="${esc(x.clearId)}"><span>${esc(localYmdHm(x.clearedAt))} · <span data-nt>${esc(x.clearedBy?.name || '')}</span> 清空 ${x.messages} 則<span class="muted small"> · ${esc(localYmdHm(x.purgeAt))} 永久清除</span></span>
+        <button type="button" class="btn small" data-mc-restore="${esc(x.clearId)}">${L('復原', 'Restore')}</button></li>`).join('')}</ul>`
+      : '<p class="muted small">沒有可以復原的清空。</p>';
+    const body = openModal(`清空專案訊息 · ${pv.name}`, `<div class="stack mc-box">
+        <p>會刪除這個專案所有的群組訊息：訊息 ${c.messages} 則、附件 ${c.files} 個。卡片、卡片紀錄、決策結果、私訊與跨專案頻道的訊息都不受影響。</p>
+        <p class="muted small">${now ? '可復原期是 0 天：清空後立刻永久清除，救不回來。' : `清空後進入可復原期（${pv.recoveryDays} 天），在那之前可以在這裡整批復原。`}</p>
+        <div><button type="button" class="btn danger" data-mc-clear${c.messages ? '' : ' disabled'}>清空訊息…</button></div>
+        <h3 class="mc-h">可復原的清空</h3>${list}
+        <p class="error" id="mc-err" role="alert"></p>
+      </div>`, { size: 'narrow' });
+    body.addEventListener('click', async e => {
+      const clr = e.target.closest('[data-mc-clear]'), rs = e.target.closest('[data-mc-restore]');
+      if (!clr && !rs) return;
+      try {
+        if (clr) {
+          const ok = await confirmDialog({ title: `清空「${pv.name}」的訊息？`, confirmText: '清空', danger: true, expectText: pv.name,
+            message: `<p>會刪除訊息 ${c.messages} 則、附件 ${c.files} 個。</p><p>${now ? '可復原期是 0 天：清空後立刻永久清除，救不回來。' : `${esc(localYmdHm(pv.purgeAt))} 由系統永久清除；在那之前可以整批復原。`}</p>` });
+          if (!ok) return;
+          const d = await api(`/api/projects/${enc}/messages/clear`, { method: 'POST', body: { confirmName: pv.name } });
+          toast(d.clear?.purged ? `已清空並永久清除 ${d.clear.messages} 則訊息` : `已清空 ${d.clear?.messages || 0} 則訊息`);
+        } else {
+          const d = await api(`/api/message-clears/${encodeURIComponent(rs.dataset.mcRestore)}/restore`, { method: 'POST' });
+          toast(`已復原 ${d.restored.messages} 則訊息`);
+        }
+        reloadProjMsgs(pj);
+        await openMsgClear(pj);
+      } catch (err) { const el = body.querySelector('#mc-err'); if (el) el.textContent = err.message; }
+    });
+  }
+  // 整個專案的訊息被清空或整批復原：畫面上有這個專案的訊息就重讀訊息視窗（正在看前後文時不動）
+  function reloadProjMsgs(pj) {
+    if (state.ctx || !state.messages?.some(m => m.project === pj)) return;
+    loadWindow().catch(() => {});
+  }
 
   // 角色範本：常用的排前面，其餘收進「其他角色」群組（只是選單分組，角色定義不變；既有成員的角色照常顯示已選）
   const COMMON_ROLES = ['PO', 'SM', 'BA', 'UX', 'PG', 'QA', 'TRY', 'custom'];
@@ -9254,6 +9295,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (admin || lead) it.push(['rename', '✏️', '改名'], ['repo', '🔗', '程式庫與分支'], ['visibility', '👁', '專案可見度', esc(visName(projVisibility(pj)))]);
     it.push(['members', '👥', '成員與專案角色']);
     if (admin || lead) it.push(['kbai', '📚', '知識庫整理 AI', esc(kbAiNames[pj] || '')]); 
+    if (admin) it.push(['clearmsgs', '🧹', '清空專案訊息…']); // 只有工作區管理員
     return it;
   }
   function psetOpen(btn, open) {
@@ -9280,6 +9322,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (k === 'members') return openPermTab('members', { tab: 'members', memView: 'byProject', selProj: pj, mobileDetail: true, pq: '' });
       if (k === 'repo') return openRepoEditor(pj);
       if (k === 'visibility') return openVisibilityEditor(pj);
+      if (k === 'clearmsgs') return await openMsgClear(pj);
       if (k === 'rename') {
         const name = await promptName('改專案名稱', projName(pj));
         if (!name || name === projName(pj)) return;

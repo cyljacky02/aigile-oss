@@ -3698,6 +3698,27 @@ window.AIGILE_EN = {
     // #32 訊息永久清除
 
     // #33 清空專案訊息
+    "清空專案訊息…": "Clear project messages…",
+    "清空專案訊息 · {0}": "Clear project messages · {0}",
+    "會刪除這個專案所有的群組訊息：訊息 {0} 則、附件 {1} 個。卡片、卡片紀錄、決策結果、私訊與跨專案頻道的訊息都不受影響。": "This deletes all group messages in this project: {0} messages and {1} attachments. Cards, card history, decision results, DMs and cross-project channel messages are not affected.",
+    "可復原期是 0 天：清空後立刻永久清除，救不回來。": "The recovery window is 0 days: the messages are purged right away and can't be restored.",
+    "清空後進入可復原期（{0} 天），在那之前可以在這裡整批復原。": "Cleared messages enter a {0}-day recovery window; until then you can restore them all here.",
+    "清空訊息…": "Clear messages…",
+    "可復原的清空": "Clears you can restore",
+    "沒有可以復原的清空。": "No clears to restore.",
+    "清空 {0} 則": "cleared {0} messages",
+    "· {0} 永久清除": "· purged on {0}",
+    "清空「{0}」的訊息？": "Clear messages in \"{0}\"?",
+    "清空": "Clear",
+    "會刪除訊息 {0} 則、附件 {1} 個。": "This deletes {0} messages and {1} attachments.",
+    "{0} 由系統永久清除；在那之前可以整批復原。": "The system purges them on {0}; until then you can restore them all.",
+    "已清空並永久清除 {0} 則訊息": "Cleared and purged {0} messages",
+    "已清空 {0} 則訊息": "Cleared {0} messages",
+    "已復原 {0} 則訊息": "Restored {0} messages",
+    "找不到這次清空": "Clear not found",
+    "已經過了可復原期，這次清空不能復原": "The recovery window has passed, so this clear can't be restored",
+    "清空專案的訊息": "clear a project's messages",
+    "整批復原清空的訊息": "restore cleared messages",
 
     // #34 刪除專案進入可復原期
     "刪除…": "Delete…",

@@ -3467,6 +3467,89 @@ ${ending}`;
     if (r.changes) messagesChanged();
     return r.changes;
   }
+  // ---------- 清空專案訊息與整批復原（詞彙見 GLOSSARY「清空專案訊息」） ----------
+  // 範圍只有該專案的群組訊息（messages.project＝專案）與附件；卡片、卡片紀錄、決策結果、私訊（dms）、跨專案頻道（project 為空）都不動。
+  // 一次清空是一筆有 id 的操作：被清空的訊息跟單則刪除一樣（佔位、永久清除），另在 clear_id 記下這次操作（不另開表；清單從訊息列彙總）。
+  // 清空前已被單獨刪除的不併入（整批復原不會帶回）；清空後單獨復原的一則清掉 clear_id，不再屬於這次清空
+  const msgClearFiles = (where, ...a) => db.get(`SELECT COUNT(*) AS n FROM files WHERE deleted_at IS NULL AND (message_id IN (SELECT id FROM messages WHERE ${where}) OR id IN (SELECT file_id FROM messages WHERE ${where} AND file_id IS NOT NULL))`, ...a, ...a).then(r => Number(r?.n || 0));
+  async function clearableProject(ctx, me, id, action) {
+    await access.check(ctx, me, action, { project: id }, { what: '清空專案的訊息' });
+    await loadProjects(true);
+    const row = projectRows.find(r => r.id === id); // 可復原期內的專案當它不存在
+    if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    return row;
+  }
+  // 推給看得到這個專案新訊息的人（一個專案一則，不逐則推）；網頁重讀訊息
+  async function liveProjectMessages(ctx, project, type, data) {
+    const on = live ? live.connectedIds() : [];
+    if (!on.length) return;
+    const people = await peopleMap(ctx), m = { project, created_at: nowIso() }, see = [];
+    for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
+    live.toPeople(see, type, { project, ...data });
+  }
+  // 預覽：會刪掉幾則訊息、幾個附件（已刪除的不算）、照現在生效的可復原期算出的預計永久清除時間（不用再驗證）
+  route('GET', '/api/projects/:id/messages/clear-preview', async ({ ctx, me, params }) => {
+    const row = await clearableProject(ctx, me, params.id, 'preview_messages_clear');
+    const messages = Number((await db.get('SELECT COUNT(*) AS n FROM messages WHERE project = ? AND deleted_at IS NULL', row.id))?.n || 0);
+    const { days, purgeAt } = await purgeAtFor();
+    return { projectId: row.id, name: row.name, counts: { messages, files: await msgClearFiles('project = ? AND deleted_at IS NULL', row.id) }, recoveryDays: days, purgeAt: iso(purgeAt) };
+  });
+  // 清空：只有工作區管理員、要輸入專案名稱、要再驗證身分（敏感動作）。永久清除時間在清空當下決定，0 天＝當下就永久清除
+  // 待處理通知自動確認（復原時不重發）；通知其他工作區管理員、寫稽核紀錄（附數量、不存原文）。沒有訊息可清空＝什麼都不做
+  route('POST', '/api/projects/:id/messages/clear', async ({ ctx, me, req, params }) => {
+    const row = await clearableProject(ctx, me, params.id, 'clear_project_messages');
+    const body = await readJson(req);
+    if (String(body.confirmName ?? '').trim() !== row.name) throw invalid(`請輸入專案名稱「${row.name}」確認`);
+    const pj = { id: row.id, name: row.name }, clearId = randId('clr');
+    const now = Date.now(), at = new Date(now).toISOString(), { days, purgeAt } = await purgeAtFor(now), purgeIso = new Date(purgeAt).toISOString();
+    const r = await db.run('UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = ? WHERE project = ? AND deleted_at IS NULL', at, me.id, purgeIso, clearId, row.id);
+    if (!r.changes) return { ok: true, clear: { clearId: null, projectId: row.id, name: row.name, messages: 0, files: 0 } };
+    const files = await msgClearFiles('clear_id = ?', clearId);
+    await writeStmts([
+      ["UPDATE notifications SET status = 'acked', acked_at = COALESCE(acked_at, ?) WHERE message_id IN (SELECT id FROM messages WHERE clear_id = ?) AND status = 'pending'", [at, clearId]],
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_CLEAR, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, count: r.changes, at,
+        detail: { clearId, files, recoveryDays: days, purgeAt: purgeIso } }),
+      ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_CLEAR, detail: { a: me.name, p: row.name } }),
+    ]);
+    messagesChanged();
+    if (days === 0) await purgeMessages((await db.all('SELECT id FROM messages WHERE clear_id = ?', clearId)).map(x => x.id), { actor: me });
+    await liveProjectMessages(ctx, row.id, 'messages_cleared', { clearId }).catch(() => {});
+    return { ok: true, clear: { clearId, projectId: row.id, name: row.name, messages: r.changes, files, recoveryDays: days, purgeAt: purgeIso, purged: days === 0 } };
+  });
+  // 最近的清空（還在可復原期內、還有訊息可以帶回來的）：新的在前；project＝只看這個專案
+  route('GET', '/api/message-clears', async ({ ctx, me, url }) => {
+    onlyParams(url, ['project'], 'GET /api/message-clears');
+    await access.check(ctx, me, 'restore_project_messages', 'workspace', { what: '整批復原清空的訊息' });
+    await loadProjects(true);
+    const pj = url.searchParams.get('project');
+    const rows = await db.all(`SELECT clear_id, project, MIN(deleted_at) AS cleared_at, MIN(deleted_by) AS cleared_by, MIN(purge_at) AS purge_at, COUNT(*) AS n FROM messages
+      WHERE clear_id IS NOT NULL AND purged_at IS NULL AND purge_at > ?${pj ? ' AND project = ?' : ''} GROUP BY clear_id, project ORDER BY cleared_at DESC LIMIT 50`, nowIso(), ...(pj ? [pj] : []));
+    const vis = rows.filter(r => projectRows.some(x => x.id === r.project)); // 可復原期內的專案當它不存在
+    const people = await peopleMap(ctx, vis.map(r => r.cleared_by));
+    return { items: vis.map(r => ({ clearId: r.clear_id, projectId: r.project, name: nameOf(r.project), clearedAt: r.cleared_at,
+      clearedBy: { participantId: r.cleared_by, name: people.get(r.cleared_by)?.name ?? '?' }, purgeAt: r.purge_at, messages: Number(r.n) })) };
+  });
+  // 整批復原一次清空：只帶回還屬於這次清空的（clear_id）；可復原期過了不行。通知其他工作區管理員、寫稽核紀錄、通知不重發
+  route('POST', '/api/message-clears/:id/restore', async ({ ctx, me, params }) => {
+    await access.check(ctx, me, 'restore_project_messages', 'workspace', { what: '整批復原清空的訊息' });
+    await loadProjects(true);
+    const c = await db.get('SELECT project, MIN(purge_at) AS purge_at, COUNT(*) AS n, SUM(CASE WHEN purged_at IS NULL THEN 0 ELSE 1 END) AS purged FROM messages WHERE clear_id = ? GROUP BY project', params.id);
+    const row = c && projectRows.find(r => r.id === c.project);
+    if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這次清空');
+    const at = nowIso();
+    if (Number(c.purged) || c.purge_at <= at) throw new ApiError(409, 'RECOVERY_EXPIRED', '已經過了可復原期，這次清空不能復原');
+    const r = await db.run('UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE clear_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL', params.id);
+    if (!r.changes) throw new ApiError(404, 'NOT_FOUND', '找不到這次清空'); // 別人剛好先復原了
+    const pj = { id: row.id, name: row.name };
+    await writeStmts([
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_RESTORE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, count: r.changes, at,
+        detail: { clearId: params.id } }),
+      ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_RESTORE, detail: { a: me.name, p: row.name } }),
+    ]);
+    messagesChanged();
+    await liveProjectMessages(ctx, row.id, 'messages_restored', { clearId: params.id }).catch(() => {});
+    return { ok: true, restored: { clearId: params.id, projectId: row.id, name: row.name, messages: r.changes } };
+  });
   // cardId（選填）：訊息發出時一併關聯到該卡（待你處理的行內輸入、卡片內回覆用）；一張卡最多 50 則，滿了就略過關聯
   route('POST', '/api/messages', async ({ req, me, ctx }) => {
     const body = await readJson(req);
