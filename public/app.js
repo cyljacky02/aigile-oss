@@ -1367,11 +1367,14 @@
     </article>`;
   }
   // 「刪除」按鈕：''＝可以刪；文字＝按了說明為什麼不能刪；null＝不出現（別人的訊息）
-  // 作者刪自己的（唯讀成員不行）、工作區管理員刪任何人的；自己 AI 發的要找工作區管理員
+  // 作者刪自己的（唯讀成員不行；工作區政策設為只有管理員時也不行）、工作區管理員刪任何人的；自己 AI 發的要找工作區管理員
   function delWhy(m) {
     if (state.me?.memberType !== 'human' || m.deleted) return null;
     if (isAdmin()) return '';
-    if (isMine(m)) return meRO(m.project || 'cross') ? '你在這個專案是唯讀成員，不能刪除訊息（包括自己以前發的）。' : '';
+    if (isMine(m)) {
+      if (meRO(m.project || 'cross')) return '你在這個專案是唯讀成員，不能刪除訊息（包括自己以前發的）。';
+      return state.projMeta.canDeleteOwnMessages !== false ? '' : '工作區政策設為只有工作區管理員能刪除訊息，自己的也一樣：請找工作區管理員刪除。';
+    }
     const a = state.participants.get(m.author.participantId) || m.author;
     if (a.memberType === 'ai' && a.ownerParticipantId === meId()) return 'AI 不能刪除訊息，你也不能刪你的 AI 發的訊息：請找工作區管理員刪除。';
     return null;
@@ -1732,7 +1735,7 @@
   async function loadProjectList() {
     const d = await api('/api/projects');
     state.projectList = d.items;
-    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', leaders: d.projectAdmins || d.leaders || {}, archivedLeaders: d.archivedProjectAdmins || d.archivedLeaders || {}, readOnly: d.viewers || d.readOnly || {}, join: d.join || {}, canCreateProject: !!d.canCreateProject}; // join // 、
+    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', leaders: d.projectAdmins || d.leaders || {}, archivedLeaders: d.archivedProjectAdmins || d.archivedLeaders || {}, readOnly: d.viewers || d.readOnly || {}, join: d.join || {}, canCreateProject: !!d.canCreateProject, canDeleteOwnMessages: d.canDeleteOwnMessages !== false}; // join // 、
     document.querySelectorAll('[data-admin-only]').forEach(b => { b.hidden = !d.adminId || d.adminId !== state.me?.participantId; });
     if (typeof drawAvatarMenu === 'function') drawAvatarMenu();
     if (state.me) drawMe(); // 知道誰是管理員後重畫名片
@@ -9106,7 +9109,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <p class="muted small">會產生一次性的救援登入連結（15 分鐘內、只能用一次），只救平台管理員。平台管理員不只一位時要指定名字：<code>npm run admin-rescue -- --name 名字</code>（沒指定只列出名單、不產生連結）。本機或 Docker 版（node server.js）改用 <code>npm run admin-rescue -- --local</code>，有設 <code>DATABASE_URL</code> 就照同一組設定連 Postgres。</p></div></div>`;
   }
   // 稽核與儲存：全站稽核紀錄（只有管理員拿得到全站）＋儲存空間狀態；點進來才讀
-  const auditLabel = { upload: '上傳', download: '下載', delete: '刪除', reject: '拒絕', expire: '到期清除', rename: '改名', move: '搬移' };
+  const auditLabel = { upload: '上傳', download: '下載', delete: '刪除', reject: '拒絕', expire: '到期清除', purge: '隨訊息永久清除', rename: '改名', move: '搬移' };
   const auditTableHtml = items => (items.length ? `<div class="table-scroll"><table class="audit-table"><thead><tr><th>時間</th><th>動作</th><th>操作者</th><th>檔名</th><th>大小</th><th>SHA-256</th><th>聲明</th><th>備註</th></tr></thead><tbody>${
     items.map(x => `<tr><td>${fmtTime(x.at)}</td><td>${auditLabel[x.action] || x.action}</td>
       <td>${esc(x.actor.name || x.actor.participantId || '')}${x.actor.memberType === 'ai' ? L('（AI）', ' (AI)') : x.actor.memberType === 'human' ? L('（人類）', ' (human)') : ''}</td>
@@ -9168,9 +9171,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   }
   function alogDetail(e) {
     const d = e.detail || {}, out = [];
-    if (e.action === 'workspace_policy.update' && d.field === 'createProjects') {
-      const lab = v => (v === 'admins' ? '只有工作區管理員' : '所有成員');
-      out.push(L(`誰可以建立專案：${lab(d.from)} → ${lab(d.to)}`, `Who can create projects: ${d.from === 'admins' ? 'workspace admins only' : 'all members'} → ${d.to === 'admins' ? 'workspace admins only' : 'all members'}`));
+    if (e.action === 'workspace_policy.update' && (d.field === 'createProjects' || d.field === 'deleteOwnMessages')) {
+      const lab = v => (v === 'admins' ? '只有工作區管理員' : '所有成員'), en = v => (v === 'admins' ? 'workspace admins only' : 'all members');
+      out.push(d.field === 'createProjects' ? L(`誰可以建立專案：${lab(d.from)} → ${lab(d.to)}`, `Who can create projects: ${en(d.from)} → ${en(d.to)}`)
+        : L(`誰可以刪除自己的訊息：${lab(d.from)} → ${lab(d.to)}`, `Who can delete their own messages: ${en(d.from)} → ${en(d.to)}`));
     } else if (e.action === 'recovery_window.update') {
       const zh = v => (v == null ? '跟平台預設' : v === 0 ? '立即永久清除' : `${v} 天`), en = v => (v == null ? 'platform default' : v === 0 ? 'purge immediately' : `${v} days`);
       out.push(L(`可復原期：${zh(d.from)} → ${zh(d.to)}`, `Recovery window: ${en(d.from)} → ${en(d.to)}`));
@@ -9609,12 +9613,13 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     perm.gsLogOpen = !!$('.pm-gs-log')?.open;
     await loadGroupSettings();
   }
-  // 工作區設定＝工作區名稱＋誰可以建立專案＋可連線的 AI 工具＋怎麼加入（開放註冊、房間碼）＋工作區異動紀錄＋附件保存期限
+  // 工作區設定＝工作區名稱＋誰可以建立專案＋誰可以刪除自己的訊息＋可連線的 AI 工具＋怎麼加入（開放註冊、房間碼）＋工作區異動紀錄＋附件保存期限
   // （附件保存期限是工作區覆寫；平台預設在「平台設定」）
   function permGroupHtml() {
     return `<div class="pm-projs">
       <div class="pm-card pm-setrow pm-group-name"><label for="pm-group-name">工作區名稱</label><input id="pm-group-name" maxlength="30" value="${esc(BASE_TITLE)}" aria-describedby="pm-gn-hint"><button type="button" class="btn small primary" data-pp="groupname">儲存</button><span class="muted small" id="pm-gn-hint">顯示在登入頁、左上角、分頁標題與 AI 接入設定。</span></div>
       ${createProjectsHtml()}
+      ${deleteOwnHtml()}
       ${groupToolsHtml()}
       ${groupJoinHtml()}
       ${perm.gs && !perm.gs.error ? wsTtlHtml(perm.gsTtl) : ''}
@@ -9627,6 +9632,14 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-cp" value="${v}" data-pp="createprojects"${gs.createProjects === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
     return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
       <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+  }
+  // 工作區政策「誰可以刪除自己的訊息」：所有成員／只有工作區管理員（點了就存）。工作區管理員刪任何人的不受影響
+  function deleteOwnHtml() {
+    const gs = perm.gs;
+    if (!gs || gs.error || !gs.deleteOwnMessages) return '';
+    const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-do" value="${v}" data-pp="deleteown"${gs.deleteOwnMessages === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
+    return `<div class="pm-card pm-delete-own"><div class="pm-card-head"><strong id="pm-do-t">誰可以刪除自己的訊息</strong></div>
+      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-do-t">${opt('members', '所有成員', '作者可以刪自己的訊息，在可復原期內也能自己復原；唯讀成員與 AI 不行')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員刪除')}</div></div>`;
   }
   // 可連線的 AI 工具（全站一份）：取消勾選的只擋新接入，至少留一個開著；改的紀錄在「工作區異動紀錄」
   function groupToolsHtml() {
@@ -10506,6 +10519,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (a === 'createprojects') {
       if (pp.value === perm.gs?.createProjects) return;
       return saveGroupSettings({ createProjects: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能建立專案' : '已儲存：只有工作區管理員能建立專案');
+    }
+    if (a === 'deleteown') {
+      if (pp.value === perm.gs?.deleteOwnMessages) return;
+      return saveGroupSettings({ deleteOwnMessages: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能刪除自己的訊息' : '已儲存：只有工作區管理員能刪除訊息');
     }
     if (a === 'openjoin') { const on = pp.getAttribute('aria-checked') !== 'true'; return saveGroupSettings({ openJoin: on }, on ? '已開放自行註冊' : '已關閉自行註冊，只能用邀請連結加入'); }
     if (a === 'roomcode') {
