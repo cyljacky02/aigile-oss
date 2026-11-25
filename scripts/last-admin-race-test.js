@@ -15,6 +15,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb, TEST_PG_URL } from './test-db.js';
+import { adminSession } from './test-admin.js';
 import { testToken } from './test-token.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-lastadm-'));
@@ -59,6 +60,7 @@ try {
   const chen = await join('陳昭宇');
   const wang = await join('王小美');
   const Bo = boss.participant.participantId, Cn = chen.participant.participantId, Wg = wang.participant.participantId;
+  for (const p of [boss, chen, wang]) p.token = (await adminSession(call, p.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入
   ok(await setWs(boss.token, Cn, 'admin'), '陳昭宇升為工作區管理員');
   ok(await setPlat(boss.token, Wg, 'admin'), '王小美升為平台管理員');
   // 平台管理員：林志明、王小美；工作區管理員：林志明、陳昭宇
@@ -74,7 +76,7 @@ try {
     assert.equal(w.status, 'active', '王小美沒被停用');
     assert.equal((await call(wang.token, '/api/me')).status, 200, '王小美還進得來');
     ok(await enable(wang.token, Bo), '王小美恢復林志明的帳號');
-    boss.token = await testToken(db, Bo); // 停用時登入碼換掉了，恢復後用新的
+    boss.token = (await adminSession(call, await testToken(db, Bo))).token; // 停用時裝置登出、登入碼換掉了：恢復後重新用帳號密碼登入、再驗證
     console.log('✓ 兩位平台管理員互相停用：留一位');
   }
 

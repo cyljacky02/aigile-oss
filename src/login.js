@@ -17,6 +17,7 @@ const DEVICE_PREFIX = 'dv_';
 const LOCK_FAILS = 5;                  // 同一個帳號連錯 5 次
 const LOCK_MS = 15 * 60_000;           // 鎖 15 分鐘
 const NOTICE_MS = 30 * 86_400_000;     // 安全通知留 30 天
+const REAUTH_MS = 10 * 60_000;         // 再驗證身分後 10 分鐘內，這台裝置做敏感操作不必再輸入密碼
 const PWD_DEVICE = '帳號密碼登入';
 const RESCUE_DEVICE = '救援登入';
 
@@ -76,6 +77,9 @@ export function registerLogin(d) {
   const credView = c => (c ? { set: true, username: c.username, updatedAt: iso(c.updated_at) } : { set: false, username: null, updatedAt: null });
   const taken = () => new ApiError(409, 'USERNAME_TAKEN', '這個帳號已經有人用了，換一個。', { field: 'username' });
   const locked = until => new ApiError(429, 'ACCOUNT_LOCKED', '輸錯太多次，請 15 分鐘後再試。', { retryAfter: Math.ceil((until - Date.now()) / 1000) });
+  // 敏感操作的再驗證：帳號還沒有密碼、或直接拿登入碼呼叫（沒有裝置）
+  const passwordRequired = () => new ApiError(403, 'PASSWORD_REQUIRED', '這個操作要先輸入密碼確認身分，你還沒設定帳號密碼：請先到「個人設定 › 帳號與登入」設定帳號密碼。');
+  const deviceRequired = () => new ApiError(403, 'DEVICE_REQUIRED', '要在已登入的瀏覽器裡操作（用登入碼直接呼叫 API 不行）');
   // 錯誤帶 field（username／password／passwordAgain），網頁把訊息顯示在那一格下面
   const fieldErr = (field, msg) => new ApiError(400, 'INVALID_REQUEST', msg, { field });
   function readUsername(raw) {
@@ -194,7 +198,7 @@ export function registerLogin(d) {
   const FORGOT_MAX = 3, FORGOT_MS = 3600_000;
   route('POST', '/api/me/password/forgot', async ({ me, req }) => {
     requireHuman(me);
-    if (!me.deviceId) throw new ApiError(403, 'DEVICE_REQUIRED', '要在已登入的瀏覽器裡操作（用登入碼直接呼叫 API 不行）');
+    if (!me.deviceId) throw deviceRequired();
     const cur = await credOf(me.id);
     if (!cur) throw invalid('還沒設過帳號密碼，直接設定就好，不用目前密碼');
     const body = await readJson(req);
@@ -237,11 +241,11 @@ export function registerLogin(d) {
   }
   async function resolve(token) {
     if (!token.startsWith(DEVICE_PREFIX)) return { p: await byToken(token), dev: null };
-    const row = await db.get('SELECT p.*, d.id AS dv_id, d.revoked_at AS dv_revoked, d.expires_at AS dv_expires, d.last_used_at AS dv_last FROM devices d LEFT JOIN participants p ON p.id = d.participant_id WHERE d.token_hash = ?', await sha256(token));
+    const row = await db.get('SELECT p.*, d.id AS dv_id, d.revoked_at AS dv_revoked, d.expires_at AS dv_expires, d.last_used_at AS dv_last, d.reauth_at AS dv_reauth FROM devices d LEFT JOIN participants p ON p.id = d.participant_id WHERE d.token_hash = ?', await sha256(token));
     if (!row || row.dv_revoked) throw new ApiError(401, 'INVALID_TOKEN', '這台裝置已登出，請重新配對或用登入碼登入');
     if (row.dv_expires < Date.now()) throw new ApiError(401, 'TOKEN_EXPIRED', '這台裝置太久沒使用，登入已過期，請重新配對');
-    const { dv_id, dv_revoked, dv_expires, dv_last, ...p } = row;
-    return { p: p.id ? p : null, dev: { id: dv_id, last_used_at: dv_last } };
+    const { dv_id, dv_revoked, dv_expires, dv_last, dv_reauth, ...p } = row;
+    return { p: p.id ? p : null, dev: { id: dv_id, last_used_at: dv_last, reauth_at: Number(dv_reauth) || 0 } };
   }
   // 使用中自動展延；每 20 秒最多寫一次（回傳要執行的語句，讓呼叫端跟其他更新一起送）
   function touchStmt(dev, now = Date.now(), gap = 20_000) { // 間隔跟在線時間一致
@@ -471,6 +475,31 @@ export function registerLogin(d) {
       return { code, expiresAt: iso(now + PAIR_TTL_MS) };
     }
   });
+  // 再驗證身分：敏感的管理操作前在這台裝置再輸入一次密碼，10 分鐘內有效；記在這台裝置的登入上，別台裝置不受影響
+  // 沒有密碼的帳號要先設定；直接拿登入碼呼叫 API（沒有裝置）不行；輸錯計入帳號密碼登入的失敗次數與鎖定（鎖住時密碼對也不行）
+  route('POST', '/api/auth/reauth', async ({ me, req }) => {
+    requireHuman(me);
+    const cur = await credOf(me.id);
+    if (!cur) throw passwordRequired();
+    if (!me.deviceId) throw deviceRequired();
+    const body = await readJson(req);
+    const n = await reserveAttempt(cur.username);
+    if (!(await verifyPassword(String(body.password ?? ''), cur.pwd_hash))) {
+      await failAttempt(cur.username, n);
+      throw new ApiError(400, 'WRONG_PASSWORD', '密碼不對');
+    }
+    await clearFails(cur.username);
+    const now = Date.now();
+    await db.run('UPDATE devices SET reauth_at = ? WHERE id = ? AND participant_id = ? AND revoked_at IS NULL', now, me.deviceId, me.id);
+    return { ok: true, reauthUntil: iso(now + REAUTH_MS) };
+  });
+  // 敏感動作（權限模組呼叫）：這台裝置 10 分鐘內再驗證過就放行（不用查資料庫），不然丟錯說明下一步
+  async function requireFreshAuth(me) {
+    if (me.deviceId && me.reauthAt > Date.now() - REAUTH_MS) return;
+    if (!(await credOf(me.id))) throw passwordRequired();
+    if (!me.deviceId) throw deviceRequired();
+    throw new ApiError(403, 'REAUTH_REQUIRED', '這是敏感操作：請先再輸入一次密碼確認身分（10 分鐘內不必重複輸入）。');
+  }
   // 網頁登出：只登出這台
   route('POST', '/api/auth/logout', async ({ me }) => {
     if (me.deviceId) await db.run('UPDATE devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL', Date.now(), me.deviceId);
@@ -652,5 +681,5 @@ export function registerLogin(d) {
     return { token, participant: publicParticipant(p, await peopleMap(ctx)) };
   }, { open: true });
 
-  return { resolve, touch, touchStmt, methods: Object.keys(PROVIDERS), newCred, saveCred };
+  return { resolve, touch, touchStmt, methods: Object.keys(PROVIDERS), newCred, saveCred, requireFreshAuth };
 }

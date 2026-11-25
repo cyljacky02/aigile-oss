@@ -8,6 +8,7 @@
 // 名冊的權限規則在 roster-test.js 驗。需要 Chrome 或 Edge；找不到就略過。用法：node scripts/roster-ui-test.js
 import assert from 'node:assert';
 import { startKit, findBrowser, until } from './browser-kit.js';
+import { adminSession } from './test-admin.js';
 
 if (!findBrowser()) { console.log('roster-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('rosterui');
@@ -17,6 +18,7 @@ try {
   const boss = await join('林志明', 'PO'); // 平台管理員＋工作區管理員
   const chen = await join('陳昭宇', 'PG'), wang = await join('王小美', 'QA'), lin = await join('林小新', 'BA'), zhao = await join('趙前同事', 'UX');
   const Bo = boss.participant.participantId, Cn = chen.participant.participantId, Wg = wang.participant.participantId, Ln = lin.participant.participantId, Zo = zhao.participant.participantId;
+  boss.token = (await adminSession(call, boss.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入（網頁直接用這台裝置）
   for (const id of [Cn, Wg]) assert.equal((await call(boss.token, `/api/participants/${id}/projects`, 'PUT', { projects: ['預設專案'] })).status, 200);
   assert.equal((await call(boss.token, '/api/invites', 'POST', { name: '張新人', projects: [{ project: '預設專案', role: 'viewer' }] })).status, 201);
   assert.equal((await call(boss.token, `/api/participants/${Zo}/remove`, 'POST')).status, 200);

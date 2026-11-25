@@ -6,6 +6,7 @@
 // 本機暫存資料庫＋無頭 Chrome／Edge。用法：node scripts/platform-settings-ui-test.js
 import assert from 'node:assert';
 import { startKit, findBrowser, until } from './browser-kit.js';
+import { adminSession } from './test-admin.js';
 
 if (!findBrowser()) { console.log('platform-settings-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('platui');
@@ -14,6 +15,7 @@ try {
   const boss = (await call(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body; // 平台管理員＋工作區管理員
   const chen = (await call(null, '/api/join', 'POST', { name: '陳昭宇', role: 'PG' })).body;
   const wang = (await call(null, '/api/join', 'POST', { name: '王小美', role: 'QA' })).body;
+  boss.token = (await adminSession(call, boss.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入（網頁直接用這台裝置）
   assert.equal((await call(boss.token, `/api/participants/${chen.participant.participantId}/workspace-role`, 'PUT', { role: 'admin' })).status, 200);
   const { js, login, cdp } = await kit.browser(1280, 860);
   const size = (w, h) => cdp('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: w < 700 });

@@ -266,6 +266,7 @@ CREATE TABLE IF NOT EXISTS devices (
   created_at INTEGER NOT NULL,
   last_used_at INTEGER NOT NULL DEFAULT 0,
   expires_at INTEGER NOT NULL,             -- 使用中自動展延
+  reauth_at INTEGER,                       -- 最近一次在這台再驗證身分（敏感操作 10 分鐘內有效）
   revoked_at INTEGER                       -- 登出這台／重設登入
 );
 CREATE INDEX IF NOT EXISTS idx_devices_participant ON devices (participant_id);

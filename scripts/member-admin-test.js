@@ -16,6 +16,7 @@ import { openNodeDb } from '../src/db-node.js';
 import { dbStorage } from '../src/storage-db.js';
 import { migrateNode } from '../src/migrations.js';
 import { hashOf } from './test-token.js';
+import { adminSession, reauth } from './test-admin.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-member-'));
 const db = openNodeDb(path.join(dataDir, 'switch.db'));
@@ -60,7 +61,7 @@ try {
   assert.ok(code && code !== boss.token);
   assert.equal((await call(boss.token, '/api/me')).status, 401, '產生新的之後舊登入碼失效');
   assert.equal((await call(null, '/api/auth/code', 'POST', { code })).status, 200, '新登入碼可以登入網頁');
-  let bossTok = code;
+  let bossTok = (await adminSession(call, code, { password: 'longpassword1' })).token; // 停用帳號、任免管理員是敏感操作：用帳號密碼登入、剛再驗證過的裝置
   console.log('✓ 只存雜湊、原文只給一次');
 
   // ---------- 2. 舊資料（原文） ----------
@@ -120,6 +121,7 @@ try {
   assert.equal((await call(bossTok, `/api/participants/${B}/platform-role`, 'PUT', { role: 'none' })).status, 200, '再降自己');
   assert.equal((await call(bossTok, '/api/invites')).status, 403, '降級後原本的管理員不能再管');
   assert.equal((await call(mdev2, '/api/invites')).status, 200, '新的管理員可以');
+  await reauth(call, { token: mdev2, password: 'longpassword2' });
   assert.equal((await call(mdev2, `/api/participants/${M}/disable`, 'POST')).status, 400, '管理員不能停用自己');
   // 最早加入的人換了也不影響
   await db.run("UPDATE participants SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ?", B);
@@ -131,7 +133,7 @@ try {
 
   // 舊資料庫升級：001 把原本的管理員（最早加入的人類）標起來
   {
-    const OLD = fs.readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8').replace(/\n\s*is_admin INTEGER[^\n]*/, '').replace(/\n\s*wake_(day|count|at) [^\n]*/g, '').replace(/,\n\s*kb_status TEXT[\s\S]*?kb_card INTEGER[^\n]*/, '').replace(/\n\s*status_id INTEGER[^\n]*/, '').replace(/-- 專案看板狀態：[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS idx_project_statuses_name [^\n]*\n/, '')
+    const OLD = fs.readFileSync(new URL('../src/schema.sql', import.meta.url), 'utf8').replace(/\n\s*is_admin INTEGER[^\n]*/, '').replace(/\n\s*wake_(day|count|at) [^\n]*/g, '').replace(/\n\s*reauth_at [^\n]*/, '').replace(/,\n\s*kb_status TEXT[\s\S]*?kb_card INTEGER[^\n]*/, '').replace(/\n\s*status_id INTEGER[^\n]*/, '').replace(/-- 專案看板狀態：[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS idx_project_statuses_name [^\n]*\n/, '')
       .replace(/\n\s*(account_id|workspace_id|workspace_role|workspace_status|visibility) [^\n]*/g, '').replace(/-- 成員與權限（docs\/adr\/0002；migrations\/008）：[\s\S]*?CREATE INDEX IF NOT EXISTS idx_project_members_participant [^\n]*\n/, '')
       .replace(/(\n  standby_at [^\n]*)\n\);/, "$1\n  projects TEXT NOT NULL DEFAULT ''\n);"); // 1.0 就有的專案歸屬欄位（009 才拿掉）補回來。之後的升級（002 叫醒次數、004／005 知識庫、007 看板狀態、008 成員與權限）加的欄位也拿掉
     assert.ok(!OLD.includes('is_admin'), '1.0 的結構沒有 is_admin');

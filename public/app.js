@@ -58,7 +58,7 @@
   const stName = c => c.statusName ?? c.status;
   // 專案看板的欄／篩選鍵：每個類別第一個狀態用類別名稱（沒自訂過的專案跟以前一樣），其他用 s:狀態 ID
   const stKeys = sts => sts.map((s, i) => ({ ...s, key: sts.findIndex(x => x.category === s.category) === i ? s.category : 's:' + s.id }));
-  async function api(path, { method = 'GET', body, timeoutMs = 0 } = {}) {
+  async function api(path, { method = 'GET', body, timeoutMs = 0, reauthed = false } = {}) {
     // 輪詢要設逾時，否則網路卡住時 fetch 可能永遠不回來，整個輪詢跟著停
     const ctl = timeoutMs ? new AbortController() : null;
     const timer = ctl && setTimeout(() => ctl.abort(), timeoutMs);
@@ -86,6 +86,9 @@
       err.code = data?.error?.code; err.captchaRequired = !!data?.error?.captchaRequired; err.suggestion = data?.error?.suggestion || ''; err.field = data?.error?.field || '';
       state.lastErr = { code: err.code || `HTTP ${r.status}`, at: Date.now() };
       if (state.me && (err.code === 'INVALID_TOKEN' || err.code === 'TOKEN_EXPIRED')) logout(false);
+      // 敏感操作：輸入密碼再驗證身分，通過後自動重送原本的操作（只重送一次）；還沒設密碼就引導去設定
+      if (state.me && err.code === 'REAUTH_REQUIRED' && !reauthed && await reauthDialog()) return api(path, { method, body, timeoutMs, reauthed: true });
+      if (state.me && err.code === 'PASSWORD_REQUIRED') { passwordRequiredDialog(err.message); }
       throw err;
     }
     return data;
@@ -2673,6 +2676,49 @@
       const ex = overlay.querySelector('[data-expect]');
       if (ex) { ex.addEventListener('input', () => { overlay.querySelector('[data-ok]').disabled = ex.value.trim() !== expectText; }); ex.focus(); } else overlay.querySelector(cancelPrimary ? '[data-close]:not(.modal-x)' : '[data-ok]').focus();
     });
+  }
+  // 再驗證身分：敏感的管理操作被擋（REAUTH_REQUIRED）時跳出，輸入密碼通過回 true、取消回 false。
+  // 輸錯密碼留在對話框重輸；同時有好幾個請求被擋只跳一個，大家等同一個結果
+  let reauthOpen = null;
+  function reauthDialog() {
+    return (reauthOpen ||= new Promise(resolve => {
+      const prev = document.activeElement;
+      const host = document.createElement('div');
+      host.className = 'confirm-root reauth-root';
+      host.innerHTML = modalFrame({
+        title: '再驗證身分', size: 'narrow',
+        body: `<form id="reauth-form" class="stack" novalidate>
+          <p class="muted small">這是敏感操作，請再輸入一次你的密碼。驗證後 10 分鐘內，這台裝置不必再輸入。</p>
+          <label>密碼<span class="pwd-wrap"><input name="password" id="reauth-pw" type="password" maxlength="128" autocomplete="current-password"><button type="button" class="pwd-eye" data-eye aria-pressed="false" aria-label="顯示密碼">顯示</button></span></label>
+          <p class="error" id="reauth-err" role="alert"></p>
+        </form>`,
+        foot: '<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="reauth-form" data-reauth-ok>確認</button>',
+      });
+      document.body.append(host);
+      const overlay = host.firstElementChild, form = host.querySelector('#reauth-form'), input = form.password, errEl = host.querySelector('#reauth-err'), ok = host.querySelector('[data-reauth-ok]');
+      const done = v => { host.remove(); reauthOpen = null; if (prev?.isConnected) prev.focus(); resolve(v); };
+      holdBackdrop(overlay);
+      overlay.addEventListener('click', e => { if (e.target.closest('[data-close]')) done(false); });
+      overlay.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } });
+      form.addEventListener('submit', async e => {
+        e.preventDefault();
+        if (!input.value) { errEl.textContent = '請輸入密碼'; return input.focus(); }
+        ok.disabled = true; errEl.textContent = '';
+        try { await api('/api/auth/reauth', { method: 'POST', body: { password: input.value } }); done(true); }
+        catch (err) {
+          if (err.code === 'PASSWORD_REQUIRED' || err.code === 'DEVICE_REQUIRED') { done(false); return; }
+          errEl.textContent = err.message; input.select();
+        } finally { ok.disabled = false; }
+      });
+      input.focus();
+    }));
+  }
+  // 還沒設密碼就做敏感操作（PASSWORD_REQUIRED）：說明原因，按鈕直接打開「個人設定 › 帳號與登入」
+  async function passwordRequiredDialog(message) {
+    if (document.querySelector('.pwdreq-root')) return;
+    const p = confirmDialog({ title: '先設定密碼', message: esc(message), confirmText: '去設定密碼', cancelText: '稍後' });
+    document.body.lastElementChild?.classList.add('pwdreq-root'); // confirmDialog 剛接在 body 最後
+    if (await p) openSettings({ tab: 'acct' });
   }
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && !document.querySelector('.confirm-root') && $('#modal-root').firstElementChild) closeModal();

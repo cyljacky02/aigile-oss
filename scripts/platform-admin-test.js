@@ -13,6 +13,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
+import { adminSession } from './test-admin.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-platadmin-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -34,6 +35,7 @@ try {
   const chen = await join('陳昭宇', 'PG');
   const wang = await join('王小美', 'QA');
   const Bo = boss.participant.participantId, Cn = chen.participant.participantId, Wg = wang.participant.participantId;
+  boss.token = (await adminSession(call, boss.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入
   for (const id of [Cn, Wg]) assert.equal((await call(boss.token, `/api/participants/${id}/projects`, 'PUT', { projects: [A] })).status, 200);
   const ai = (await call(chen.token, '/api/my-ais', 'POST', { projects: [A], roleKey: 'PG', role: '程式開發', name: '陳的PG', ...S })).body;
 
@@ -75,6 +77,7 @@ try {
   const up = await setPlat(boss.token, Wg, 'admin');
   assert.equal(up.status, 200, JSON.stringify(up.body));
   assert.equal(up.body.participant.platformRole, 'admin');
+  wang.token = (await adminSession(call, wang.token)).token; // 王小美接著要任免平台管理員
   const w1 = await me(wang.token);
   assert.deepEqual([w1.platformRole, w1.workspaceRole, w1.isAdmin], ['admin', 'member', true], '平台管理員：明確的工作區角色仍是成員，isAdmin（含隱含）是 true');
   assert.equal((await call(wang.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' })).status, 200, '平台管理員能改工作區設定');
@@ -124,6 +127,7 @@ try {
   rsOk.body.url = renewOk.body.url;
   boss.token = (await call(null, '/api/auth/invite', 'POST', { token: rsOk.body.url.split('/invite/')[1] })).body.token;
   assert.equal((await me(boss.token)).platformRole, 'admin', '林志明用新連結登入');
+  boss.token = (await adminSession(call, boss.token)).token; // 重設登入把密碼清掉了：重設密碼、再驗證
   assert.equal((await remove(chen.token, liAi.participantId)).status, 404, 'AI 不是用這個移出（主人刪掉它）');
   const rm = await remove(chen.token, Li); // 工作區管理員（不是平台管理員）就能移出
   assert.equal(rm.status, 200, JSON.stringify(rm.body));

@@ -3,6 +3,7 @@
 // 升降規則本身在 workspace-admin-test.js 驗。需要 Chrome 或 Edge；找不到就略過。用法：node scripts/workspace-admin-ui-test.js
 import assert from 'node:assert';
 import { startKit, findBrowser, until } from './browser-kit.js';
+import { adminSession } from './test-admin.js';
 
 if (!findBrowser()) { console.log('workspace-admin-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
 const kit = await startKit('wsadmui');
@@ -11,6 +12,7 @@ try {
   const liu = (await call(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body; // 第一位＝工作區管理員
   const wang = (await call(null, '/api/join', 'POST', { name: '王小明', role: 'UX' })).body;
   const Lu = liu.participant.participantId, Wg = wang.participant.participantId;
+  liu.token = (await adminSession(call, liu.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入（網頁直接用這台裝置）
   const { js, login } = await kit.browser(1280, 860);
   const btn = id => `.rs-table [data-pm-wsrole="${id}"]`;
   const attr = (sel, a) => js(`document.querySelector(${JSON.stringify(sel)})?.getAttribute(${JSON.stringify(a)}) ?? null`);

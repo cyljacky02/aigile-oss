@@ -9,6 +9,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
+import { adminSession } from './test-admin.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-wsonly-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -27,6 +28,7 @@ try {
   const boss = await join('林志明');
   const chen = await join('陳昭宇'), wang = await join('王小美'), zhao = await join('趙小安');
   const Cn = chen.participant.participantId, Wg = wang.participant.participantId, Zh = zhao.participant.participantId;
+  boss.token = (await adminSession(call, boss.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入
 
   // 1) 舊的整份專案清單端點也只收工作區成員
   ok(await put(boss.token, Cn, [A]), '工作區成員照常');

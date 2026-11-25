@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
 import { startKit, findBrowser, until, sleep } from './browser-kit.js';
+import { adminSession } from './test-admin.js';
 import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('admin-settings-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
@@ -19,6 +20,7 @@ try {
   const { call } = kit;
   const join = async (name, role) => (await call(null, '/api/join', 'POST', { name, role })).body;
   const liu = await join('林志明', 'PO'), wang = await join('王小明', 'UX'), chen = await join('陳大文', 'PG');
+  liu.token = (await adminSession(call, liu.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入（網頁直接用這台裝置）
   const id = p => p.participant.participantId;
   for (const [p, pj] of [[wang, ['預設專案']], [chen, ['預設專案']]]) await call(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: pj });
   assert.equal((await makeProjectAdmin(call, liu.token, id(wang), ['預設專案'])).status, 200, 'wang 當預設專案 leader');

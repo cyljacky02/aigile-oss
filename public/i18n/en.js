@@ -3616,6 +3616,13 @@ window.AIGILE_EN = {
     // #28 管理員異動通知
 
     // #29 再驗證身分
+    "再驗證身分": "Confirm it's you",
+    "這是敏感操作，請再輸入一次你的密碼。驗證後 10 分鐘內，這台裝置不必再輸入。": "This is a sensitive action. Enter your password again. After that, this device won't ask again for 10 minutes.",
+    "先設定密碼": "Set a password first",
+    "去設定密碼": "Set password",
+    "這個操作要先輸入密碼確認身分，你還沒設定帳號密碼：請先到「個人設定 › 帳號與登入」設定帳號密碼。": "This action needs your password to confirm it's you, and you haven't set one yet. Set a username and password in Personal settings › Account & sign-in first.",
+    "密碼不對": "Wrong password",
+    "這是敏感操作：請先再輸入一次密碼確認身分（10 分鐘內不必重複輸入）。": "This is a sensitive action: enter your password again to confirm it's you (no need to repeat it for 10 minutes).",
 
     // #30 可復原期設定
 
