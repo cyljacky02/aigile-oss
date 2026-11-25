@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS messages (
   reply_from TEXT,                         -- 要回覆的人（JSON 陣列，收件人子集合）；NULL＝沒標
   project TEXT,                            -- 所屬專案（原本只靠 migration 0012 補，新站會少）
   created_at TEXT NOT NULL,
+  deleted_at TEXT,                         -- 刪除時間（佔位留著；migrations/012）
+  deleted_by TEXT,                         -- 刪除者 participantId
+  purge_at TEXT,                           -- 預計永久清除時間（刪除當下依可復原期決定）
+  clear_id TEXT,                           -- 所屬的清空專案訊息操作（單獨刪除為空）
+  purged_at TEXT,                          -- 永久清除時間（內文與附件已清掉）
   UNIQUE (author_id, request_id)
 );
 -- 私訊自己的 AI：只有人類與他名下的 AI 兩方；不進群組訊息
@@ -143,6 +148,7 @@ CREATE TABLE IF NOT EXISTS avatars (
 CREATE INDEX IF NOT EXISTS idx_notif_status_created ON notifications (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages (reply_to);
 CREATE INDEX IF NOT EXISTS idx_messages_project_seq ON messages (project, seq);
+CREATE INDEX IF NOT EXISTS idx_messages_purge ON messages (purge_at);
 
 -- 「等你決定」清單：人類按「已處理」的紀錄
 CREATE TABLE IF NOT EXISTS decision_resolutions (
