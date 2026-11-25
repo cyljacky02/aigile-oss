@@ -8886,9 +8886,11 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     ['invites', '✉️', '邀請', '邀請新的人、重發、作廢'],
     ['accounts', '🔑', '帳號與救援', '重設登入、救援指令'], // 升降管理員、移出工作區、停用搬到成員名冊
     ['audit', '🔍', '稽核與儲存', '全站稽核紀錄、儲存空間'],
+    ['auditlog', '📜', '工作區稽核紀錄', '誰在什麼時候做了哪個管理操作'],
+    ['platlog', '📜', '平台稽核紀錄', '全平台的管理操作，含任免平台管理員、停用帳號、備份還原'], // 只有平台管理員
     ['system', '🛠️', '平台設定', '版本更新、備份與匯入、附件保存預設、範例資料'], // 只有平台管理員看得到（admSecs）
   ];
-  const PLAT_SECS = ['system'];
+  const PLAT_SECS = ['system', 'platlog'];
   const admSecs = () => ADM_SECS.filter(x => isPlat() || !PLAT_SECS.includes(x[0]));
   const ADM_OLD_TABS = ['projects', 'invites', 'group', 'system']; // 原本在成員管理的分頁
   const ADM_SOON = 6 * 3600_000; // 邀請剩不到 6 小時算「快到期」
@@ -8896,6 +8898,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!isAdmin()) return openPermTab('members');
     const adm = admSecs().some(x => x[0] === sec) ? sec : null;
     if (adm === 'group') perm.gs = null; // 加入設定每次重讀
+    if (adm === 'auditlog' || adm === 'platlog') perm.alog = null; // 稽核紀錄每次重讀
     Object.assign(perm, { tab: 'admin', adm, picker: false, addOpen: false, moreOpen: null, mobileDetail: false });
     permGo();
   }
@@ -8982,6 +8985,93 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <div class="pm-card adm-audit"><div class="pm-card-head"><strong>全站稽核紀錄</strong><span class="muted small">最近 200 筆檔案上傳、下載、刪除、拒絕；一般成員在「文件」只看得到自己的</span><span class="grow"></span><button type="button" class="link small" data-adm-audit-reload>重新整理</button></div>
       ${auditTableHtml(x.a.items || [])}</div></div>`;
   }
+  // 稽核紀錄（GET /api/audit-log）：工作區頁只看工作區與專案的事件，平台頁看全部（只有平台管理員）。只能看、不能改或刪
+  // 篩選：動作、操作者、日期區間（照這台電腦的時區算整天）；一次 50 筆，「載入更多」接著拿舊的
+  const ALOG_ACTIONS = { // [中文, 英文]：表格是紀錄，英文用過去式（字典裡同樣的中文是按鈕的命令句）
+    'platform_admin.grant': ['升為平台管理員', 'Made platform admin'], 'platform_admin.revoke': ['降為一般帳號', 'Removed platform admin'],
+    'workspace_admin.grant': ['升為工作區管理員', 'Made workspace admin'], 'workspace_admin.revoke': ['降為成員', 'Removed workspace admin'],
+    'account.disable': ['停用帳號', 'Disabled account'], 'account.enable': ['恢復帳號', 'Restored account'],
+    'member.remove': ['移出工作區', 'Removed from workspace'], 'member.leave': ['離開工作區', 'Left workspace'], 'backup.restore': ['還原備份', 'Restored backup'],
+    'workspace_policy.update': ['修改工作區政策', 'Changed workspace policy'], 'recovery_window.update': ['修改可復原期', 'Changed recovery window'],
+    'message.delete': ['刪除訊息', 'Deleted message'], 'message.restore': ['復原訊息', 'Restored message'], 'message.purge': ['永久清除訊息', 'Purged messages'],
+    'project_messages.clear': ['清空專案訊息', 'Cleared project messages'], 'project_messages.restore': ['復原清空的專案訊息', 'Restored cleared project messages'],
+    'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
+  };
+  const alogAction = k => (ALOG_ACTIONS[k] ? L(...ALOG_ACTIONS[k]) : k);
+  const ALOG_PLATFORM = ['platform_admin.grant', 'platform_admin.revoke', 'account.disable', 'account.enable', 'backup.restore']; // 工作區頁的篩選不列
+  const alogDay = (v, plus = 0) => { const d = new Date(v + 'T00:00'); d.setDate(d.getDate() + plus); return Number.isNaN(d.getTime()) ? '' : d.toISOString(); };
+  function alogLoad(more = false) {
+    const a = perm.alog, q = new URLSearchParams({ scope: a.kind === 'platlog' ? 'all' : 'workspace' });
+    if (a.f.action) q.set('action', a.f.action);
+    if (a.f.actor) q.set('actor', a.f.actor);
+    if (a.f.from && alogDay(a.f.from)) q.set('from', alogDay(a.f.from));
+    if (a.f.to && alogDay(a.f.to, 1)) q.set('to', alogDay(a.f.to, 1));
+    if (more && a.next) q.set('before', a.next);
+    a.loading = true; a.err = null;
+    const redraw = () => { if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === a.kind && perm.alog === a) drawPerm(); };
+    api('/api/audit-log?' + q).then(r => {
+      Object.assign(a, { items: more ? [...a.items, ...r.items] : r.items, next: r.next, loading: false });
+      if (r.actors) a.actors = r.actors;
+      redraw();
+    }).catch(err => { Object.assign(a, { err: err.message, loading: false }); redraw(); });
+  }
+  const alogActor = x => (x.kind === 'system' ? '系統' : x.name || x.id || '');
+  function alogScope(e) {
+    if (e.scope.kind === 'platform') return '平台';
+    if (e.scope.kind === 'project') return L(`專案「${e.scope.projectName || e.scope.projectId || ''}」`, `Project "${e.scope.projectName || e.scope.projectId || ''}"`);
+    return '工作區';
+  }
+  function alogDetail(e) {
+    const d = e.detail || {}, out = [];
+    if (e.action === 'workspace_policy.update' && d.field === 'createProjects') {
+      const lab = v => (v === 'admins' ? '只有工作區管理員' : '所有成員');
+      out.push(L(`誰可以建立專案：${lab(d.from)} → ${lab(d.to)}`, `Who can create projects: ${d.from === 'admins' ? 'workspace admins only' : 'all members'} → ${d.to === 'admins' ? 'workspace admins only' : 'all members'}`));
+    } else if (d.field) out.push(`${d.field}: ${d.from ?? '—'} → ${d.to ?? '—'}`);
+    else if ('from' in d || 'to' in d) out.push(`${d.from ?? '—'} → ${d.to ?? '—'}`);
+    if (d.revokedAiTokens) out.push(L(`作廢 ${d.revokedAiTokens} 個 AI 的 Token`, `Revoked ${d.revokedAiTokens} AI token(s)`));
+    if (e.action === 'backup.restore') out.push(L(`備份版本 ${d.appVersion || '?'}；${d.humans ?? 0} 位人類、${d.ais ?? 0} 個 AI`, `Backup version ${d.appVersion || '?'}; ${d.humans ?? 0} human(s), ${d.ais ?? 0} AI(s)`));
+    if (d.counts) out.push(L(`訊息 ${d.counts.messages ?? 0}、卡片 ${d.counts.cards ?? 0}、文件 ${d.counts.docs ?? 0}`, `${d.counts.messages ?? 0} messages, ${d.counts.cards ?? 0} cards, ${d.counts.docs ?? 0} docs`));
+    if (d.code) out.push(L(`代號 ${d.code}`, `Code ${d.code}`));
+    if (d.aisDeleted?.length) out.push(L(`一起刪除的 AI：${d.aisDeleted.join('、')}`, `AIs deleted with it: ${d.aisDeleted.join(', ')}`));
+    if (e.count != null) out.push(L(`數量 ${e.count}`, `Count ${e.count}`));
+    if (d.legacy) out.push(L('（升級前的紀錄）', '(recorded before the upgrade)'));
+    return out.join(L('；', '; '));
+  }
+  function auditLogHtml(kind) {
+    if (perm.alog?.kind !== kind) { perm.alog = { kind, f: {}, items: [], next: null, actors: [], loading: true }; alogLoad(); }
+    const a = perm.alog, f = a.f, plat = kind === 'platlog';
+    const acts = Object.keys(ALOG_ACTIONS).filter(k => plat || !ALOG_PLATFORM.includes(k));
+    const sel = (v, cur) => (v === (cur || '') ? ' selected' : '');
+    const filters = `<div class="alog-filters" role="group" aria-label="篩選稽核紀錄">
+      <label>動作<select data-alog-f="action"><option value=""${sel('', f.action)}>全部動作</option>${acts.map(k => `<option value="${k}"${sel(k, f.action)}>${esc(alogAction(k))}</option>`).join('')}</select></label>
+      <label>操作者<select data-alog-f="actor"><option value=""${sel('', f.actor)}>所有操作者</option>${a.actors.map(x => `<option value="${esc(x.id || '')}"${sel(x.id, f.actor)}>${esc(alogActor(x))}</option>`).join('')}</select></label>
+      <label>開始日期<input type="date" data-alog-f="from" value="${esc(f.from || '')}"></label>
+      <label>結束日期<input type="date" data-alog-f="to" value="${esc(f.to || '')}"></label>
+      ${Object.values(f).some(Boolean) ? '<button type="button" class="link small" data-alog="clear">清除篩選</button>' : ''}</div>`;
+    const rows = a.items.map(e => `<tr data-alog-id="${esc(e.id)}"><td>${esc(fmtTime(e.at))}</td><td>${esc(alogActor(e.actor))}</td><td>${esc(alogAction(e.action))}</td>
+      <td>${esc(alogScope(e))}</td><td>${esc(e.target?.name || '')}</td><td class="alog-detail">${esc(alogDetail(e))}</td></tr>`).join('');
+    const table = a.items.length ? `<table class="audit-table alog-table"><thead><tr><th scope="col">時間</th><th scope="col">操作者</th><th scope="col">動作</th><th scope="col">範圍</th><th scope="col">對象</th><th scope="col">細節</th></tr></thead><tbody>${rows}</tbody></table>`
+      : a.loading ? '' : '<p class="muted small pm-pad">沒有符合的紀錄。</p>';
+    const foot = a.loading ? '<p class="muted small pm-pad">載入中…</p>' : a.next ? '<p class="pm-pad"><button type="button" class="btn small" data-alog="more">載入更多</button></p>' : '';
+    const note = plat ? '全平台的管理操作：任免管理員、停用與恢復帳號、移出工作區、修改工作區政策、刪除專案、還原備份。只能新增，沒有人能改或刪。'
+      : '這個工作區與它的專案裡的管理操作（平台層的事件只在平台稽核紀錄）。只能新增，沒有人能改或刪。';
+    return `<div class="pm-projs"><div class="pm-card adm-alog"><div class="pm-card-head"><span class="muted small">${note}</span><span class="grow"></span><button type="button" class="link small" data-alog="reload">重新整理</button></div>
+      ${filters}${a.err ? `<p class="error pm-pad" role="alert">${esc(a.err)}</p>` : ''}${table}${foot}</div></div>`;
+  }
+  document.addEventListener('click', e => {
+    const b = e.target.closest?.('[data-alog]');
+    if (!b || !perm.alog) return;
+    const k = b.dataset.alog;
+    if (k === 'clear') perm.alog.f = {};
+    if (k === 'more') return alogLoad(true), drawPerm();
+    alogLoad(); drawPerm();
+  });
+  document.addEventListener('change', e => {
+    const el = e.target.closest?.('[data-alog-f]');
+    if (!el || !perm.alog) return;
+    perm.alog.f[el.dataset.alogF] = el.value;
+    alogLoad(); drawPerm();
+  });
   // 訊息附件保存時間的平台預設（平台設定；存資料庫、不用重新啟動）；改了只影響之後上傳的檔。工作區可以在工作區設定覆寫（wsTtlHtml）
   // 主機的 FILE_TTL_HOURS 只是初始值：這裡沒改過才用它，改過就以這裡為準
   function admTtlHtml(t) {
@@ -9013,7 +9103,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const narrow = narrowPerm();
     if (narrow && !perm.adm) return admNavHtml(null, true);
     const cur = admSecs().some(x => x[0] === perm.adm) ? perm.adm : 'todo', [, ico, t] = ADM_SECS.find(x => x[0] === cur); // 平台設定只給平台管理員
-    const body = cur === 'todo' ? admTodoHtml() : cur === 'group' ? permGroupHtml() : cur === 'projects' ? permProjectsHtml() : cur === 'invites' ? permInvitesHtml() : cur === 'accounts' ? admAccountsHtml() : cur === 'system' ? permSystemHtml() : admAuditHtml();
+    const body = cur === 'todo' ? admTodoHtml() : cur === 'group' ? permGroupHtml() : cur === 'projects' ? permProjectsHtml() : cur === 'invites' ? permInvitesHtml() : cur === 'accounts' ? admAccountsHtml() : cur === 'system' ? permSystemHtml() : cur === 'auditlog' || cur === 'platlog' ? auditLogHtml(cur) : admAuditHtml();
     const main = `<section class="adm-main" aria-label="${t}">${narrow ? '<button type="button" class="ph-back pm-back" data-adm-back>‹ 管理員設定</button>' : ''}<h3 class="adm-h"><span aria-hidden="true">${ico}</span> ${t}${cur === 'todo' && admTodoN() ? ` · ${admTodoN()}` : ''}</h3>${body}</section>`;
     return narrow ? `<div class="adm-split m-detail">${main}</div>` : `<div class="adm-split">${admNavHtml(cur, false)}${main}</div>`;
   }

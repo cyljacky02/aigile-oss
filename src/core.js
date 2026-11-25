@@ -19,7 +19,7 @@ import { registerDemo } from './demo.js'; // 示範資料
 import { registerRoster } from './roster.js'; // 成員名冊
 import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, hasWorkspaceAdminRights, inWorkspace, effectiveProjects, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
 import { createWorkspaceSettings, CREATE_PROJECTS } from './workspace-settings.js'; // 工作區設定（誰可以建立專案）
-import { createAudit, AUDIT_ACTION, AUDIT_SCOPE } from './audit.js'; // 稽核紀錄（管理操作）
+import { createAudit, AUDIT_ACTION, AUDIT_ACTIONS, AUDIT_SCOPE } from './audit.js'; // 稽核紀錄（管理操作）
 import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js'; // 管理員異動通知
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
@@ -1587,6 +1587,13 @@ ${ending}`;
   });
   // 稽核紀錄（auditLog；名字跟下面檔案稽核的 audit() 分開）、管理員異動通知：跟著管理操作一起寫（先改資料、確認改成了，再寫這一批）
   const auditLog = createAudit({ db, randId, nowIso });
+  // 舊的專案刪除紀錄（app_settings 的 pdel:）轉進稽核紀錄：每份程式第一個請求做一次；匯入備份中、還沒有資料表時下個請求再試
+  // 轉不成只記下來、不擋請求（跟成員資料轉換不同：稽核紀錄沒轉完不影響其他功能）
+  let auditReady;
+  const migrateAuditLog = () => (auditReady ??= auditLog.migrateLegacy().then(done => { if (!done) auditReady = undefined; }, error => {
+    auditReady = undefined;
+    console.error('舊的專案刪除紀錄轉換失敗', error);
+  }));
   const adminNotify = createAdminNotify({ db, randId, peopleMap, access });
   const auditTarget = p => ({ kind: 'participant', id: p.id, name: p.name });
   // auditLog.stmt 沒有要寫的回 null：去掉 null，清單空了就不呼叫 db.batch
@@ -2694,7 +2701,7 @@ ${ending}`;
   // 刪：卡片與紀錄、訊息與通知、決策、上傳檔與文件（含檔案本體）、技能、加入申請、私訊、專案事件與設定；人和 AI 帳號留著，只是不再屬於這個專案
   // 只屬於這個專案的 AI（AI 至少要一個專案）一起刪除：跟「刪除 AI」一樣，狀態改 deleted、Token 失效
   // 跨專案頻道（project=all）的訊息不動。D1：每張表一句（沒有索引的表只掃一次），不逐筆刪
-  const DEL_LOG = 'pdel:'; // 全站紀錄：app_settings 的 pdel:<時間>:<專案 id>（專案事件會跟著刪掉，所以另外記）
+  // 全站紀錄：稽核紀錄的 project.purge（專案事件會跟著刪掉，所以記在稽核紀錄；以前的 app_settings pdel: 啟動時轉進來）
   async function deletableProject(ctx, me, id) {
     await access.check(ctx, me, 'delete_project', { project: id });
     await loadProjects(true);
@@ -2782,8 +2789,10 @@ ${ending}`;
     for (const inv of await db.all("SELECT id, projects FROM invites WHERE used_at IS NULL AND revoked_at IS NULL AND (',' || projects || ',') LIKE ?", `%,${id},%`))
       settings.push(['UPDATE invites SET projects = ? WHERE id = ?', [String(inv.projects).split(',').filter(x => x && x !== id).join(','), inv.id]]);
     const log = { projectId: id, name: row.name, code: projCodes[id] || null, by: me.id, byName: me.name, at, counts, aisDeleted: onlyHere.map(p => p.name) };
-    settings.push(['DELETE FROM projects WHERE id = ?', [id]], [upsert, [`${DEL_LOG}${at}:${id}`, JSON.stringify(log)]]);
-    await db.batch(settings);
+    settings.push(['DELETE FROM projects WHERE id = ?', [id]]);
+    const pj = { id, name: row.name };
+    await writeStmts([...settings, auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_PURGE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
+      detail: { code: log.code, counts, aisDeleted: log.aisDeleted } })]);
     titlesAt = 0;
     invalidatePeople(); invalidateProjects();
     await membership.loadMembers(true);
@@ -2791,9 +2800,8 @@ ${ending}`;
   });
   route('GET', '/api/project-deletions', async ({ ctx, me }) => {
     await access.check(ctx, me, 'delete_project', 'workspace');
-    const rows = await db.all("SELECT value FROM app_settings WHERE key >= ? AND key < ? ORDER BY key DESC LIMIT 50", DEL_LOG, 'pdel;');
-    const items = rows.map(r => { try { return JSON.parse(r.value); } catch { return null; } }).filter(Boolean);
-    return { items };
+    const { items } = await auditLog.list({ only: 'workspace', action: AUDIT_ACTION.PROJECT_PURGE, limit: 50 });
+    return { items: items.map(e => ({ projectId: e.scope.projectId, name: e.scope.projectName, code: e.detail?.code ?? null, by: e.actor.id, byName: e.actor.name, at: e.at, counts: e.detail?.counts || {}, aisDeleted: e.detail?.aisDeleted || [] })) };
   });
   // ---------- AI 工作記憶：換電腦或關機後可從雲端讀回；依專案可見 ----------
   const STATE_MAX_BYTES = 16 * 1024;
@@ -3134,6 +3142,33 @@ ${ending}`;
       ]);
     }
     return { participant: publicParticipant(t, await peopleMap(ctx)) };
+  });
+  // ---------- 稽核紀錄（只能新增：只有這支讀取，沒有改、刪的 API）----------
+  // 平台管理員看全部；工作區管理員只看自己工作區的事件（平台層不給）；其他人與 AI 403
+  // scope：all（看得到的全部，預設）｜workspace（只要工作區與專案的事件）｜platform（只要平台層，平台管理員）
+  // 篩選 action、actor（成員 id；系統是 system）、from／to（ISO 時間；from 含、to 不含）；分頁 limit（1–200，預設 50）＋ before（上一頁的 next）
+  route('GET', '/api/audit-log', async ({ ctx, me, url }) => {
+    onlyParams(url, ['scope', 'action', 'actor', 'from', 'to', 'before', 'limit'], 'GET /api/audit-log');
+    await access.check(ctx, me, 'see_audit_log', 'workspace', { what: '查看稽核紀錄' });
+    const q = k => url.searchParams.get(k) || '';
+    const scope = q('scope') || 'all';
+    if (!['all', 'workspace', 'platform'].includes(scope)) throw invalid('scope 只能是 all、workspace 或 platform');
+    if (scope === 'platform') await access.check(ctx, me, 'see_platform_audit_log', 'platform', { what: '查看平台層的稽核紀錄' });
+    const platform = await access.can(ctx, me, 'see_platform_audit_log', 'platform');
+    if (q('action') && !AUDIT_ACTIONS.includes(q('action'))) throw invalid(`不認得的動作 ${q('action')}`);
+    const time = k => {
+      if (!q(k)) return null;
+      const t = Date.parse(q(k));
+      if (Number.isNaN(t)) throw invalid(`${k} 要是 ISO 時間（例 2026-07-01T00:00:00Z）`);
+      return new Date(t).toISOString();
+    };
+    const limit = q('limit') ? Number(q('limit')) : 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw invalid('limit 要是 1–200 的整數');
+    const cur = q('before') ? /^(.+)\|(\d+)$/.exec(q('before')) : null;
+    if (q('before') && !cur) throw invalid('before 要用上一頁回傳的 next');
+    const out = await auditLog.list({ platform, only: scope === 'all' ? null : scope, action: q('action') || null, actor: q('actor') || null, from: time('from'), to: time('to'),
+      before: cur ? { at: cur[1], seq: Number(cur[2]) } : null, limit, withActors: !cur });
+    return { includesPlatform: platform && scope !== 'workspace', ...out };
   });
   route('GET', '/api/participants', async ({ ctx, me, url }) => {
     await loadProjectRoles();
@@ -3868,7 +3903,7 @@ ${ending}`;
     maxTotalBytes: (Number(config.docMaxTotalMb) || 0) * 1048576 || DOC_MAX_TOTAL_BYTES });
   const skillsApi = registerSkills({ route, db, ApiError, invalid, readJson, randId, nowIso, sha256, peopleMap, projectsOf, PROJECTS, nameOf, access, assertNoSecret, writeDm, myAi, requireHuman, setupSha: SETUP_SHA256, roleDefsMap, storage }); // 技能包放分塊儲存 // C-xxx；C-xxx 唯讀；MAIN-240 同步工具版本；MAIN-249 專案自訂角色
   registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, auditLog,
-    membership, afterRestore: async () => { invalidatePeople(); await bumpPeopleVer(); membersReady = undefined; await migrateMembers(); await Promise.all([loadProjects(true), membership.loadMembers(true), loadProjectRoles(true)]); } }); // 舊版備份：成員資料匯入後再轉一次
+    membership, afterRestore: async () => { invalidatePeople(); await bumpPeopleVer(); membersReady = undefined; await migrateMembers(); auditReady = undefined; await migrateAuditLog(); await Promise.all([loadProjects(true), membership.loadMembers(true), loadProjectRoles(true)]); } }); // 舊版備份：成員資料匯入後再轉一次
   registerUpdateCheck({ route, db, access, requireHuman, config });
   registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership,
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });
@@ -4044,7 +4079,7 @@ ${ending}`;
   async function handleMcp(req, url, base) {
     if (req.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST' } });
     let me;
-    try { await loadProjects(); await migrateMembers(); await membership.loadMembers(); me = await authenticate(req, url); } catch (e) {
+    try { await loadProjects(); await migrateMembers(); await migrateAuditLog(); await membership.loadMembers(); me = await authenticate(req, url); } catch (e) {
       if (!(e instanceof ApiError)) throw e;
       return json(e.status, { error: { code: e.code, message: e.message } });
     }
@@ -4082,6 +4117,7 @@ ${ending}`;
         await loadProjects();
         if (!tokensHashed) await hashOldTokens();
         await migrateMembers(); // 舊資料轉到新的成員資料表（要在「有沒有管理員」之前）
+        await migrateAuditLog(); // 舊的專案刪除紀錄轉進稽核紀錄
         if (DEFAULT_ADMIN) await (adminReady ??= ensureDefaultAdmin().catch(error => {
           adminReady = undefined;
           console.error('預設管理員初始化失敗', error);

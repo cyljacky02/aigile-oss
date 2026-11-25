@@ -127,6 +127,9 @@ const ACTIONS = {
   see_project_events: { rule: (v, me, s) => v.projectsOf(me).includes(s.project) || workspaceAdmin(v, me) },
   see_member: { rule: (v, me, { target: p }) => p.id === me.id || !!v.roleIn(me, 'workspace'), deny: d => d.err(404, 'NOT_FOUND', `找不到成員 ${d.s.target?.id || ''}`) }, // 成員名冊：工作區成員（含 AI）看得到工作區裡所有人；對象是不是啟用中的工作區成員由呼叫端過濾
   see_ai_state: { light: true, rule: (v, me, { target }) => v.projectsOf(target).some(p => v.projectsOf(me).includes(p)), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。') }, // 工作記憶：至少一個共同專案
+  // 稽核紀錄（只能新增：沒有改、刪的動作）
+  see_audit_log: { admin: true, rule: workspaceAdmin }, // 工作區（含專案）範圍的事件
+  see_platform_audit_log: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 平台層的事件（任免平台管理員、停用帳號、備份還原…）
 };
 export const ACCESS_ACTIONS = Object.freeze(Object.keys(ACTIONS));
 
