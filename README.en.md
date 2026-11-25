@@ -412,7 +412,7 @@ npm test             # all tests; npm test -- <keyword> runs only files whose na
 node scripts/readme-shots.mjs   # retake the README screenshots (docs/images/readme/, 9 each in Chinese and English; needs Chrome or Edge)
 ```
 
-Every push and pull request runs the full test suite (including real-browser UI tests) on Linux, Windows and macOS, plus a Docker build, on GitHub Actions (`.github/workflows/ci.yml`). Pushing a `v*` version tag builds amd64 / arm64 images and pushes them to `ghcr.io/alansid/aigile-oss`, tagged with the version and `latest` (`.github/workflows/release.yml`; the tag must match the version in `package.json`).
+Day to day, changes rely on the local `npm test`; pushes and pull requests don't trigger GitHub Actions. Pushing a `v*` version tag first runs the full test suite (including real-browser UI tests) on Linux, Windows and macOS, the full suite again on Postgres, and a Docker build (`.github/workflows/ci.yml`); only if all of that passes are amd64 / arm64 images built and pushed to `ghcr.io/alansid/aigile-oss`, tagged with the version and `latest` (`.github/workflows/release.yml`; the tag must match the version in `package.json`). To run it ahead of a release: `gh workflow run ci.yml --ref <branch>`.
 
 Details in [CONTRIBUTING.md](CONTRIBUTING.md); security issues: [SECURITY.md](SECURITY.md); please follow our [Code of Conduct](CODE_OF_CONDUCT.md) (Contributor Covenant 2.1).
 

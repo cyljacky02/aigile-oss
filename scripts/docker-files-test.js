@@ -6,6 +6,7 @@
 // 4. README 的快速開始是 Docker，本機第二、Cloudflare 放後面
 // 5. 打 v* 標籤自動建 amd64／arm64 映像推到 ghcr.io，標版本號與 latest；README 中英文都有「不用 clone 直接用映像」（docker run 與 compose，資料掛 volume）
 // 6. CI 在 ubuntu、windows、macos 跑全部測試（Node 22），檢查 checkout 是 LF、找得到瀏覽器；另外在 Postgres 服務跑一次全套
+// 7. CI 不在每次 push／PR 跑（平常靠本機 npm test）：只在發版（打 v* 標籤）時先跑完全套、通過才發佈映像，或手動觸發
 // 用法：node scripts/docker-files-test.js
 import fs from 'node:fs';
 import assert from 'node:assert';
@@ -82,6 +83,12 @@ try {
   assert.match(ci, /test-postgres:[\s\S]*image: postgres:[\s\S]*npm ci[\s\S]*AIGILE_TEST_PG_URL: postgres:\/\/postgres:test@localhost:5432\//, 'CI：另外在 Postgres 服務跑全套（只連 CI 本機的服務）');
   assert.match(ci, /docker compose -f docker-compose\.yml -f docker-compose\.postgres\.yml up -d --build/, 'CI：compose 連 Postgres 一起起來並檢查');
   assert.ok(!/^\s+run: npm (ci|install)\s*$/m.test(ci.split('test-postgres:')[0]), 'CI：SQLite 那組不裝套件（零相依照樣能跑）');
+  const ciOn = ci.slice(ci.indexOf('\non:'), ci.indexOf('\npermissions:'));
+  assert.ok(!/^\s+(push|pull_request):/m.test(ciOn), 'CI：不在每次 push／PR 跑');
+  assert.match(ciOn, /^\s+workflow_dispatch:/m, 'CI：可以手動觸發');
+  assert.match(ciOn, /^\s+workflow_call:/m, 'CI：發版流程可以呼叫');
+  assert.match(rel, /^\s+ci:\s*\n\s+uses: \.\/\.github\/workflows\/ci\.yml/m, '發版：先跑全套 CI');
+  assert.match(rel, /^\s+image:\s*\n\s+needs: ci/m, '發版：CI 通過才建映像、發佈');
   console.log('docker-files-test：全部通過');
 } catch (e) {
   console.error('docker-files-test 失敗：', e.message);
