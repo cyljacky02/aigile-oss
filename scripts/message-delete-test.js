@@ -213,7 +213,9 @@ try {
 
   // ---------- I 復原 ----------
   assert.equal(code(await restore(chen.token, byChen.messageId)), '409 NOT_DELETED', 'I 沒被刪的 NOT_DELETED');
-  assert.equal(code(await restore(chen.token, secret.messageId)), '403 RESTORE_FORBIDDEN', 'I 作者不能復原管理員刪的');
+  r = await restore(chen.token, secret.messageId);
+  assert.equal(code(r), '403 RESTORE_FORBIDDEN', 'I 作者不能復原管理員刪的');
+  assert.match(r.body.error.message, /^這則訊息是工作區管理員刪的/, 'I 說明用詞照詞彙表（工作區管理員）');
   assert.equal(code(await restore(zhao.token, m1.messageId)), '403 NOT_ADMIN', 'I 專案管理員不能復原別人的');
   assert.equal(code(await restore(chenAi.token, m1.messageId)), '403 FORBIDDEN', 'I AI 不能復原');
   connected = [chen.id, zhao.id];

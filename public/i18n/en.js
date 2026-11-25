@@ -3681,7 +3681,7 @@ window.AIGILE_EN = {
     "這則訊息沒有被刪除": "This message isn't deleted",
     "已經過了可復原期，這則訊息不能復原": "The recovery window has passed, so this message can't be restored",
     "這個檔案所在的訊息已刪除，不能下載": "The message this file belongs to was deleted, so it can't be downloaded",
-    "這則訊息是管理員刪的，只有工作區管理員能復原。": "An admin deleted this message, so only a workspace admin can restore it.",
+    "這則訊息是工作區管理員刪的，只有工作區管理員能復原。": "A workspace admin deleted this message, so only a workspace admin can restore it.",
     "刪除別人的訊息": "delete other people's messages",
     "復原別人的訊息": "restore other people's messages",
     "隨訊息永久清除": "Purged with its message",
