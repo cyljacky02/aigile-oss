@@ -12,6 +12,7 @@
 // - 隱含權限不算成員資格：工作區管理員（含平台管理員）在沒加入的專案不列為成員，只有職稱也一樣（implicitOnlyIn）
 // - 唯讀成員的 AI 跟著唯讀；明確的唯讀成員跟隱含權限取較高者：升為工作區／平台管理員就能寫，他的 AI 也是（工作區管理員不能被設成唯讀成員）
 // - AI 不能做任何管理動作
+// - 敏感動作（動作表標 sensitive: true）：權限檢查通過後，還要這台裝置剛再驗證過（deps.requireRecentAuth 不行就丟錯；沒注入時不檢查）
 // - 成員名冊：工作區成員（含 AI）看得到工作區裡所有人（see_member）；已移出的人只有工作區管理員看得到（see_removed_members；待接受的邀請走 invite）
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
 // - 專案可見度：開放＝直接加入、審核＝送申請、私人＝只有專案成員與有隱含權限的人知道它存在（discover_project；其他人各處都當它不存在，回 404）
@@ -92,11 +93,15 @@ const DENY = {
 const ACTIONS = {
   // 平台
   manage_platform: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 備份與還原、示範資料、更新檢查
-  manage_accounts: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 停用／恢復帳號、已停用清單
-  assign_platform_admin: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 任免平台管理員
+  manage_accounts: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 恢復帳號、已停用清單
+  disable_account: { admin: true, sensitive: true, rule: platformAdmin, deny: DENY.platform }, // 停用帳號（敏感：要再驗證身分）
+  assign_platform_admin: { admin: true, sensitive: true, rule: platformAdmin, deny: DENY.platform }, // 任免平台管理員（敏感）
   // 工作區
   manage_workspace: { admin: true, rule: workspaceAdmin }, // 工作區設定、AI 工具、附件保存時間、第一次設定、檔案稽核全站
-  assign_workspace_admin: { admin: true, rule: workspaceAdmin }, // 升降工作區管理員
+  assign_workspace_admin: { admin: true, sensitive: true, rule: workspaceAdmin }, // 升降工作區管理員（敏感）
+  // 可復原期（敏感）：scope 'platform'＝平台預設（平台管理員），'workspace'＝工作區覆寫（工作區管理員）。讀實際生效的值不用權限
+  set_recovery_window: { admin: true, sensitive: true, rule: (v, me, s) => (s.kind === 'platform' ? platformAdmin(v, me) : workspaceAdmin(v, me)),
+    deny: d => (d.s.kind === 'platform' ? DENY.platform : DENY.workspace)(d) },
   remove_member: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能把他移出工作區。`) }, // 把人移出工作區（帳號不受影響）；target 是平台管理員時只有平台管理員能
   see_removed_members: { admin: true, rule: workspaceAdmin },
   review_upgrade: { admin: true, rule: workspaceAdmin }, // 成員名冊：升級時同時是 leader 又是唯讀、先當唯讀成員的人（upgradeReview），略過標記 // 成員名冊：已移出工作區的人（待接受的邀請是 GET /api/invites?status=pending，invite）
@@ -104,8 +109,12 @@ const ACTIONS = {
   reset_login: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能重設他的登入。`) }, // target 是平台管理員時只有平台管理員能
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
   create_project: { admin: true, fresh: true, rule: (v, me) => workspaceAdmin(v, me) || (v.membersCreateProjects() && v.roleIn(me, 'workspace') === R.MEMBER) }, // fresh：check 時重讀工作區設定
+  // 刪除專案：先進入可復原期，期滿由系統永久清除（只有工作區管理員）
+  delete_project: { admin: true, sensitive: true, rule: workspaceAdmin }, // 刪除已封存的專案（敏感）
+  preview_project_delete: { admin: true, rule: workspaceAdmin }, // 刪除前的預覽：會刪掉多少、預計永久清除的時間（不用再驗證）
+  see_deleted_projects: { admin: true, rule: workspaceAdmin }, // 可復原期內的「已刪除的專案」
+  restore_project: { admin: true, rule: workspaceAdmin }, // 可復原期內復原（回到封存狀態）
   // 專案（只有工作區管理員）
-  delete_project: { admin: true, rule: workspaceAdmin },
   set_project_code: { admin: true, rule: workspaceAdmin },
   set_project_slug: { admin: true, rule: workspaceAdmin },
   // 專案（專案管理員）
@@ -126,13 +135,33 @@ const ACTIONS = {
   see_project_events: { rule: (v, me, s) => v.projectsOf(me).includes(s.project) || workspaceAdmin(v, me) },
   see_member: { rule: (v, me, { target: p }) => p.id === me.id || !!v.roleIn(me, 'workspace'), deny: d => d.err(404, 'NOT_FOUND', `找不到成員 ${d.s.target?.id || ''}`) }, // 成員名冊：工作區成員（含 AI）看得到工作區裡所有人；對象是不是啟用中的工作區成員由呼叫端過濾
   see_ai_state: { light: true, rule: (v, me, { target }) => v.projectsOf(target).some(p => v.projectsOf(me).includes(p)), deny: d => d.err(403, 'PROJECT_FORBIDDEN', '這位 AI 不屬於你的專案，看不到它的工作記憶。') }, // 工作記憶：至少一個共同專案
+  // 稽核紀錄（只能新增：沒有改、刪的動作）
+  see_audit_log: { admin: true, rule: workspaceAdmin }, // 工作區（含專案）範圍的事件
+  see_platform_audit_log: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 平台層的事件（任免平台管理員、停用帳號、備份還原…）
+  // 訊息（範圍帶 { project: 訊息的專案, message: { authorId, deletedBy } }）。AI 一律不行（包括自己發的）
+  // 刪除自己的訊息：人類作者；在訊息所屬專案是唯讀成員就不行（包括以前發的）。工作區管理員刪自己的也走這條
+  // 工作區政策設為「只有管理員」時只有工作區管理員（含平台管理員）。fresh：check 時重讀工作區設定
+  delete_own_message: { human: true, fresh: true, rule: (v, me, s) => me.kind === 'human' && s.message?.authorId === me.id && !v.readOnlyAt(me, s.project)
+      && (v.membersDeleteOwn() || workspaceAdmin(v, me)),
+    deny: d => (d.v.readOnlyAt(d.me, d.s.project) || d.s.message?.authorId !== d.me.id ? d.readOnly()
+      : d.err(403, 'NOT_ADMIN', `工作區政策設為只有工作區管理員能刪除訊息，自己的也一樣；要刪這則請找工作區管理員（${d.adminName()}）。`)) },
+  // 刪除任何人的訊息（含平台管理員、AI 發的）：工作區管理員。內容管理不是管理權，不套「不能動上層管理員」；專案管理員不行
+  delete_message: { admin: true, human: true, rule: workspaceAdmin },
+  // 復原被刪的訊息：工作區管理員復原任何一則；作者只能復原自己刪的（工作區管理員刪的回 RESTORE_FORBIDDEN）
+  restore_message: { human: true, rule: (v, me, s) => workspaceAdmin(v, me) || (me.kind === 'human' && s.message?.authorId === me.id && s.message?.deletedBy === me.id && !v.readOnlyAt(me, s.project)),
+    deny: d => (d.s.message?.authorId !== d.me.id ? DENY.workspace({ ...d, what: '復原別人的訊息' })
+      : d.s.message?.deletedBy !== d.me.id ? d.err(403, 'RESTORE_FORBIDDEN', '這則訊息是工作區管理員刪的，只有工作區管理員能復原。') : d.readOnly()) },
+  // 清空專案訊息（一次刪除一個專案所有群組訊息）：只有工作區管理員；專案管理員不行
+  clear_project_messages: { admin: true, human: true, sensitive: true, rule: workspaceAdmin }, // 清空（敏感：要再驗證身分）
+  preview_messages_clear: { admin: true, human: true, rule: workspaceAdmin }, // 清空前的預覽：會刪掉幾則訊息、幾個附件（不用再驗證）
+  restore_project_messages: { admin: true, human: true, rule: workspaceAdmin }, // 可復原期內的清空清單、整批復原一次清空
 };
 export const ACCESS_ACTIONS = Object.freeze(Object.keys(ACTIONS));
 
 const scopeOf = scope => {
-  if (scope === 'platform' || scope === 'workspace') return { kind: scope, project: null, target: null };
+  if (scope === 'platform' || scope === 'workspace') return { kind: scope, project: null, target: null, message: null };
   const s = scope || {};
-  return { kind: 'project' in s ? 'project' : 'workspace', project: s.project ?? null, target: s.target ?? null };
+  return { kind: 'project' in s ? 'project' : 'workspace', project: s.project ?? null, target: s.target ?? null, message: s.message ?? null };
 };
 
 // deps（成員資料的讀法，名字跟成員資格模組 src/membership.js 一致）：
@@ -147,8 +176,10 @@ const scopeOf = scope => {
 //   ownerOf(ai)              → AI 所屬人類的列（實際的唯讀要看他有沒有隱含權限）
 //   memberProjectsOf(p)      → 他明確加入的（未封存）專案（不含隱含權限；沒給就用 projectsOf）
 //   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
+//                            membersDeleteOwn() → 目前快取裡「一般成員可以刪除自己的訊息」（沒注入＝不行）
 //   isPlatformAdmin(p)       → 他的帳號是平台管理員（沒注入＝沒有平台管理員）
 //   visibilityOf(pj)         → 專案可見度（PROJECT_VISIBILITY；沒注入或不認得的值＝審核）
+//   isDeletedProject(pj)     → 專案在可復原期（已刪除、還沒永久清除）：對所有人都當它不存在（沒注入＝沒有）
 export function createAccess(deps) {
   const { ApiError, requireHuman, nameOf, projects, projectsOf, isolatedFrom, projectAdminsOf, isReadOnly } = deps;
   const memberProjectsOf = deps.memberProjectsOf || projectsOf;
@@ -187,10 +218,11 @@ export function createAccess(deps) {
       },
       active: pj => projects().includes(pj),
       membersCreateProjects: () => !!deps.membersCreateProjects?.(),
+      membersDeleteOwn: () => !!deps.membersDeleteOwn?.(),
       visibilityOf: pj => { const x = deps.visibilityOf?.(pj); return PROJECT_VISIBILITIES.includes(x) ? x : VIS.REVIEW; },
       // 私人專案只有專案成員與有隱含權限的人（工作區管理員等）看得到它存在；開放、審核所有人都看得到
       // （成員先判，不必讀成員資料；非成員看私人專案才要判上層管理員）
-      discovers: (p, pj) => !!p && (p.kind === 'system' || v.visibilityOf(pj) !== VIS.PRIVATE || projectsOf(p).includes(pj) || v.roleIn(p, { project: pj }) !== null),
+      discovers: (p, pj) => !!p && !deps.isDeletedProject?.(pj) && (p.kind === 'system' || v.visibilityOf(pj) !== VIS.PRIVATE || projectsOf(p).includes(pj) || v.roleIn(p, { project: pj }) !== null),
       // 看得到存在的專案（未封存）；錯誤訊息列可選的專案也用這個，不洩漏私人專案
       visibleProjects: p => projects().filter(pj => v.discovers(p, pj)),
       isProjectAdmin: (p, pj) => !!p && projectAdminsOf(pj).includes(p.id),
@@ -208,7 +240,9 @@ export function createAccess(deps) {
         const def = ACTIONS[action];
         if (!def) throw new Error(`沒有這個權限動作：${action}`);
         if (!me || (def.admin && me.kind !== 'human')) return false; // AI 不能做任何管理動作
-        return !!def.rule(v, me, scopeOf(scope));
+        const s = scopeOf(scope);
+        if (s.project && deps.isDeletedProject?.(s.project)) return false; // 可復原期內的專案：誰都不能對它做什麼
+        return !!def.rule(v, me, s);
       },
       implicitOnlyIn: (id, pj) => implicitOnly(people?.get(id), pj),
     };
@@ -238,7 +272,11 @@ export function createAccess(deps) {
     if (!def) throw new Error(`沒有這個權限動作：${action}`);
     if (def.human) requireHuman(me);
     const v = await load(ctx, { fresh: !!def.fresh, light: def.light });
-    if (!v.can(me, action, scope)) throw denial(v, me, action, scopeOf(scope), opts);
+    const s = scopeOf(scope);
+    // 可復原期內的專案：專案底下的動作對所有人（含管理員的隱含權限）都當專案不存在
+    if (s.project && deps.isDeletedProject?.(s.project)) throw DENY.notFound({ s, nameOf, err: (status, code, message) => new ApiError(status, code, message) });
+    if (!v.can(me, action, scope)) throw denial(v, me, action, s, opts);
+    if (def.sensitive) await deps.requireRecentAuth?.(me, ctx); // 敏感動作：再驗證身分
     return v;
   }
 

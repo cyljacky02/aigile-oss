@@ -4,3 +4,13 @@ export function isUniqueConstraintViolation(error, { constraint, columns }) {
   const failedColumns = String(error?.message ?? '').match(/(?:^|: )UNIQUE constraint failed: ([^:\r\n]+)/i)?.[1];
   return failedColumns === columns.join(', ');
 }
+// 資料表不存在（還沒跑資料庫升級）。PostgreSQL 42P01；SQLite、D1「no such table」
+export function isMissingTable(error) {
+  return error?.code === '42P01' || /no such table/i.test(String(error?.message ?? ''));
+}
+// 違反 NOT NULL（table：哪張表）。PostgreSQL 給錯誤碼與表名；SQLite、D1 只在訊息裡寫「表.欄位」
+export function isNotNullViolation(error, table) {
+  if (error?.code === '23502') return !table || error.table === table;
+  const t = String(error?.message ?? '').match(/NOT NULL constraint failed: ([^.\s]+)\./i)?.[1];
+  return !!t && (!table || t === table);
+}

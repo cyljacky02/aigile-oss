@@ -12,6 +12,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
+import { adminSession } from './test-admin.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-roster-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -33,6 +34,7 @@ try {
   const wang = await join('王小美', 'QA');
   const lin = await join('林小新', 'BA'); // 還沒加入任何專案
   const Bo = boss.participant.participantId, Cn = chen.participant.participantId, Wg = wang.participant.participantId, Ln = lin.participant.participantId;
+  boss.token = (await adminSession(call, boss.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入
   assert.equal((await call(boss.token, `/api/participants/${Cn}/projects`, 'PUT', { projects: [A] })).status, 200);
   assert.equal((await call(boss.token, `/api/participants/${Wg}/projects`, 'PUT', { projects: [A] })).status, 200);
   const ai = (await call(chen.token, '/api/my-ais', 'POST', { projects: [A], roleKey: 'PG', role: '程式開發', name: '陳的PG', ...S })).body;

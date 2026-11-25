@@ -7,6 +7,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
+import { adminSession } from './test-admin.js';
 import { addToProject, listProjectMembers } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-rmmem-'));
@@ -25,6 +26,7 @@ try {
   const chen = ok(await call(null, '/api/join', 'POST', { name: '陳昭宇', role: 'PG' }), '陳昭宇');
   const zhao = ok(await call(null, '/api/join', 'POST', { name: '趙小安', role: 'QA' }), '趙小安');
   const Cn = chen.participant.participantId, Zh = zhao.participant.participantId;
+  boss.token = (await adminSession(call, boss.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入
   const X = ok(await call(boss.token, '/api/projects', 'POST', { name: '舊專案' }), '建專案').id;
   ok(await addToProject(call, boss.token, A, [Cn, Zh]), '加入預設專案');
   ok(await addToProject(call, boss.token, X, [Cn, Zh]), '加入舊專案');

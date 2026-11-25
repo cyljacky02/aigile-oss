@@ -15,6 +15,7 @@ import path from 'node:path';
 import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
+import { adminSession } from './test-admin.js';
 import { dbStorage } from '../src/storage-db.js';
 import { scriptHashes } from './script-hashes.mjs';
 import { testToken } from './test-token.js';
@@ -47,6 +48,7 @@ try {
 
   const wang = (await req(null, '/api/join', 'POST', { name: '王小美', role: 'PO' })).body; // 第一位人類＝平台管理員＋工作區管理員
   const lin = (await req(null, '/api/join', 'POST', { name: '林工作', role: 'SM' })).body;
+  wang.token = (await adminSession(req, wang.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入
   assert.equal((await req(wang.token, `/api/participants/${lin.participant.participantId}/workspace-role`, 'PUT', { role: 'admin' })).status, 200, '林工作是工作區管理員（不是平台管理員）');
   const chen = (await req(null, '/api/join', 'POST', { name: '陳大文', role: 'PG' })).body;
   const CHEN = chen.participant.participantId;

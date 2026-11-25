@@ -14,22 +14,18 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { migrateNode, listMigrations, TRACK_SQL } from '../src/migrations.js';
+import { migrateNode, listMigrations, versionOf, TRACK_SQL } from '../src/migrations.js';
 import { d1Steps } from './migrate.js';
 import { startServer, sleep } from './browser-kit.js';
 import { scriptHashes } from './script-hashes.mjs';
+import { schema10 } from './legacy-db.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const MIG_DIR = path.join(ROOT, 'migrations');
 const SCHEMA = fs.readFileSync(path.join(ROOT, 'src/schema.sql'), 'utf8');
-// 1.0.x 的結構＝現在的 schema.sql 去掉 002 加的三欄（有 git 與版本標籤時，再對一次 v1.0.0、v1.0.2 的原檔）
-const OLD = SCHEMA.split('\n').filter(l => !/^\s+wake_(day|count|at) /.test(l) && !/^CREATE INDEX IF NOT EXISTS idx_files_message /.test(l)).join('\n') // 003 加的索引也去掉
-  .replace(/,\n\s*kb_status TEXT[\s\S]*?kb_card INTEGER[^\n]*(\n\s+in_kb [^\n]*)?/, '').replace(/-- 知識庫底層：[\s\S]*?CREATE INDEX IF NOT EXISTS idx_kb_pages [^\n]*\n/, '') // 004、005、006 知識庫加的欄位與表也去掉
-  .replace(/\n\s*status_id INTEGER[^\n]*/, '').replace(/-- 專案看板狀態：[\s\S]*?CREATE UNIQUE INDEX IF NOT EXISTS idx_project_statuses_name [^\n]*\n/, '') // 007 看板狀態加的欄位與表也去掉
-  .replace(/\n\s*(account_id|workspace_id|workspace_role|workspace_status|visibility) [^\n]*/g, '').replace(/-- 成員與權限（docs\/adr\/0002；migrations\/008）：[\s\S]*?CREATE INDEX IF NOT EXISTS idx_project_members_participant [^\n]*\n/, '') // 008 成員與權限加的欄位與表也去掉
-  .replace(/(\n  status TEXT NOT NULL DEFAULT 'active',[^\n]*)/, "$1\n  is_admin INTEGER NOT NULL DEFAULT 0,     -- 群組管理員（同時只有一位人類；可以交給別人）")
-  .replace(/(\n  standby_at [^\n]*)\n\);/, "$1\n  projects TEXT NOT NULL DEFAULT ''  -- 所屬專案（逗號分隔，至少一個）\n);"); // 009 拿掉的舊欄位補回來
-assert.notEqual(OLD, SCHEMA, '測試用的舊結構真的少了叫醒欄位');
+// 1.0.x 的結構＝固定的 1.0 schema.sql 原檔（scripts/legacy-db.js）；有 git 與版本標籤時，再對一次 v1.0.0、v1.0.2 的原檔
+const OLD = schema10();
+assert.ok(!/\bwake_count\b/.test(OLD) && SCHEMA.includes('wake_count'), '測試用的舊結構真的少了叫醒欄位');
 for (const tag of ['v1.0.0', 'v1.0.2']) {
   const g = spawnSync('git', ['show', `${tag}:src/schema.sql`], { cwd: ROOT, encoding: 'utf8' });
   if (g.status === 0) assert.equal(g.stdout.replace(/\r\n/g, '\n'), OLD.replace(/\r\n/g, '\n'), `舊結構跟 ${tag} 的 schema.sql 一樣`);
@@ -87,7 +83,7 @@ try {
   // ---------- 3. 新版程式開舊資料庫：自動升級 ----------
   const BASE = await startServer(kids, dataDir, { TEAM_CACHE_MS: '0', AIGILE_TEST_PG_URL: '' }); // 這裡驗的是舊 SQLite 檔升級：Postgres 模式也開 SQLite
   const ALL_MIGS = listMigrations(MIG_DIR).map(f => f.name); // 002 之後還有別的升級時一起套
-  assert.ok(kids[0].tail.includes(`資料庫升級：套用 ${ALL_MIGS.filter(n => !OLD_MIGS.includes(n)).join('、')}（目前版本 ${ALL_MIGS.length}）`) && /套用 002_wake_counts\.sql/.test(kids[0].tail), '啟動時自動套 002：' + kids[0].tail);
+  assert.ok(kids[0].tail.includes(`資料庫升級：套用 ${ALL_MIGS.filter(n => !OLD_MIGS.includes(n)).join('、')}（目前版本 ${versionOf(ALL_MIGS)}）`) && /套用 002_wake_counts\.sql/.test(kids[0].tail), '啟動時自動套 002：' + kids[0].tail);
   {
     const db = new DatabaseSync(file);
     assert.ok(['wake_day', 'wake_count', 'wake_at'].every(c => cols(db, 'participants').includes(c)), 'Node：升級後有三欄');

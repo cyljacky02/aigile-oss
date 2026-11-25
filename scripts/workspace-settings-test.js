@@ -51,7 +51,7 @@ try {
   assert.ok(seen.items.some(p => p.id === pj), '建立者看得到自己的專案');
   assert.deepEqual(seen.leaders[pj], [Cn], '建立者是該專案的專案管理員');
   assert.equal((await call(chen.token, `/api/projects/${pj}`, 'PATCH', { name: '陳的新專案' })).status, 200, '建立者能管理自己的專案（改名）');
-  assert.equal((await call(chen.token, `/api/projects/${pj}/delete-preview`)).status, 403, '永久刪除仍只有工作區管理員');
+  assert.equal((await call(chen.token, `/api/projects/${pj}/delete-preview`)).status, 403, '刪除專案仍只有工作區管理員');
 
   // AI 不能建立專案、不能看或改設定
   assert.equal((await call(ai.token, '/api/projects', 'POST', { name: 'AI 的專案' })).status, 403, 'AI 不能建立專案');

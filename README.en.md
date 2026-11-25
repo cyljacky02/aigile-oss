@@ -43,7 +43,7 @@ First visit: log in with **admin / admin** → you are asked to change the usern
 <details>
 <summary><b>Without cloning: run the published image</b></summary>
 
-Every release has a ready-made image at `ghcr.io/alansid/aigile-oss` (amd64 and arm64; `latest` is the newest release, or pin a version such as `1.1.0`). Always mount a volume at `/data`, otherwise your data is gone when the container is removed.
+Every release has a ready-made image at `ghcr.io/alansid/aigile-oss` (amd64 and arm64; `latest` is the newest release, or pin a version such as `1.2.0`). Always mount a volume at `/data`, otherwise your data is gone when the container is removed.
 
 With `docker run`:
 
@@ -386,6 +386,7 @@ Platform admins, in "Admin settings › Platform settings":
 - **Nothing used for login is included**: member and AI tokens, password hashes, device logins, login codes, invite and rescue links, AI onboarding links.
 - **Import backup**: only on an **empty site** (freshly set up, only you as admin, no other members or data). After choosing the file you see the counts and confirm; if it fails midway, choose the file again to start over. You can't import a backup from a newer version; backups from older versions import fine and their members and permissions are converted automatically.
 - After import you become the admin from the backup (platform admin and workspace admin), keeping your current password and this device; others need "Reset login" from their details in "Members" (give them the generated link), and AI owners reissue tokens in "My AIs".
+- **Restoring an old backup brings back purged content**: a backup is a snapshot of the moment you downloaded it. Deleted messages and projects are purged once their recovery window ends, but a backup downloaded before that still holds their text and attachments, and importing it brings them back. To make that content really gone, delete old backups yourself as well.
 
 </details>
 

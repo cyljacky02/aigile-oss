@@ -1,6 +1,6 @@
 // 畫面測試：「⚙️ 管理員設定」頁（開源版，照平台的管理員設定移植）
 // A. 頭像選單「管理」：⚙️ 管理員設定（只有管理員、帶待處理數）、📁 專案管理（開管理員設定 › 專案）、👥 成員管理
-// B. 電腦左側小目錄 7 區（待處理、工作區設定、專案、邀請、帳號與救援、稽核與儲存、平台設定）；手機一頁清單點進去
+// B. 電腦左側小目錄 9 區（待處理、工作區設定、專案、邀請、帳號與救援、稽核與儲存、工作區稽核紀錄、平台稽核紀錄、平台設定）；手機一頁清單點進去
 //    「待處理」件數只在大標題寫一次，卡片不再重複
 // C. 原處改連結：成員管理有名冊、專案成員、AI 職務、技能；「邀請新的人」開管理員設定 › 邀請；成員詳細的帳號區變一行連結（到成員名冊）；
 //    文件頁稽核只看自己的；舊網址 /members?tab=projects、invites、group、system 自動轉
@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
 import { startKit, findBrowser, until, sleep } from './browser-kit.js';
+import { adminSession } from './test-admin.js';
 import { makeProjectAdmin } from './test-members.js';
 
 if (!findBrowser()) { console.log('admin-settings-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
@@ -19,6 +20,7 @@ try {
   const { call } = kit;
   const join = async (name, role) => (await call(null, '/api/join', 'POST', { name, role })).body;
   const liu = await join('林志明', 'PO'), wang = await join('王小明', 'UX'), chen = await join('陳大文', 'PG');
+  liu.token = (await adminSession(call, liu.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入（網頁直接用這台裝置）
   const id = p => p.participant.participantId;
   for (const [p, pj] of [[wang, ['預設專案']], [chen, ['預設專案']]]) await call(liu.token, `/api/participants/${id(p)}/projects`, 'PUT', { projects: pj });
   assert.equal((await makeProjectAdmin(call, liu.token, id(wang), ['預設專案'])).status, 200, 'wang 當預設專案 leader');
@@ -57,9 +59,9 @@ try {
   await click('#av-menu [data-av="admin"]');
   await until(() => js("!!document.querySelector('.adm-nav') && location.pathname === '/admin'"), 8000, '管理員設定');
 
-  // ---------- B 左側 7 區 ----------
+  // ---------- B 左側 9 區 ----------
   const nav = await J("[...document.querySelectorAll('.adm-nav [data-adm]')].map(b => b.dataset.adm + ':' + b.querySelector('.adm-t b').textContent)");
-  assert.deepEqual(nav, ['todo:待處理', 'group:工作區設定', 'projects:專案', 'invites:邀請', 'accounts:帳號與救援', 'audit:稽核與儲存', 'system:平台設定'], 'B 七區照順序');
+  assert.deepEqual(nav, ['todo:待處理', 'group:工作區設定', 'projects:專案', 'invites:邀請', 'accounts:帳號與救援', 'audit:稽核與儲存', 'auditlog:工作區稽核紀錄', 'platlog:平台稽核紀錄', 'system:平台設定'], 'B 九區照順序');
   assert.match(await js("document.querySelector('#crumbs').textContent"), /管理員設定/, '麵包屑：管理員設定');
   assert.equal(await js("document.querySelector('.adm-nav [data-adm=\"todo\"] .adm-n')?.textContent"), '2', 'B 待處理 2');
   const todo = await J("[...document.querySelectorAll('.adm-todo .adm-row')].map(r => r.innerText.replace(/\\s+/g, ' '))");
@@ -153,14 +155,14 @@ try {
   assert.ok(await js("!document.querySelector('.adm-nav, [data-adm]')"), 'leader 看不到管理員設定');
   const wav = await avItems();
   assert.ok(!wav.includes('admin=') && !wav.includes('pm-projects=') && /perm=👥成員管理/.test(wav), 'leader 頭像只有成員管理：' + wav);
-  for (const [u, m, b] of [['/api/invites', 'GET'], ['/api/group', 'PUT', { name: 'x' }], ['/api/group/settings', 'GET'], ['/api/project-deletions', 'GET'], ['/api/participants/disabled', 'GET'], ['/api/admin/backup/status', 'GET']]) assert.equal((await call(wang.token, u, m, b)).status, 403, `非管理員打 ${m} ${u} 照樣擋`);
+  for (const [u, m, b] of [['/api/invites', 'GET'], ['/api/group', 'PUT', { name: 'x' }], ['/api/group/settings', 'GET'], ['/api/deleted-projects', 'GET'], ['/api/project-deletions', 'GET'], ['/api/participants/disabled', 'GET'], ['/api/admin/backup/status', 'GET']]) assert.equal((await call(wang.token, u, m, b)).status, 403, `非管理員打 ${m} ${u} 照樣擋`);
 
   // ---------- E 手機 375：一頁清單點進去 ----------
   await size(375, 812);
   await login(liu.token, '/admin');
   await until(() => js("!!document.querySelector('.adm-list')"), 10000, '手機清單');
   const list = await J("[...document.querySelectorAll('.adm-list .adm-li')].map(b => ({ t: b.querySelector('.adm-t b').textContent, sub: getComputedStyle(b.querySelector('.adm-sub')).display !== 'none', go: getComputedStyle(b.querySelector('.adm-go')).display !== 'none' }))");
-  assert.equal(list.length, 7, '手機 7 項'); assert.ok(list.every(x => x.sub && x.go), '手機每項有說明和 ›');
+  assert.equal(list.length, 9, '手機 9 項'); assert.ok(list.every(x => x.sub && x.go), '手機每項有說明和 ›');
   assert.ok(!(await js("!!document.querySelector('.adm-main')")), '手機清單頁還沒有內容');
   assert.ok(!(await hscroll()), '375 清單沒有橫向捲動');
   await shot('8-手機-清單');
@@ -172,7 +174,7 @@ try {
   await shot('9-手機-點進專案');
   await click('[data-adm-back]');
   await until(() => js("!!document.querySelector('.adm-list') && location.pathname === '/admin'"), 5000, '‹ 回清單');
-  for (const k of ['todo', 'group', 'invites', 'accounts', 'audit', 'system']) {
+  for (const k of ['todo', 'group', 'invites', 'accounts', 'audit', 'auditlog', 'platlog', 'system']) {
     await click(`.adm-list [data-adm="${k}"]`);
     await until(() => js(`location.pathname === '/admin/${k}' && !!document.querySelector('.adm-main')`), 8000, '手機 ' + k);
     await sleep(400);

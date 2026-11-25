@@ -1,7 +1,7 @@
 // PLAT-381：專案 leader 管自己的專案，日常待處理先給 leader（UX #6431，昱志兩題都選 A）
-// A. 後端：改名、封存、還原放給「管理員或這個專案的 leader」；新增、永久刪除、邀請仍限管理員；不是 leader 的打 API 被擋
+// A. 後端：改名、封存、還原放給「管理員或這個專案的 leader」；新增、刪除專案、邀請仍限管理員；不是 leader 的打 API 被擋
 // B. 頭像選單：leader 有「📁 專案管理 · 你負責的 N 個專案」；管理員照舊（管理員設定、專案管理捷徑）；一般成員沒有「管理」區
-// C. leader 的專案管理頁（/projects）：只列自己當 leader 的專案，沒有新增；⋯ 有改名、程式庫、成員、封存，永久刪除灰掉
+// C. leader 的專案管理頁（/projects）：只列自己當 leader 的專案，沒有新增；⋯ 有改名、程式庫、成員、封存，刪除灰掉
 // D. 專案旁 ⚙：leader 跟管理員一樣有改名、程式庫與分支、成員與本專案角色；封存不放 ⚙（昱志 11/21 選 A），只在專案管理頁
 // E. 要你處理：leader 最上面「👑 你負責的專案」放加入申請、技能核准；管理員 1 天內看不到，超過 1 天才出現並註明「leader 還沒處理」
 // F. 1280、375 不橫向捲動
@@ -43,7 +43,7 @@ try {
   assert.ok(pv.items.find(p => p.id === TP)?.archived, '已封存：' + JSON.stringify(pv.items.map(p => [p.id, p.name, p.archived])));
   assert.deepEqual([...(pv.archivedLeaders?.[TP] || [])].sort(), [id(liu), id(wang)].sort(), '封存的專案也帶 leader（前端才能讓 leader 還原；建立者劉昱志也是）');
   assert.equal((await call(chen.token, `/api/projects/${encodeURIComponent(TP)}/unarchive`, 'POST')).status, 403, '不是 leader 不能還原');
-  assert.equal((await call(wang.token, `/api/projects/${encodeURIComponent(TP)}/delete-preview`)).status, 403, 'leader 不能永久刪除');
+  assert.equal((await call(wang.token, `/api/projects/${encodeURIComponent(TP)}/delete-preview`)).status, 403, 'leader 不能刪除專案');
   assert.equal((await call(wang.token, `/api/projects/${encodeURIComponent(TP)}/unarchive`, 'POST')).status, 200, 'leader 能還原自己的專案');
 
   // 待處理：預設專案（有 leader）、第二專案（沒有 leader）各一個加入申請；預設專案一個含腳本的技能
@@ -83,17 +83,17 @@ try {
     // ---------- C leader 的專案管理頁 ----------
     await click('#av-menu [data-av="lead-projects"]');
     await until(() => js("location.pathname === '/projects' && !!document.querySelector('.pm-ptable')"), 8000, L + '專案管理頁');
-    assert.match(await txt('.work-title'), /📁 專案管理 你是專案管理員的專案 · 永久刪除專案請找工作區管理員 劉昱志/, L + '標題與副標');
+    assert.match(await txt('.work-title'), /📁 專案管理 你是專案管理員的專案 · 刪除專案請找工作區管理員 劉昱志/, L + '標題與副標');
     assert.deepEqual(await J("[...document.querySelectorAll('.pm-prow .c-pname b')].map(b => b.textContent)"), ['預設專案', '測試專案'], L + '只列自己當 leader 的專案');
     assert.equal(await js("!!document.querySelector('[data-pm-newproj], .adm-nav')"), false, L + '沒有新增專案、沒有管理員設定左欄');
     assert.match(await js("document.querySelector('#crumbs')?.textContent || ''"), /專案管理/, L + '麵包屑');
     await click('[data-pm-more="預設專案"]');
     await until(() => js("!!document.querySelector('.pm-more-menu')"), 5000, L + '⋯ 選單');
     const mi = await J("[...document.querySelectorAll('.pm-more-menu [role=menuitem]')].map(b => b.innerText.replace(/\\s+/g, ' ').trim())");
-    assert.deepEqual(mi.map(x => x.replace(/^\S+\s*/, '').split(' ')[0]), ['改名', '程式庫與分支', '專案可見度', '成員與專案角色', '看板狀態', '異動紀錄', '封存專案', '永久刪除'], L + '⋯ 選單：' + mi.join(' / '));
-    assert.match(mi[7], /只有工作區管理員/, L + '永久刪除寫只有工作區管理員');
+    assert.deepEqual(mi.map(x => x.replace(/^\S+\s*/, '').split(' ')[0]), ['改名', '程式庫與分支', '專案可見度', '成員與專案角色', '看板狀態', '異動紀錄', '封存專案', '刪除'], L + '⋯ 選單：' + mi.join(' / '));
+    assert.match(mi[7], /只有工作區管理員/, L + '刪除寫只有工作區管理員');
     assert.equal(await js("document.querySelector('.pm-more-menu [data-pp=\"archive\"]').classList.contains('danger')"), false, L + '封存可還原，用一般色（UX #6479）');
-    assert.equal(await js("document.querySelector('.pm-more-menu [data-pp=\"noop\"]').getAttribute('aria-disabled')"), 'true', L + '永久刪除灰掉');
+    assert.equal(await js("document.querySelector('.pm-more-menu [data-pp=\"noop\"]').getAttribute('aria-disabled')"), 'true', L + '刪除灰掉');
     assert.ok(!(await hscroll()), L + '專案管理頁不橫向捲動');
     await shot(`PLAT-381-2-${tag}-leader-專案管理頁`);
     await js("document.body.click(); true");
@@ -132,7 +132,7 @@ try {
     await until(() => js("!!document.querySelector('[data-pset=\"預設專案\"]')"), 10000, L + '管理員的專案 ⚙');
     await js("(() => { const b = document.querySelector('[data-pset=\"預設專案\"]'); b.scrollIntoView(); b.click(); return true; })()");
     await until(() => js("!document.querySelector('#pset-menu')?.hidden"), 5000, L + '管理員 ⚙ 選單');
-    assert.equal(await js("[...document.querySelectorAll('#pset-menu [data-pset-act]')].map(b => b.dataset.psetAct).join(',')"), 'rename,repo,visibility,members,kbai', L + '管理員的 ⚙ 跟 leader 一樣、沒有封存');
+    assert.equal(await js("[...document.querySelectorAll('#pset-menu [data-pset-act]')].map(b => b.dataset.psetAct).join(',')"), 'rename,repo,visibility,members,kbai,clearmsgs', L + '管理員的 ⚙ 跟 leader 一樣、沒有封存；多了清空專案訊息（只有工作區管理員）');
     await shot(`PLAT-381-5b-${tag}-管理員-專案齒輪`);
     await js("document.body.click(); true");
     await login(liu.token, '/p/main/inbox');
@@ -168,12 +168,12 @@ try {
   await login(wang.token, '/projects');
   await until(() => js("document.documentElement.lang === 'en' && !!document.querySelector('.pm-ptable')"), 10000, '英文專案管理頁');
   const enP = await txt('#page-work');
-  assert.match(enP, /Projects you administer · ask a workspace admin \(劉昱志\) to permanently delete projects/, '英文副標：' + enP.slice(0, 200));
+  assert.match(enP, /Projects you administer · ask a workspace admin \(劉昱志\) to delete projects/, '英文副標：' + enP.slice(0, 200));
   assert.match(enP, /Projects you manage · 2/, '英文卡片標題（跟要你處理同一個說法，UX #6595）');
   await click('[data-pm-more="預設專案"]');
   await until(() => js("!!document.querySelector('.pm-more-menu')"), 5000, '英文 ⋯ 選單');
   const enM = await txt('.pm-more-menu');
-  assert.match(enM, /Rename[\s\S]*Repository and branch[\s\S]*Members and project roles[\s\S]*Change log[\s\S]*Archive project[\s\S]*Can be restored[\s\S]*Delete permanently[\s\S]*Workspace admins only/, '英文 ⋯：' + enM);
+  assert.match(enM, /Rename[\s\S]*Repository and branch[\s\S]*Members and project roles[\s\S]*Change log[\s\S]*Archive project[\s\S]*Can be restored[\s\S]*Delete[\s\S]*Workspace admins only/, '英文 ⋯：' + enM);
   assert.deepEqual(zhLeft(enP + ' ' + enM), [], '專案管理頁沒有中文殘留');
   await shot('PLAT-381-8-電腦-英文-leader-專案管理頁');
   await js("document.body.click(); true");

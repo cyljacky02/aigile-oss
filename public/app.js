@@ -1,7 +1,7 @@
 // Aigile-Switch 網頁端
 (() => {
   const $ = sel => document.querySelector(sel);
-  const APP_VERSION = '1.1.0'; // 要跟 package.json 一樣（version-test 會檢查）
+  const APP_VERSION = '1.2.0'; // 要跟 package.json 一樣（version-test 會檢查）
   const TOKEN_KEY = 'aigile-switch-token';
   const THEME_KEY = 'aigile-switch-theme';
   const FILTER_KEY = 'aigile-switch-only-mine';
@@ -58,7 +58,7 @@
   const stName = c => c.statusName ?? c.status;
   // 專案看板的欄／篩選鍵：每個類別第一個狀態用類別名稱（沒自訂過的專案跟以前一樣），其他用 s:狀態 ID
   const stKeys = sts => sts.map((s, i) => ({ ...s, key: sts.findIndex(x => x.category === s.category) === i ? s.category : 's:' + s.id }));
-  async function api(path, { method = 'GET', body, timeoutMs = 0 } = {}) {
+  async function api(path, { method = 'GET', body, timeoutMs = 0, reauthed = false } = {}) {
     // 輪詢要設逾時，否則網路卡住時 fetch 可能永遠不回來，整個輪詢跟著停
     const ctl = timeoutMs ? new AbortController() : null;
     const timer = ctl && setTimeout(() => ctl.abort(), timeoutMs);
@@ -86,6 +86,9 @@
       err.code = data?.error?.code; err.captchaRequired = !!data?.error?.captchaRequired; err.suggestion = data?.error?.suggestion || ''; err.field = data?.error?.field || '';
       state.lastErr = { code: err.code || `HTTP ${r.status}`, at: Date.now() };
       if (state.me && (err.code === 'INVALID_TOKEN' || err.code === 'TOKEN_EXPIRED')) logout(false);
+      // 敏感操作：輸入密碼再驗證身分，通過後自動重送原本的操作（只重送一次）；還沒設密碼就引導去設定
+      if (state.me && err.code === 'REAUTH_REQUIRED' && !reauthed && await reauthDialog()) return api(path, { method, body, timeoutMs, reauthed: true });
+      if (state.me && err.code === 'PASSWORD_REQUIRED') { passwordRequiredDialog(err.message); }
       throw err;
     }
     return data;
@@ -1020,6 +1023,8 @@
   function liveEvent(kind, raw) {
     if (!kind || kind === 'hello' || kind === 'bye') return;
     if (kind === 'join') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} return onJoinDecided(x).catch(() => {}); }
+    if (kind === 'messages_cleared' || kind === 'messages_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return reloadProjMsgs(x.project); } // 整個專案的訊息被清空或整批復原
+    if (kind === 'message_deleted' || kind === 'message_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return x.id ? reloadMsg(x.id).catch(() => {}) : undefined; } // 別人刪除或復原：重讀那一則
     liveConn.kinds.add(kind);
     clearTimeout(liveConn.timer);
     liveConn.timer = setTimeout(() => {
@@ -1073,6 +1078,7 @@
       for (let i = 0; i < 5; i++) {
         const d = await api(`/api/messages?limit=100&after=${encodeURIComponent(state.nextCursor)}`, { timeoutMs: 8_000 });
         d.items.forEach(onNewMessage);
+        noteChangesVer(d);
         if (d.items.length) state.newMsgAt = Date.now(); // 收件匣據此決定要不要重抓通知
         state.nextCursor = d.nextCursor;
         if (!d.hasMore) break;
@@ -1351,7 +1357,83 @@
     renderMessages(false); box.scrollTop = top;
   }
 
+  // ---------- 刪除與復原訊息 ----------
+  // 被刪除的訊息留一行佔位「此訊息已被 X 於 T 刪除」；可以復原時多「復原」（可復原期內：工作區管理員，或刪自己訊息的作者）
+  const msgGone = m => !!m.purged || (!!m.purgeAt && Date.parse(m.purgeAt) <= Date.now());
+  const canRestoreMsg = m => !!m.deleted && !msgGone(m) && (isAdmin() || (isMine(m) && m.deletedBy?.participantId === meId() && !meRO(m.project || 'cross')));
+  // 佔位文字：刪除者與刪除時間（訊息串、卡片詳情的相關訊息共用）
+  const goneText = m => { const who = m.deletedBy?.name || '?', t = m.deletedAt ? fmtTime(m.deletedAt) : ''; return L(`此訊息已被 ${who} 於 ${t} 刪除`, `Deleted by ${who} · ${t}`); };
+  function deletedHtml(m) {
+    return `<article class="msg msg-deleted" id="msg-${esc(m.messageId)}">
+      <p class="msg-gone muted small"><span>${esc(goneText(m))}</span>${canRestoreMsg(m) ? ` <button type="button" class="link" data-msg-restore="${esc(m.messageId)}">復原</button>` : ''}</p>
+    </article>`;
+  }
+  // 「刪除」按鈕：''＝可以刪；文字＝按了說明為什麼不能刪；null＝不出現（別人的訊息）
+  // 作者刪自己的（唯讀成員不行；工作區政策設為只有工作區管理員時也不行）、工作區管理員刪任何人的；自己 AI 發的要找工作區管理員
+  function delWhy(m) {
+    if (state.me?.memberType !== 'human' || m.deleted) return null;
+    if (isAdmin()) return '';
+    if (isMine(m)) {
+      if (meRO(m.project || 'cross')) return '你在這個專案是唯讀成員，不能刪除訊息（包括自己以前發的）。';
+      return state.projMeta.canDeleteOwnMessages !== false ? '' : '工作區政策設為只有工作區管理員能刪除訊息，自己的也一樣：請找工作區管理員刪除。';
+    }
+    const a = state.participants.get(m.author.participantId) || m.author;
+    if (a.memberType === 'ai' && a.ownerParticipantId === meId()) return 'AI 不能刪除訊息，你也不能刪你的 AI 發的訊息：請找工作區管理員刪除。';
+    return null;
+  }
+  const delBtn = m => { const w = delWhy(m); return w === null ? '' : `<button class="reply-btn del-btn" type="button" data-msg-del="${esc(m.messageId)}"${w ? ` data-del-why="${esc(w)}"` : ''}>刪除</button>`; };
+  // 換掉畫面上的一則（刪除、復原後），捲動位置不動
+  function replaceMessage(m) {
+    if (!m?.messageId) return;
+    state.byId.set(m.messageId, m);
+    const i = state.messages.findIndex(x => x.messageId === m.messageId);
+    if (i >= 0) state.messages[i] = m;
+    drawerMsgChanged(m.messageId);
+    const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top;
+  }
+  // 別人刪除、復原、清空了訊息：輪詢回來的 changesVer 跟上次不同就照原位重讀已載入的訊息（Workers 沒有即時通道時靠這個）
+  function noteChangesVer(d) {
+    if (!d?.changesVer) return;
+    if (state.changesVer && d.changesVer !== state.changesVer) refreshLoaded().catch(() => {});
+    state.changesVer = d.changesVer;
+  }
+  // 已載入的訊息（訊息串的最新一段或前後文，加上開著的卡片詳情裡的相關訊息）問伺服器哪些被刪除、復原、永久清除了，只換那幾則
+  // 送上手上每則的狀態（見 GET /api/messages/changed），每次 100 則、載入再多也全部問完；不動捲動位置、不離開前後文
+  async function refreshLoaded() {
+    const ids = new Set((state.messages || []).map(m => m.messageId));
+    for (const mid of (work.openId && work.detail?.messageIds) || []) if (state.byId?.has(mid)) ids.add(mid);
+    const mark = m => m.messageId + (m.deleted ? '.' + (Date.parse(m.deletedAt) || 0) + (m.purged ? '.p' : '') : '');
+    const have = [...ids].map(id => mark(state.byId.get(id) || state.messages.find(m => m.messageId === id)));
+    const fresh = new Map();
+    for (let i = 0; i < have.length; i += 100) {
+      const d = await api(`/api/messages/changed?have=${encodeURIComponent(have.slice(i, i + 100).join(','))}`);
+      for (const m of d.items) fresh.set(m.messageId, m);
+    }
+    if (!fresh.size) return;
+    for (const m of fresh.values()) { state.byId.set(m.messageId, m); drawerMsgChanged(m.messageId); }
+    if (!state.messages.some(m => fresh.has(m.messageId))) return;
+    state.messages = state.messages.map(m => fresh.get(m.messageId) || m);
+    const box = $('#messages'), top = box.scrollTop; renderMessages(false); box.scrollTop = top;
+  }
+  async function reloadMsg(id) {
+    if (!state.byId.has(id)) return;
+    replaceMessage(await api(`/api/messages/${encodeURIComponent(id)}`));
+  }
+  async function deleteMsg(id, why) {
+    if (why) return toast(why, 6000);
+    const m = state.byId.get(id);
+    if (!m) return;
+    const ok = await confirmDialog({ title: '刪除訊息', danger: true, confirmText: '刪除',
+      message: `<p>${esc(isMine(m) ? '刪除這則訊息？' : `刪除 ${m.author.name} 的這則訊息？`)}</p><p class="muted small">對話裡會留一行「已刪除」，回覆串與卡片關聯不會斷；可復原期內可以復原，之後永久清除。</p>` });
+    if (!ok) return;
+    try { replaceMessage((await api(`/api/messages/${encodeURIComponent(id)}`, { method: 'DELETE' })).message); toast('已刪除'); refreshInboxCount(); } catch (err) { toast(err.message); }
+  }
+  async function restoreMsg(id) {
+    try { replaceMessage((await api(`/api/messages/${encodeURIComponent(id)}/restore`, { method: 'POST' })).message); toast('已復原'); } catch (err) { toast(err.message); }
+  }
+
   function messageHtml(m) {
+    if (m.deleted) return deletedHtml(m);
     const prevCard = state.lastCard;
     state.lastCard = ''; // 一行／精簡沒有卡片列，下一則同卡要完整顯示
     if (isFlowLine(m)) return flowLineHtml(m);
@@ -1382,6 +1464,7 @@
         <div class="msg-foot${linkedCapsules(m) || state.open.has(m.messageId) || (!m.file && !ai && isLong(m.text)) || repliesOf(m.messageId).length ? '' : ' acts-only'}">
           <button class="reply-btn" type="button" data-reply="${esc(m.messageId)}">回覆</button>
           ${m.file ? '' : `<button class="reply-btn newcard" type="button" data-newcard="${esc(m.messageId)}">＋建卡</button>`}
+          ${delBtn(m)}
           ${linkedCapsules(m)}
           ${state.open.has(m.messageId) ? `<button type="button" class="link more" data-fold="${esc(m.messageId)}">收合 ▴</button>` : !m.file && !ai && isLong(m.text) ? `<button type="button" class="link more" data-more="${esc(m.messageId)}">${state.expanded.has(m.messageId) ? '收合' : '展開全文'}</button>` : ''}
           ${threadToggle(m)}
@@ -1440,6 +1523,7 @@
   }
   // 組內每則精簡：小頭像、名字、標籤、時間、要你回覆；AI 結論＋細節照原樣；不顯示角色行、卡片列、底部卡號
   function groupMsgHtml(m0, ids, cid) {
+    if (m0.deleted) return deletedHtml(m0);
     const tag = tagOf(m0.text);
     if (!state.open.has(m0.messageId) && !needReply(m0) && !m0.file && (tag === '接單' || (tag === 'AI 簽到' && authorKind(m0) === 'ai'))) return thinLineHtml(cid ? { ...m0, text: stripCardKey(m0.text, cid) } : m0); // 接單、簽到變細行（不重寫卡號）
     const m = cid ? { ...m0, text: stripCardKey(m0.text, cid) } : m0; // 卡片串內文不重寫卡號
@@ -1458,6 +1542,7 @@
       ${authHtml(m)}
       <div class="msg-foot">
         ${needReply(m) ? `<button class="reply-btn" type="button" data-reply="${esc(m.messageId)}">回覆這則</button>` : ''}
+        ${delBtn(m)}
         ${state.open.has(m.messageId) ? `<button type="button" class="link more" data-fold="${esc(m.messageId)}">收合 ▴</button>` : !m.file && !ai && isLong(m.text) ? `<button type="button" class="link more" data-more="${esc(m.messageId)}">${state.expanded.has(m.messageId) ? '收合' : '展開全文'}</button>` : ''}
         ${threadToggle(m)}
       </div>
@@ -1677,7 +1762,7 @@
   async function loadProjectList() {
     const d = await api('/api/projects');
     state.projectList = d.items;
-    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', leaders: d.projectAdmins || d.leaders || {}, archivedLeaders: d.archivedProjectAdmins || d.archivedLeaders || {}, readOnly: d.viewers || d.readOnly || {}, join: d.join || {}, canCreateProject: !!d.canCreateProject}; // join // 、
+    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', leaders: d.projectAdmins || d.leaders || {}, archivedLeaders: d.archivedProjectAdmins || d.archivedLeaders || {}, readOnly: d.viewers || d.readOnly || {}, join: d.join || {}, canCreateProject: !!d.canCreateProject, canDeleteOwnMessages: d.canDeleteOwnMessages !== false}; // join // 、
     document.querySelectorAll('[data-admin-only]').forEach(b => { b.hidden = !d.adminId || d.adminId !== state.me?.participantId; });
     if (typeof drawAvatarMenu === 'function') drawAvatarMenu();
     if (state.me) drawMe(); // 知道誰是管理員後重畫名片
@@ -2040,6 +2125,7 @@
     state.mobileWin = mobile;
     state.byId = state.byId || new Map();
     setMessages(d.items);
+    if (d.changesVer) state.changesVer = d.changesVer;
     const seen = Number(store.get(seenKey())) || 0; // 上次看到的地方（這台裝置）
     state.seenId = seen ? (d.items.find(x => x.sequence > seen && !isMine(x) && visible(x))?.messageId || null) : null;
     markSeen(Math.max(0, ...d.items.map(x => x.sequence || 0)));
@@ -2239,6 +2325,10 @@
     if (cap) return openCard(cap.dataset.cap, cap);
     const nc = e.target.closest('[data-newcard]');
     if (nc) return openNewCard(null, state.byId.get(nc.dataset.newcard));
+    const dl = e.target.closest('[data-msg-del]');
+    if (dl) return deleteMsg(dl.dataset.msgDel, dl.dataset.delWhy);
+    const rs = e.target.closest('[data-msg-restore]');
+    if (rs) return restoreMsg(rs.dataset.msgRestore);
     if (authClick(e)) return;
     const sha = e.target.closest('[data-sha]');
     if (sha) return copyText(sha.dataset.sha).then(ok => toast(ok ? '已複製完整 SHA' : '複製失敗'));
@@ -2673,6 +2763,49 @@
       const ex = overlay.querySelector('[data-expect]');
       if (ex) { ex.addEventListener('input', () => { overlay.querySelector('[data-ok]').disabled = ex.value.trim() !== expectText; }); ex.focus(); } else overlay.querySelector(cancelPrimary ? '[data-close]:not(.modal-x)' : '[data-ok]').focus();
     });
+  }
+  // 再驗證身分：敏感的管理操作被擋（REAUTH_REQUIRED）時跳出，輸入密碼通過回 true、取消回 false。
+  // 輸錯密碼留在對話框重輸；同時有好幾個請求被擋只跳一個，大家等同一個結果
+  let reauthOpen = null;
+  function reauthDialog() {
+    return (reauthOpen ||= new Promise(resolve => {
+      const prev = document.activeElement;
+      const host = document.createElement('div');
+      host.className = 'confirm-root reauth-root';
+      host.innerHTML = modalFrame({
+        title: '再驗證身分', size: 'narrow',
+        body: `<form id="reauth-form" class="stack" novalidate>
+          <p class="muted small">這是敏感操作，請再輸入一次你的密碼。驗證後 10 分鐘內，這台裝置不必再輸入。</p>
+          <label>密碼<span class="pwd-wrap"><input name="password" id="reauth-pw" type="password" maxlength="128" autocomplete="current-password"><button type="button" class="pwd-eye" data-eye aria-pressed="false" aria-label="顯示密碼">顯示</button></span></label>
+          <p class="error" id="reauth-err" role="alert"></p>
+        </form>`,
+        foot: '<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="reauth-form" data-reauth-ok>確認</button>',
+      });
+      document.body.append(host);
+      const overlay = host.firstElementChild, form = host.querySelector('#reauth-form'), input = form.password, errEl = host.querySelector('#reauth-err'), ok = host.querySelector('[data-reauth-ok]');
+      const done = v => { host.remove(); reauthOpen = null; if (prev?.isConnected) prev.focus(); resolve(v); };
+      holdBackdrop(overlay);
+      overlay.addEventListener('click', e => { if (e.target.closest('[data-close]')) done(false); });
+      overlay.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } });
+      form.addEventListener('submit', async e => {
+        e.preventDefault();
+        if (!input.value) { errEl.textContent = '請輸入密碼'; return input.focus(); }
+        ok.disabled = true; errEl.textContent = '';
+        try { await api('/api/auth/reauth', { method: 'POST', body: { password: input.value } }); done(true); }
+        catch (err) {
+          if (err.code === 'PASSWORD_REQUIRED' || err.code === 'DEVICE_REQUIRED') { done(false); return; }
+          errEl.textContent = err.message; input.select();
+        } finally { ok.disabled = false; }
+      });
+      input.focus();
+    }));
+  }
+  // 還沒設密碼就做敏感操作（PASSWORD_REQUIRED）：說明原因，按鈕直接打開「個人設定 › 帳號與登入」
+  async function passwordRequiredDialog(message) {
+    if (document.querySelector('.pwdreq-root')) return;
+    const p = confirmDialog({ title: '先設定密碼', message: esc(message), confirmText: '去設定密碼', cancelText: '稍後' });
+    document.body.lastElementChild?.classList.add('pwdreq-root'); // confirmDialog 剛接在 body 最後
+    if (await p) openSettings({ tab: 'acct' });
   }
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && !document.querySelector('.confirm-root') && $('#modal-root').firstElementChild) closeModal();
@@ -3662,6 +3795,7 @@
       <div class="sec-main"><span>${esc(n.detail)} · ${esc(when)}</span><span class="small">${hint}</span></div>
       <div class="sec-acts">${act}<button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(n.detail)} 知道了">知道了</button></div></div>`;
     }
+    if (/^admin_/.test(n.kind)) return adminSecHtml(n, when);
     const [text, hint] = n.kind === 'password_login' ? [`有新裝置用你的帳號密碼登入：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它並改密碼。']
       : n.kind === 'rescue_login' ? [`有裝置用主機救援連結登入你的帳號：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並檢查誰有主機部署權限。']
       : n.kind === 'login_code_read' ? [`有裝置讀取了你的登入碼：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並換一組登入碼（舊的會失效）。']
@@ -3670,6 +3804,27 @@
     return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🔐</span>
       <div class="sec-main"><span>${esc(text)}</span><span class="small">${esc(hint)}</span></div>
       <div class="sec-acts">${n.kind === 'rescue_link' ? '' : '<button type="button" class="btn small" data-sec-devices>我的裝置</button>'}<button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
+  }
+  // 管理員異動通知：細節是 JSON { a: 操作者, t: 對象, p?: 專案 }，這裡組成句子（英文介面照字典換）；沒有「我的裝置」按鈕
+  function adminSecHtml(n, when) {
+    let d = {};
+    try { d = JSON.parse(n.detail) || {}; } catch {}
+    const a = d.a || '某位管理員', t = d.t || '', p = d.p || d.t || '';
+    const text = n.kind === 'admin_platform_grant' ? `${a} 把 ${t} 升為平台管理員 · ${when}。`
+      : n.kind === 'admin_platform_revoke' ? `${a} 把 ${t} 降為一般帳號（不再是平台管理員）· ${when}。`
+      : n.kind === 'admin_workspace_grant' ? `${a} 把 ${t} 升為工作區管理員 · ${when}。`
+      : n.kind === 'admin_workspace_revoke' ? `${a} 把 ${t} 降為成員（不再是工作區管理員）· ${when}。`
+      : n.kind === 'admin_account_disable' ? `${a} 停用了 ${t} 的帳號 · ${when}。`
+      : n.kind === 'admin_account_enable' ? `${a} 恢復了 ${t} 的帳號 · ${when}。`
+      : n.kind === 'admin_project_messages_clear' ? `${a} 清空了專案「${p}」的訊息 · ${when}。`
+      : n.kind === 'admin_project_messages_restore' ? `${a} 復原了專案「${p}」被清空的訊息 · ${when}。`
+      : n.kind === 'admin_project_delete' ? `${a} 刪除了專案「${p}」· ${when}。`
+      : n.kind === 'admin_project_restore' ? `${a} 復原了專案「${p}」· ${when}。`
+      : `${a} 做了一項管理操作 · ${when}。`;
+    const hint = '管理權或重大異動都會通知相關管理員。不是預期的變動？請跟其他管理員確認，必要時聯絡站長。';
+    return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🛡️</span>
+      <div class="sec-main"><span>${esc(text)}</span><span class="small">${esc(hint)}</span></div>
+      <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
   }
   document.addEventListener('click', async e => {
     if (!e.target.closest?.('#page-work')) return;
@@ -4446,6 +4601,19 @@
       s.innerHTML = peopleOpts(sel.value, keep ? cur : '', none);
     }
   });
+  // 卡片詳情的一則相關訊息；被刪除的是佔位（刪除者、時間），不顯示原作者與發送時間
+  function dmsgHtml(mid) {
+    const m = state.byId.get(mid), go = `<button type="button" class="link small dmsg-go" data-jump-msg="${esc(mid)}">到訊息</button>`;
+    if (!m) return `<div class="dmsg" data-dmsg="${esc(mid)}"><span class="muted small">訊息載入中…</span></div>`;
+    if (m.deleted) return `<div class="dmsg dmsg-deleted" data-dmsg="${esc(mid)}"><span class="msg-gone muted small">${esc(goneText(m))}</span>${go}</div>`;
+    const open = work.openMsgs?.has(mid), long = m.text.length > 120;
+    return `<div class="dmsg${open ? ' open' : ''}" data-dmsg="${esc(mid)}"><button type="button" class="dmsg-main" data-dmsg-toggle="${esc(mid)}" aria-expanded="${!!open}"><b>${esc(m.author.name)}</b> <span class="muted small">${shortTime(m.createdAt)}</span><span class="dmsg-text">${esc(open || !long ? m.text : m.text.slice(0, 120) + '…')}</span></button>${go}</div>`;
+  }
+  // 卡片詳情開著時，裡面的一則相關訊息被刪除或復原：只換那一則（不重畫整個詳情，正在打的字不會不見）
+  function drawerMsgChanged(mid) {
+    const el = work.openId && document.querySelector(`#card-drawer [data-dmsg="${CSS.escape(mid)}"]`);
+    if (el) el.outerHTML = dmsgHtml(mid);
+  }
   // 在訊息頁的桌面版，抽屜與訊息並排（不遮住訊息）；手機與工作頁維持原本的遮罩／底部面板
   const dockedMode = () => state.page === 'messages' && matchMedia('(min-width: 900px)').matches;
   function renderDrawer(focus) {
@@ -4453,12 +4621,7 @@
     const people = [...state.participants.values()].filter(p => p.status !== 'disabled');
     const opts = (cur, none) => `<option value="">${none}</option>` + people.map(p => `<option value="${esc(p.participantId)}" ${cur === p.participantId ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
     const mine = d.done && isMeRef(d.done.by);
-    const msgs = (d.messageIds || []).map(mid => {
-      const m = state.byId.get(mid);
-      if (!m) return `<div class="dmsg"><span class="muted small">訊息載入中…</span></div>`;
-      const open = work.openMsgs?.has(mid), long = m.text.length > 120;
-      return `<div class="dmsg${open ? ' open' : ''}"><button type="button" class="dmsg-main" data-dmsg-toggle="${esc(mid)}" aria-expanded="${!!open}"><b>${esc(m.author.name)}</b> <span class="muted small">${shortTime(m.createdAt)}</span><span class="dmsg-text">${esc(open || !long ? m.text : m.text.slice(0, 120) + '…')}</span></button><button type="button" class="link small dmsg-go" data-jump-msg="${esc(mid)}">到訊息</button></div>`;
-    }).join('');
+    const msgs = (d.messageIds || []).map(dmsgHtml).join('');
     let host = $('#card-drawer');
     if (!host) {
       host = document.createElement('div');
@@ -6285,7 +6448,8 @@
   // 自動待命、對話接續改成每個 AI 自己的選項（只影響這個 AI 接下來複製的設定；複製內容不變）
   const maWarn = ai => ai.status === 'active' && ['expired', '2h', '24h'].includes(tokenLevel(ai.expiresAt));
   const maNeedsYou = ai => maWarn(ai) || (ai.status === 'active' && ai.skillsWaiting > 0);
-  const maState = ai => ai.status !== 'active' ? ['off', '已停用']
+  const maState = ai => ai.status === 'paused' ? ['off', '暫停中'] // 只屬於已刪除的專案（可復原期內），專案復原時自動恢復
+    : ai.status !== 'active' ? ['off', '已停用']
     : tokenLevel(ai.expiresAt) === 'expired' ? ['bad', 'Token 已過期'] // 過期的連不上，不能顯示在線
     : ai.isOnline ? ['on', '在線'] : ai.standby ? ['standby', '待命中']
     : ai.lastSeenAt && Date.now() - Date.parse(ai.lastSeenAt) < 24 * 3600_000 ? ['idle', '閒置'] : ['', '離線'];
@@ -6299,15 +6463,17 @@
     const pjTags = pjs.slice(0, 2).map(projTag).join('') + (pjs.length > 2 ? `<span class="ptag">+${pjs.length - 2}</span>` : '');
     const tokTxt = !active || level === 'expired' ? '' // 過期：狀態那裡已寫「Token 已過期」，旁邊是重發 Token
       : maWarn(ai) ? `<span class="pill-tag yellow">Token ${esc(maWhen(ai.expiresAt))} 到期</span>` : `<span class="muted small ma-tok">Token 到 ${esc(mmdd(ai.expiresAt))}</span>`;
-    const main = !active ? `<button class="btn" type="button" data-act="enable" data-id="${id}">重新啟用</button>`
+    const paused = ai.status === 'paused';
+    const main = paused ? '<span class="muted small ma-paused">專案已刪除，復原後自動恢復</span>'
+      : !active ? `<button class="btn" type="button" data-act="enable" data-id="${id}">重新啟用</button>`
       : maWarn(ai) ? `<button class="btn warn" type="button" data-act="reissue" data-id="${id}">重發<span class="ma-long"> Token</span></button>`
       : `<button class="btn ma-copy" type="button" data-act="short" data-id="${id}">複製接入文字</button>`; // 短版接入是主要做法
     const menuHtml = menu ? `<div class="ma-menu" role="menu">
-        <button type="button" role="menuitem" data-act="edit" data-id="${id}">✏️ 編輯名稱、角色、專案</button>
+        ${paused ? '' : `<button type="button" role="menuitem" data-act="edit" data-id="${id}">✏️ 編輯名稱、角色、專案</button>`}
         ${active ? `<button type="button" role="menuitem" data-act="tab" data-tab="skills" data-id="${id}">🧩 技能${ai.skillsWaiting ? ` · ${ai.skillsWaiting} 等你允許` : ''}</button>
         <button type="button" role="menuitem" data-act="reissue" data-id="${id}">🔑 重發 Token</button>
         ${level !== 'expired' ? `<button type="button" role="menuitem" data-act="token" data-id="${id}">📋 只複製 Token</button>` : ''}
-        <hr><button type="button" role="menuitem" data-act="disable" data-id="${id}">⏸ 停用</button>` : `<hr><button type="button" role="menuitem" data-act="enable" data-id="${id}">▶ 重新啟用</button>`}
+        <hr><button type="button" role="menuitem" data-act="disable" data-id="${id}">⏸ 停用</button>` : paused ? '' : `<hr><button type="button" role="menuitem" data-act="enable" data-id="${id}">▶ 重新啟用</button>`}
         <button type="button" role="menuitem" class="danger-text" data-act="delete" data-id="${id}">🗑 刪除這隻 AI</button>
       </div>` : '';
     return `<div class="ma-item${tab ? ' open' : ''}" data-ma="${id}">
@@ -6507,7 +6673,7 @@
           await api(`/api/my-ais/${id}/disable`, { method: 'POST' });
           await draw();
         } else if (b.dataset.act === 'delete') {
-          if (!await confirmDialog({ title: '永久刪除 AI？', confirmText: '永久刪除', danger: true, expectText: ai.name,
+          if (!await confirmDialog({ title: '刪除 AI？', confirmText: '刪除', danger: true, expectText: ai.name,
             message: `<b>${esc(ai.name)}</b> 的 Token 會立即失效，從成員名單、@ 選單、團隊狀態消失，<b>不可復原</b>。它發過的訊息與卡片紀錄會保留並標「（已刪除）」；它負責且未完成的卡片會變成未指派。` })) return;
           const r = await api(`/api/my-ais/${id}/delete`, { method: 'POST', body: { confirmName: ai.name } });
           toast(r.unassignedCards.length ? `已刪除；${r.unassignedCards.join('、')} 變成未指派` : '已刪除');
@@ -7440,6 +7606,48 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         toast(`「${p.name}」的可見度改成${visName(visibility)}`);
       } catch (err) { body.querySelector('#vis-err').textContent = err.message; }
     });
+  }
+  // 清空專案訊息（只有工作區管理員）：先看會刪掉幾則訊息、幾個附件，輸入專案名稱確認（再驗證身分由 api() 跳出）；
+  // 下面列這個專案可復原期內的清空，可以整批復原
+  async function openMsgClear(pj) {
+    const enc = encodeURIComponent(pj);
+    const [pv, cl] = await Promise.all([api(`/api/projects/${enc}/messages/clear-preview`), api(`/api/message-clears?project=${enc}`)]);
+    const c = pv.counts, now = !pv.recoveryDays;
+    const list = cl.items.length ? `<ul class="mc-list">${cl.items.map(x => `<li data-mc="${esc(x.clearId)}"><span>${esc(localYmdHm(x.clearedAt))} · <span data-nt>${esc(x.clearedBy?.name || '')}</span> 清空 ${x.messages} 則<span class="muted small"> · ${esc(localYmdHm(x.purgeAt))} 永久清除</span></span>
+        <button type="button" class="btn small" data-mc-restore="${esc(x.clearId)}">${L('復原', 'Restore')}</button></li>`).join('')}</ul>`
+      : '<p class="muted small">沒有可以復原的清空。</p>';
+    const body = openModal(`清空專案訊息 · ${pv.name}`, `<div class="stack mc-box">
+        <p>會刪除這個專案所有的群組訊息：訊息 ${c.messages} 則、附件 ${c.files} 個。卡片、卡片紀錄、決策結果、私訊與跨專案頻道的訊息都不受影響。</p>
+        <p class="muted small">${now ? '可復原期是 0 天：清空後立刻永久清除，救不回來。' : `清空後進入可復原期（${pv.recoveryDays} 天），在那之前可以在這裡整批復原。`}</p>
+        <div><button type="button" class="btn danger" data-mc-clear${c.messages ? '' : ' disabled'}>清空訊息…</button></div>
+        <h3 class="mc-h">可復原的清空</h3>${list}
+        <p class="error" id="mc-err" role="alert"></p>
+      </div>`, { size: 'narrow' });
+    body.addEventListener('click', async e => {
+      const clr = e.target.closest('[data-mc-clear]'), rs = e.target.closest('[data-mc-restore]');
+      if (!clr && !rs) return;
+      try {
+        if (clr) {
+          const ok = await confirmDialog({ title: `清空「${pv.name}」的訊息？`, confirmText: '清空', danger: true, expectText: pv.name,
+            message: `<p>會刪除訊息 ${c.messages} 則、附件 ${c.files} 個。</p><p>${now ? '可復原期是 0 天：清空後立刻永久清除，救不回來。' : `${esc(localYmdHm(pv.purgeAt))} 由系統永久清除；在那之前可以整批復原。`}</p>` });
+          if (!ok) return;
+          const d = await api(`/api/projects/${enc}/messages/clear`, { method: 'POST', body: { confirmName: pv.name } });
+          toast(d.clear?.purged ? `已清空並永久清除 ${d.clear.messages} 則訊息` : `已清空 ${d.clear?.messages || 0} 則訊息`);
+        } else {
+          const d = await api(`/api/message-clears/${encodeURIComponent(rs.dataset.mcRestore)}/restore`, { method: 'POST' });
+          toast(`已復原 ${d.restored.messages} 則訊息`);
+        }
+        reloadProjMsgs(pj);
+        await openMsgClear(pj);
+      } catch (err) { const el = body.querySelector('#mc-err'); if (el) el.textContent = err.message; }
+    });
+  }
+  // 整個專案的訊息被清空或整批復原：畫面上有這個專案的訊息就重讀訊息視窗；正在看前後文時照原位重讀（不離開前後文）
+  // 開著的卡片詳情裡的相關訊息也一起更新
+  function reloadProjMsgs(pj) {
+    const inView = state.messages?.some(m => m.project === pj);
+    if (!inView && !work.openId) return;
+    (inView && !state.ctx ? loadWindow().then(refreshLoaded) : refreshLoaded()).catch(() => {});
   }
 
   // 角色範本：常用的排前面，其餘收進「其他角色」群組（只是選單分組，角色定義不變；既有成員的角色照常顯示已選）
@@ -8860,13 +9068,15 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   const ADM_SECS = [
     ['todo', '📋', '待處理', '加入申請、技能核准、邀請到期'],
     ['group', '🏷️', '工作區設定', '名稱、建立專案、AI 工具、開放註冊、附件保存'],
-    ['projects', '📁', L('專案', 'Projects'), '新增、改名、程式庫、封存、永久刪除'], // 字典的「專案」是單數，目錄要複數
+    ['projects', '📁', L('專案', 'Projects'), '新增、改名、程式庫、封存、刪除'], // 字典的「專案」是單數，目錄要複數
     ['invites', '✉️', '邀請', '邀請新的人、重發、作廢'],
     ['accounts', '🔑', '帳號與救援', '重設登入、救援指令'], // 升降管理員、移出工作區、停用搬到成員名冊
     ['audit', '🔍', '稽核與儲存', '全站稽核紀錄、儲存空間'],
+    ['auditlog', '📜', '工作區稽核紀錄', '誰在什麼時候做了哪個管理操作'],
+    ['platlog', '📜', '平台稽核紀錄', '全平台的管理操作，含任免平台管理員、停用帳號、備份還原'], // 只有平台管理員
     ['system', '🛠️', '平台設定', '版本更新、備份與匯入、附件保存預設、範例資料'], // 只有平台管理員看得到（admSecs）
   ];
-  const PLAT_SECS = ['system'];
+  const PLAT_SECS = ['system', 'platlog'];
   const admSecs = () => ADM_SECS.filter(x => isPlat() || !PLAT_SECS.includes(x[0]));
   const ADM_OLD_TABS = ['projects', 'invites', 'group', 'system']; // 原本在成員管理的分頁
   const ADM_SOON = 6 * 3600_000; // 邀請剩不到 6 小時算「快到期」
@@ -8874,6 +9084,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!isAdmin()) return openPermTab('members');
     const adm = admSecs().some(x => x[0] === sec) ? sec : null;
     if (adm === 'group') perm.gs = null; // 加入設定每次重讀
+    if (adm === 'auditlog' || adm === 'platlog') perm.alog = null; // 稽核紀錄每次重讀
     Object.assign(perm, { tab: 'admin', adm, picker: false, addOpen: false, moreOpen: null, mobileDetail: false });
     permGo();
   }
@@ -8936,7 +9147,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <p class="muted small">會產生一次性的救援登入連結（15 分鐘內、只能用一次），只救平台管理員。平台管理員不只一位時要指定名字：<code>npm run admin-rescue -- --name 名字</code>（沒指定只列出名單、不產生連結）。本機或 Docker 版（node server.js）改用 <code>npm run admin-rescue -- --local</code>，有設 <code>DATABASE_URL</code> 就照同一組設定連 Postgres。</p></div></div>`;
   }
   // 稽核與儲存：全站稽核紀錄（只有管理員拿得到全站）＋儲存空間狀態；點進來才讀
-  const auditLabel = { upload: '上傳', download: '下載', delete: '刪除', reject: '拒絕', expire: '到期清除', rename: '改名', move: '搬移' };
+  const auditLabel = { upload: '上傳', download: '下載', delete: '刪除', reject: '拒絕', expire: '到期清除', purge: '隨訊息永久清除', msg_delete: '隨訊息刪除', msg_restore: '隨訊息復原', rename: '改名', move: '搬移' };
   const auditTableHtml = items => (items.length ? `<div class="table-scroll"><table class="audit-table"><thead><tr><th>時間</th><th>動作</th><th>操作者</th><th>檔名</th><th>大小</th><th>SHA-256</th><th>聲明</th><th>備註</th></tr></thead><tbody>${
     items.map(x => `<tr><td>${fmtTime(x.at)}</td><td>${auditLabel[x.action] || x.action}</td>
       <td>${esc(x.actor.name || x.actor.participantId || '')}${x.actor.memberType === 'ai' ? L('（AI）', ' (AI)') : x.actor.memberType === 'human' ? L('（人類）', ' (human)') : ''}</td>
@@ -8960,6 +9171,97 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <div class="pm-card adm-audit"><div class="pm-card-head"><strong>全站稽核紀錄</strong><span class="muted small">最近 200 筆檔案上傳、下載、刪除、拒絕；一般成員在「文件」只看得到自己的</span><span class="grow"></span><button type="button" class="link small" data-adm-audit-reload>重新整理</button></div>
       ${auditTableHtml(x.a.items || [])}</div></div>`;
   }
+  // 稽核紀錄（GET /api/audit-log）：工作區頁只看工作區與專案的事件，平台頁看全部（只有平台管理員）。只能看、不能改或刪
+  // 篩選：動作、操作者、日期區間（照這台電腦的時區算整天）；一次 50 筆，「載入更多」接著拿舊的
+  const ALOG_ACTIONS = { // [中文, 英文]：表格是紀錄，英文用過去式（字典裡同樣的中文是按鈕的命令句）
+    'platform_admin.grant': ['升為平台管理員', 'Made platform admin'], 'platform_admin.revoke': ['降為一般帳號', 'Removed platform admin'],
+    'workspace_admin.grant': ['升為工作區管理員', 'Made workspace admin'], 'workspace_admin.revoke': ['降為成員', 'Removed workspace admin'],
+    'account.disable': ['停用帳號', 'Disabled account'], 'account.enable': ['恢復帳號', 'Restored account'],
+    'member.remove': ['移出工作區', 'Removed from workspace'], 'member.leave': ['離開工作區', 'Left workspace'], 'backup.restore': ['還原備份', 'Restored backup'],
+    'workspace_policy.update': ['修改工作區政策', 'Changed workspace policy'], 'recovery_window.update': ['修改可復原期', 'Changed recovery window'],
+    'message.delete': ['刪除訊息', 'Deleted message'], 'message.restore': ['復原訊息', 'Restored message'], 'message.purge': ['永久清除訊息', 'Purged messages'],
+    'project_messages.clear': ['清空專案訊息', 'Cleared project messages'], 'project_messages.restore': ['復原清空的專案訊息', 'Restored cleared project messages'],
+    'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
+  };
+  const alogAction = k => (ALOG_ACTIONS[k] ? L(...ALOG_ACTIONS[k]) : k);
+  const ALOG_PLATFORM = ['platform_admin.grant', 'platform_admin.revoke', 'account.disable', 'account.enable', 'backup.restore']; // 工作區頁的篩選不列
+  const alogDay = (v, plus = 0) => { const d = new Date(v + 'T00:00'); d.setDate(d.getDate() + plus); return Number.isNaN(d.getTime()) ? '' : d.toISOString(); };
+  function alogLoad(more = false) {
+    const a = perm.alog, q = new URLSearchParams({ scope: a.kind === 'platlog' ? 'all' : 'workspace' });
+    if (a.f.action) q.set('action', a.f.action);
+    if (a.f.actor) q.set('actor', a.f.actor);
+    if (a.f.from && alogDay(a.f.from)) q.set('from', alogDay(a.f.from));
+    if (a.f.to && alogDay(a.f.to, 1)) q.set('to', alogDay(a.f.to, 1));
+    if (more && a.next) q.set('before', a.next);
+    a.loading = true; a.err = null;
+    const redraw = () => { if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === a.kind && perm.alog === a) drawPerm(); };
+    api('/api/audit-log?' + q).then(r => {
+      Object.assign(a, { items: more ? [...a.items, ...r.items] : r.items, next: r.next, loading: false });
+      if (r.actors) a.actors = r.actors;
+      redraw();
+    }).catch(err => { Object.assign(a, { err: err.message, loading: false }); redraw(); });
+  }
+  const alogActor = x => (x.kind === 'system' ? '系統' : x.name || x.id || '');
+  function alogScope(e) {
+    if (e.scope.kind === 'platform') return '平台';
+    if (e.scope.kind === 'project') return L(`專案「${e.scope.projectName || e.scope.projectId || ''}」`, `Project "${e.scope.projectName || e.scope.projectId || ''}"`);
+    return '工作區';
+  }
+  function alogDetail(e) {
+    const d = e.detail || {}, out = [];
+    if (e.action === 'workspace_policy.update' && (d.field === 'createProjects' || d.field === 'deleteOwnMessages')) {
+      const lab = v => (v === 'admins' ? '只有工作區管理員' : '所有成員'), en = v => (v === 'admins' ? 'workspace admins only' : 'all members');
+      out.push(d.field === 'createProjects' ? L(`誰可以建立專案：${lab(d.from)} → ${lab(d.to)}`, `Who can create projects: ${en(d.from)} → ${en(d.to)}`)
+        : L(`誰可以刪除自己的訊息：${lab(d.from)} → ${lab(d.to)}`, `Who can delete their own messages: ${en(d.from)} → ${en(d.to)}`));
+    } else if (e.action === 'recovery_window.update') {
+      const zh = v => (v == null ? '跟平台預設' : v === 0 ? '立即永久清除' : `${v} 天`), en = v => (v == null ? 'platform default' : v === 0 ? 'purge immediately' : `${v} days`);
+      out.push(L(`可復原期：${zh(d.from)} → ${zh(d.to)}`, `Recovery window: ${en(d.from)} → ${en(d.to)}`));
+    } else if (d.field) out.push(`${d.field}: ${d.from ?? '—'} → ${d.to ?? '—'}`);
+    else if ('from' in d || 'to' in d) out.push(`${d.from ?? '—'} → ${d.to ?? '—'}`);
+    if (d.revokedAiTokens) out.push(L(`作廢 ${d.revokedAiTokens} 個 AI 的 Token`, `Revoked ${d.revokedAiTokens} AI token(s)`));
+    if (e.action === 'backup.restore') out.push(L(`備份版本 ${d.appVersion || '?'}；${d.humans ?? 0} 位人類、${d.ais ?? 0} 個 AI`, `Backup version ${d.appVersion || '?'}; ${d.humans ?? 0} human(s), ${d.ais ?? 0} AI(s)`));
+    if (d.counts) out.push(L(`訊息 ${d.counts.messages ?? 0}、卡片 ${d.counts.cards ?? 0}、文件 ${d.counts.docs ?? 0}`, `${d.counts.messages ?? 0} messages, ${d.counts.cards ?? 0} cards, ${d.counts.docs ?? 0} docs`));
+    if (d.code) out.push(L(`代號 ${d.code}`, `Code ${d.code}`));
+    if (d.aisDeleted?.length) out.push(L(`一起刪除的 AI：${d.aisDeleted.join('、')}`, `AIs deleted with it: ${d.aisDeleted.join(', ')}`));
+    if (e.count != null) out.push(L(`數量 ${e.count}`, `Count ${e.count}`));
+    if (d.legacy) out.push(L('（升級前的紀錄）', '(recorded before the upgrade)'));
+    return out.join(L('；', '; '));
+  }
+  function auditLogHtml(kind) {
+    if (perm.alog?.kind !== kind) { perm.alog = { kind, f: {}, items: [], next: null, actors: [], loading: true }; alogLoad(); }
+    const a = perm.alog, f = a.f, plat = kind === 'platlog';
+    const acts = Object.keys(ALOG_ACTIONS).filter(k => plat || !ALOG_PLATFORM.includes(k));
+    const sel = (v, cur) => (v === (cur || '') ? ' selected' : '');
+    const filters = `<div class="alog-filters" role="group" aria-label="篩選稽核紀錄">
+      <label>動作<select data-alog-f="action"><option value=""${sel('', f.action)}>全部動作</option>${acts.map(k => `<option value="${k}"${sel(k, f.action)}>${esc(alogAction(k))}</option>`).join('')}</select></label>
+      <label>操作者<select data-alog-f="actor"><option value=""${sel('', f.actor)}>所有操作者</option>${a.actors.map(x => `<option value="${esc(x.id || '')}"${sel(x.id, f.actor)}>${esc(alogActor(x))}</option>`).join('')}</select></label>
+      <label>開始日期<input type="date" data-alog-f="from" value="${esc(f.from || '')}"></label>
+      <label>結束日期<input type="date" data-alog-f="to" value="${esc(f.to || '')}"></label>
+      ${Object.values(f).some(Boolean) ? '<button type="button" class="link small" data-alog="clear">清除篩選</button>' : ''}</div>`;
+    const rows = a.items.map(e => `<tr data-alog-id="${esc(e.id)}"><td>${esc(fmtTime(e.at))}</td><td>${esc(alogActor(e.actor))}</td><td>${esc(alogAction(e.action))}</td>
+      <td>${esc(alogScope(e))}</td><td>${esc(e.target?.name || '')}</td><td class="alog-detail">${esc(alogDetail(e))}</td></tr>`).join('');
+    const table = a.items.length ? `<table class="audit-table alog-table"><thead><tr><th scope="col">時間</th><th scope="col">操作者</th><th scope="col">動作</th><th scope="col">範圍</th><th scope="col">對象</th><th scope="col">細節</th></tr></thead><tbody>${rows}</tbody></table>`
+      : a.loading ? '' : '<p class="muted small pm-pad">沒有符合的紀錄。</p>';
+    const foot = a.loading ? '<p class="muted small pm-pad">載入中…</p>' : a.next ? '<p class="pm-pad"><button type="button" class="btn small" data-alog="more">載入更多</button></p>' : '';
+    const note = plat ? '全平台的管理操作：任免管理員、停用與恢復帳號、移出工作區、修改工作區政策、刪除專案、還原備份。只能新增，沒有人能改或刪。'
+      : '這個工作區與它的專案裡的管理操作（平台層的事件只在平台稽核紀錄）。只能新增，沒有人能改或刪。';
+    return `<div class="pm-projs"><div class="pm-card adm-alog"><div class="pm-card-head"><span class="muted small">${note}</span><span class="grow"></span><button type="button" class="link small" data-alog="reload">重新整理</button></div>
+      ${filters}${a.err ? `<p class="error pm-pad" role="alert">${esc(a.err)}</p>` : ''}${table}${foot}</div></div>`;
+  }
+  document.addEventListener('click', e => {
+    const b = e.target.closest?.('[data-alog]');
+    if (!b || !perm.alog) return;
+    const k = b.dataset.alog;
+    if (k === 'clear') perm.alog.f = {};
+    if (k === 'more') return alogLoad(true), drawPerm();
+    alogLoad(); drawPerm();
+  });
+  document.addEventListener('change', e => {
+    const el = e.target.closest?.('[data-alog-f]');
+    if (!el || !perm.alog) return;
+    perm.alog.f[el.dataset.alogF] = el.value;
+    alogLoad(); drawPerm();
+  });
   // 訊息附件保存時間的平台預設（平台設定；存資料庫、不用重新啟動）；改了只影響之後上傳的檔。工作區可以在工作區設定覆寫（wsTtlHtml）
   // 主機的 FILE_TTL_HOURS 只是初始值：這裡沒改過才用它，改過就以這裡為準
   function admTtlHtml(t) {
@@ -8974,6 +9276,26 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <span class="muted small" id="adm-ttl-hint">訊息裡上傳的文件、截圖過了這段時間自動刪除（專案文件不受影響）。改了只影響之後上傳的檔；已經上傳的照上傳當時的設定到期，不會提早或延後刪除。存好立即生效，不用重新啟動或部署。</span>
       <span class="muted small adm-ttl-src">${src}</span><span class="muted small adm-ttl-ws">這是平台預設：工作區可以在「工作區設定」改成自己的保存時間。</span></div>
       <details class="pm-gs-log adm-ttl-log"${perm.ttlLogOpen ? ' open' : ''}><summary>異動紀錄</summary><ul class="pa-log">${logs || '<li class="muted small">還沒有紀錄</li>'}</ul></details></div>`;
+  }
+  // 可復原期（天）：東西被刪除後保留多久才永久清除；0＝刪除當下就永久清除。平台預設在平台設定，工作區可以覆寫（wsRecHtml）
+  // 改它是敏感操作：api() 遇到 REAUTH_REQUIRED 會跳出再驗證對話框；修改寫在稽核紀錄（這裡不另列異動紀錄）
+  const recLabel = d => (d === 0 ? L('立即永久清除', 'Purge immediately') : L(`${d} 天`, `${d} days`));
+  const recSaved = d => (d === 0 ? L('已儲存：之後刪除的東西會立即永久清除；已經刪除的照原本的時間清除', 'Saved: anything deleted from now on is purged immediately; things already deleted keep their original purge time')
+    : L(`已儲存：之後刪除的東西保留 ${d} 天後永久清除；已經刪除的照原本的時間清除`, `Saved: anything deleted from now on is kept for ${d} days, then purged; things already deleted keep their original purge time`));
+  function admRecHtml(r) {
+    if (!r) return '';
+    return `<div class="pm-card adm-rec"><div class="pm-setrow"><label for="adm-rec">可復原期</label><select id="adm-rec" aria-describedby="adm-rec-hint">${r.choices.map(d => `<option value="${d}"${d === r.days ? ' selected' : ''}>${esc(recLabel(d))}${d === r.defaultDays ? L('（預設）', ' (default)') : ''}</option>`).join('')}</select><button type="button" class="btn small primary" data-pp="platrec">儲存</button>
+      <span class="muted small" id="adm-rec-hint">訊息、專案被刪除後保留多久才永久清除，這段期間內可以復原。永久清除的時間在刪除當下決定，改了不影響已經刪除的東西。修改要再驗證身分，並寫進稽核紀錄。</span>
+      <span class="muted small adm-rec-ws">這是平台預設：工作區可以在「工作區設定」改成自己的天數。</span></div></div>`;
+  }
+  // 工作區的可復原期：跟平台預設（空值）或覆寫成自己的（GET／PUT /api/recovery-window）
+  function wsRecHtml(r) {
+    if (!r) return '';
+    const cur = r.workspaceDays ?? '';
+    const opts = [`<option value=""${cur === '' ? ' selected' : ''}>${esc(L(`跟平台預設（${recLabel(r.defaultDays)}）`, `Platform default (${recLabel(r.defaultDays)})`))}</option>`,
+      ...r.choices.map(d => `<option value="${d}"${d === cur ? ' selected' : ''}>${esc(recLabel(d))}</option>`)].join('');
+    return `<div class="pm-card ws-rec"><div class="pm-setrow"><label for="ws-rec">可復原期</label><select id="ws-rec" aria-describedby="ws-rec-hint">${opts}</select><button type="button" class="btn small primary" data-pp="wsrec">儲存</button>
+      <span class="muted small" id="ws-rec-hint">這個工作區的訊息、專案被刪除後保留多久才永久清除。預設跟著平台設定；改了只影響之後刪除的東西。修改要再驗證身分，並寫進稽核紀錄。</span></div></div>`;
   }
   // 工作區的附件保存時間：跟平台預設（空值）或覆寫成自己的（GET／PUT /api/file-ttl）
   function wsTtlHtml(t) {
@@ -8991,7 +9313,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const narrow = narrowPerm();
     if (narrow && !perm.adm) return admNavHtml(null, true);
     const cur = admSecs().some(x => x[0] === perm.adm) ? perm.adm : 'todo', [, ico, t] = ADM_SECS.find(x => x[0] === cur); // 平台設定只給平台管理員
-    const body = cur === 'todo' ? admTodoHtml() : cur === 'group' ? permGroupHtml() : cur === 'projects' ? permProjectsHtml() : cur === 'invites' ? permInvitesHtml() : cur === 'accounts' ? admAccountsHtml() : cur === 'system' ? permSystemHtml() : admAuditHtml();
+    const body = cur === 'todo' ? admTodoHtml() : cur === 'group' ? permGroupHtml() : cur === 'projects' ? permProjectsHtml() : cur === 'invites' ? permInvitesHtml() : cur === 'accounts' ? admAccountsHtml() : cur === 'system' ? permSystemHtml() : cur === 'auditlog' || cur === 'platlog' ? auditLogHtml(cur) : admAuditHtml();
     const main = `<section class="adm-main" aria-label="${t}">${narrow ? '<button type="button" class="ph-back pm-back" data-adm-back>‹ 管理員設定</button>' : ''}<h3 class="adm-h"><span aria-hidden="true">${ico}</span> ${t}${cur === 'todo' && admTodoN() ? ` · ${admTodoN()}` : ''}</h3>${body}</section>`;
     return narrow ? `<div class="adm-split m-detail">${main}</div>` : `<div class="adm-split">${admNavHtml(cur, false)}${main}</div>`;
   }
@@ -9015,6 +9337,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (admin || lead) it.push(['rename', '✏️', '改名'], ['repo', '🔗', '程式庫與分支'], ['visibility', '👁', '專案可見度', esc(visName(projVisibility(pj)))]);
     it.push(['members', '👥', '成員與專案角色']);
     if (admin || lead) it.push(['kbai', '📚', '知識庫整理 AI', esc(kbAiNames[pj] || '')]); 
+    if (admin) it.push(['clearmsgs', '🧹', '清空專案訊息…']); // 只有工作區管理員
     return it;
   }
   function psetOpen(btn, open) {
@@ -9041,6 +9364,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (k === 'members') return openPermTab('members', { tab: 'members', memView: 'byProject', selProj: pj, mobileDetail: true, pq: '' });
       if (k === 'repo') return openRepoEditor(pj);
       if (k === 'visibility') return openVisibilityEditor(pj);
+      if (k === 'clearmsgs') return await openMsgClear(pj);
       if (k === 'rename') {
         const name = await promptName('改專案名稱', projName(pj));
         if (!name || name === projName(pj)) return;
@@ -9301,8 +9625,8 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   async function loadGroupSettings() {
     perm.gsLoading = true;
     try {
-      const [s, ev, tools, ttl] = await Promise.all([api('/api/workspace/settings'), api('/api/group/events?limit=30').catch(() => ({ items: [] })), api('/api/ai-tools').catch(() => null), api('/api/file-ttl').catch(() => null)]);
-      perm.gs = s; perm.gsEvents = ev.items; perm.aiTools = tools; perm.gsTtl = ttl;
+      const [s, ev, tools, ttl, rec] = await Promise.all([api('/api/workspace/settings'), api('/api/group/events?limit=30').catch(() => ({ items: [] })), api('/api/ai-tools').catch(() => null), api('/api/file-ttl').catch(() => null), api('/api/recovery-window').catch(() => null)]);
+      perm.gs = s; perm.gsEvents = ev.items; perm.aiTools = tools; perm.gsTtl = ttl; perm.gsRec = rec;
     } catch (err) { perm.gs = { error: err.message }; }
     perm.gsLoading = false;
     if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'group') drawPerm();
@@ -9327,15 +9651,17 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     perm.gsLogOpen = !!$('.pm-gs-log')?.open;
     await loadGroupSettings();
   }
-  // 工作區設定＝工作區名稱＋誰可以建立專案＋可連線的 AI 工具＋怎麼加入（開放註冊、房間碼）＋工作區異動紀錄＋附件保存期限
+  // 工作區設定＝工作區名稱＋誰可以建立專案＋誰可以刪除自己的訊息＋可連線的 AI 工具＋怎麼加入（開放註冊、房間碼）＋工作區異動紀錄＋附件保存期限
   // （附件保存期限是工作區覆寫；平台預設在「平台設定」）
   function permGroupHtml() {
     return `<div class="pm-projs">
       <div class="pm-card pm-setrow pm-group-name"><label for="pm-group-name">工作區名稱</label><input id="pm-group-name" maxlength="30" value="${esc(BASE_TITLE)}" aria-describedby="pm-gn-hint"><button type="button" class="btn small primary" data-pp="groupname">儲存</button><span class="muted small" id="pm-gn-hint">顯示在登入頁、左上角、分頁標題與 AI 接入設定。</span></div>
       ${createProjectsHtml()}
+      ${deleteOwnHtml()}
       ${groupToolsHtml()}
       ${groupJoinHtml()}
-      ${perm.gs && !perm.gs.error ? wsTtlHtml(perm.gsTtl) : ''}</div>`;
+      ${perm.gs && !perm.gs.error ? wsTtlHtml(perm.gsTtl) : ''}
+      ${perm.gs && !perm.gs.error ? wsRecHtml(perm.gsRec) : ''}</div>`;
   }
   // 誰可以建立專案：所有成員／只有工作區管理員（點了就存）
   function createProjectsHtml() {
@@ -9344,6 +9670,14 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-cp" value="${v}" data-pp="createprojects"${gs.createProjects === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
     return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
       <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+  }
+  // 工作區政策「誰可以刪除自己的訊息」：所有成員／只有工作區管理員（點了就存）。工作區管理員刪任何人的不受影響
+  function deleteOwnHtml() {
+    const gs = perm.gs;
+    if (!gs || gs.error || !gs.deleteOwnMessages) return '';
+    const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-do" value="${v}" data-pp="deleteown"${gs.deleteOwnMessages === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
+    return `<div class="pm-card pm-delete-own"><div class="pm-card-head"><strong id="pm-do-t">誰可以刪除自己的訊息</strong></div>
+      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-do-t">${opt('members', '所有成員', '作者可以刪自己的訊息，在可復原期內也能自己復原；唯讀成員與 AI 不行')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員刪除')}</div></div>`;
   }
   // 可連線的 AI 工具（全站一份）：取消勾選的只擋新接入，至少留一個開著；改的紀錄在「工作區異動紀錄」
   function groupToolsHtml() {
@@ -9372,7 +9706,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="dm">${p.dm?.on ? '關閉私訊…' : '開放成員私訊自己的 AI…'}<span class="pm-sub">${p.dm?.on ? `已開放${p.dm.at ? ' · ' + esc(mmdd(p.dm.at)) : ''}${p.dm.byName ? ' ' + esc(p.dm.byName) + ' 打開' : ''}` : '預設關'}</span></button>
           <button type="button" role="menuitem" data-pp="log">異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>封存…${blocked ? `<span class="pm-sub">${esc(why)}</span>` : ''}</button></div>` : '';
-      const last = p.archived ? `<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button>${isAdmin() ? '<button type="button" class="btn small danger-outline" data-pp="purge">永久刪除…</button>' : ''}</span>` // 封存的才能永久刪除（只有管理員）
+      const last = p.archived ? `<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button>${isAdmin() ? '<button type="button" class="btn small danger-outline" data-pp="pdelete">刪除…</button>' : ''}</span>` // 封存的才能刪除（只有工作區管理員）
         : `<span class="pm-more-wrap"><button type="button" class="pm-more" data-pm-more="${esc(p.id)}" aria-haspopup="menu" aria-expanded="${perm.moreOpen === p.id}" aria-label="${esc(p.name)} 的更多動作">⋯</button>${menu}</span>`;
       const log = open ? `<tr class="pm-log-tr" data-pj="${esc(p.id)}"><td colspan="6"><div class="pm-log-head"><b>異動紀錄 · ${esc(p.name)}</b><button type="button" class="link small" data-pp="log" aria-expanded="true">收起</button></div><ul class="pa-log">${(perm.events[p.id] || []).map(e => `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(e.text)}</li>`).join('') || '<li class="muted small">還沒有紀錄</li>'}</ul></td></tr>` : '';
       return `<tr class="pm-prow${p.archived ? ' archived' : ''}" data-pj="${esc(p.id)}"><td class="c-pname"><b>${esc(p.name)}</b>${p.archived ? ' <span class="pill-tag grey">已封存</span>' : ''}</td><td class="c-code" data-label="API 代號" title="${esc(p.id)}">${esc(p.id)}</td><td class="c-num" data-label="成員">${p.memberCount}</td><td class="c-num2" data-label="未結案卡">${p.openCards}</td><td class="c-repo" data-label="程式庫">${repo}</td><td class="c-more">${last}</td></tr>${log}`;
@@ -9382,7 +9716,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <table class="pm-table pm-ptable"><thead><tr><th scope="col">專案</th><th scope="col" class="c-code">API 代號</th><th scope="col" class="c-num">成員</th><th scope="col" class="c-num2">未結案卡</th><th scope="col" class="c-repo">程式庫</th><th scope="col" class="c-more"><span class="sr-only">動作</span></th></tr></thead>
         <tbody>${rows}</tbody></table></div>${permDelsHtml()}</div>`;
   }
-  // PLAT-381：leader 的專案管理：只列自己當 leader 的專案；⋯ 有改名、程式庫與分支、成員與本專案角色、封存（永久刪除只有管理員）
+  // 專案管理員的專案管理：只列自己是專案管理員的專案；⋯ 有改名、程式庫與分支、成員與本專案角色、封存（刪除只有工作區管理員）
   function permLeadProjectsHtml() {
     const list = myLeadRows();
     const rows = list.map(p => {
@@ -9397,7 +9731,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
           <button type="button" role="menuitem" data-pp="statuses">🗂 看板狀態<span class="pm-sub">${(p.statuses || []).length} 個</span></button>
           <button type="button" role="menuitem" data-pp="log">🕘 異動紀錄</button>
           <button type="button" role="menuitem" data-pp="archive" ${blocked ? `aria-disabled="true" title="${esc(why)}"` : ''}>🗄 封存專案<span class="pm-sub">${blocked ? esc(why) : '可還原'}</span></button>
-          <button type="button" role="menuitem" aria-disabled="true" class="pm-off" data-pp="noop" title="只有工作區管理員能永久刪除">🗑 永久刪除<span class="pm-sub">只有工作區管理員</span></button></div>` : '';
+          <button type="button" role="menuitem" aria-disabled="true" class="pm-off" data-pp="noop" title="只有工作區管理員能刪除專案">🗑 刪除<span class="pm-sub">只有工作區管理員</span></button></div>` : '';
       const last = p.archived ? '<span class="pm-arch-acts"><button type="button" class="btn small" data-pp="unarchive">還原</button></span>'
         : `<span class="pm-more-wrap"><button type="button" class="pm-more" data-pm-more="${esc(p.id)}" aria-haspopup="menu" aria-expanded="${perm.moreOpen === p.id}" aria-label="${esc(p.name)} 的更多動作">⋯</button>${menu}</span>`;
       const log = perm.openLog === p.id ? `<tr class="pm-log-tr" data-pj="${esc(p.id)}"><td colspan="6"><div class="pm-log-head"><b>異動紀錄 · ${esc(p.name)}</b><button type="button" class="link small" data-pp="log" aria-expanded="true">收起</button></div><ul class="pa-log">${(perm.events[p.id] || []).map(e => `<li><span class="muted small">${esc(fmtTime(e.at))}</span> ${esc(e.text)}</li>`).join('') || '<li class="muted small">還沒有紀錄</li>'}</ul></td></tr>` : '';
@@ -9407,19 +9741,20 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <div class="pm-card"><div class="pm-card-head"><strong>你管理的專案 · ${list.filter(p => !p.archived).length}</strong></div>
         ${list.length ? `<table class="pm-table pm-ptable"><thead><tr><th scope="col">專案</th><th scope="col" class="c-code">API 代號</th><th scope="col" class="c-num">成員</th><th scope="col" class="c-num2">未結案卡</th><th scope="col" class="c-repo">程式庫</th><th scope="col" class="c-more"><span class="sr-only">動作</span></th></tr></thead>
         <tbody>${rows}</tbody></table>` : '<p class="muted small pm-pad">你目前不是任何專案的專案管理員。</p>'}</div>
-      <div class="pm-card pm-lead-note"><p class="muted small">專案管理員能做：改名、程式庫與分支、成員與專案角色、看板狀態、封存（可還原）。永久刪除、邀請、帳號只有工作區管理員能做。</p></div></div>`;
+      <div class="pm-card pm-lead-note"><p class="muted small">專案管理員能做：改名、程式庫與分支、成員與專案角色、看板狀態、封存（可還原）。刪除專案、邀請、帳號只有工作區管理員能做。</p></div></div>`;
   }
-  // 已永久刪除的專案（全站紀錄，只有管理員）；第一次畫才去讀
+  // 已刪除的專案（可復原期內，只有工作區管理員）：預計永久清除的時間、復原；第一次畫才去讀
   function permDelsHtml() {
     if (!isAdmin()) return '';
     if (perm.deletions === undefined) {
       perm.deletions = null;
-      api('/api/project-deletions').then(d => { perm.deletions = d.items || []; if (state.page === 'perm' && perm.tab === 'admin' && perm.deletions.length) drawPerm(); }).catch(() => { perm.deletions = []; });
+      api('/api/deleted-projects').then(d => { perm.deletions = d.items || []; if (state.page === 'perm' && perm.tab === 'admin' && perm.deletions.length) drawPerm(); }).catch(() => { perm.deletions = []; });
     }
     const list = perm.deletions || [];
     if (!list.length) return '';
-    return `<details class="pm-card pm-dels"><summary>已永久刪除的專案 · ${list.length}</summary><ul class="pm-dels-list">${list.map(d => `<li><b>${esc(d.name)}</b>${d.code ? ` <span class="muted small">${esc(d.code)}</span>` : ''}
-      <span class="muted small">${esc(d.byName || '')} · ${esc(shortTime(d.at))}</span><span class="muted small">訊息 ${d.counts?.messages ?? 0} 則、卡片 ${d.counts?.cards ?? 0} 張、文件 ${d.counts?.docs ?? 0} 份</span></li>`).join('')}</ul></details>`;
+    return `<details class="pm-card pm-dels" open><summary>已刪除的專案 · ${list.length}</summary><p class="muted small pm-pad">可復原期內只有工作區管理員看得到；復原後回到封存狀態。到期由系統永久清除。</p><ul class="pm-dels-list">${list.map(d => `<li data-pj="${esc(d.projectId)}"><b>${esc(d.name)}</b>${d.code ? ` <span class="muted small">${esc(d.code)}</span>` : ''}
+      <span class="muted small">${esc(d.deletedBy?.name || '')} · ${esc(shortTime(d.deletedAt))} 刪除</span><span class="muted small">訊息 ${d.counts?.messages ?? 0} 則、卡片 ${d.counts?.cards ?? 0} 張、文件 ${d.counts?.docs ?? 0} 份</span>
+      <span class="small pm-purge-at">${esc(localYmdHm(d.purgeAt))} 永久清除</span><button type="button" class="btn small" data-pp="restore">${L('復原', 'Restore')}</button></li>`).join('')}</ul></details>`;
   }
   // ---------- 看板狀態（每個專案自訂；GLOSSARY：狀態、狀態類別、必要類別） ----------
   const ST_CATS = ['待整理', '待處理', '進行中', '受阻', '待確認', '已完成']; // 已封存由系統管理，不能選
@@ -9678,7 +10013,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!onAdm && !onLead) perm.lastMemTab = perm.tab;
     if (state.permTab !== perm.tab) { state.permTab = perm.tab; drawChrome(); }
     // 管理員設定、成員管理分兩頁（頭像選單各一項），頂端互相連過去
-    const title = onRoster ? '<h2>📇 成員名冊</h2><span class="muted small">工作區裡所有人與 AI；專案只列你看得到的</span>' : onLead ? `<h2>📁 專案管理</h2><span class="muted small">你是專案管理員的專案 · 永久刪除專案請找工作區管理員 ${esc(wsAdminNames())}</span>` : onAdm ? '<h2>⚙️ 管理員設定</h2><span class="muted small">只有工作區管理員看得到 · 成員、AI 職務、技能在 <button type="button" class="link small" data-pm-page="members">👥 成員管理 ›</button></span>'
+    const title = onRoster ? '<h2>📇 成員名冊</h2><span class="muted small">工作區裡所有人與 AI；專案只列你看得到的</span>' : onLead ? `<h2>📁 專案管理</h2><span class="muted small">你是專案管理員的專案 · 刪除專案請找工作區管理員 ${esc(wsAdminNames())}</span>` : onAdm ? '<h2>⚙️ 管理員設定</h2><span class="muted small">只有工作區管理員看得到 · 成員、AI 職務、技能在 <button type="button" class="link small" data-pm-page="members">👥 成員管理 ›</button></span>'
       : `<h2>👥 成員管理</h2><span class="muted small">工作區管理員：${esc(wsAdminNames())}${admin ? ' · <button type="button" class="link small" data-adm="">⚙️ 管理員設定 ›</button>' : ' · 你是專案管理員'}</span>`;
     const tabs = onAdm || onLead || !manager ? '' : `<div class="seg-scope pm-tabs" role="tablist" aria-label="分頁">${[['roster', '名冊'], ['members', '專案成員'], ['roles', 'AI 職務'], ['skills', '技能']].map(([k, t]) => `<button type="button" role="tab" data-pm-tab="${k}" aria-selected="${perm.tab === k}" aria-pressed="${perm.tab === k}">${t}</button>`).join('')}</div>`;
     const body = onRoster ? rosterHtml() : onLead ? permLeadProjectsHtml() : onAdm ? admBodyHtml() : perm.tab === 'skills' ? permSkillsHtml() : perm.tab === 'roles' ? permRolesHtml() : permView() === 'byMember' ? permByMemberHtml() : permByProjectHtml();
@@ -10177,6 +10512,17 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       } catch (err) { toast(err.message); }
       return;
     }
+    if (a === 'platrec' || a === 'wsrec') { // 可復原期：平台預設／工作區覆寫（空值＝跟平台預設）；要再驗證時 api() 會先問密碼
+      const v = $(a === 'platrec' ? '#adm-rec' : '#ws-rec').value, days = v === '' ? null : Number(v);
+      try {
+        if (a === 'platrec') perm.platRec = (await api('/api/platform/settings', { method: 'PUT', body: { recoveryDays: days } })).recoveryWindow;
+        const eff = a === 'wsrec' ? await api('/api/recovery-window', { method: 'PUT', body: { days } }) : await api('/api/recovery-window').catch(() => null);
+        if (eff && perm.gsRec !== undefined) perm.gsRec = eff;
+        toast(recSaved(eff ? eff.days : days));
+        drawPerm();
+      } catch (err) { toast(err.message); }
+      return;
+    }
     if (a === 'wsttl') { // 工作區覆寫（空值＝跟平台預設）
       const v = $('#ws-ttl').value, hours = v === '' ? null : Number(v);
       try {
@@ -10197,7 +10543,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       perm.gsLogOpen = !!$('.pm-gs-log')?.open;
       return loadGroupSettings(); // 異動紀錄多一筆
     }
-    if (a === 'noop') { drawPerm(); return toast('只有管理員能永久刪除專案'); } // PLAT-381
+    if (a === 'noop') { drawPerm(); return toast('只有工作區管理員能刪除專案'); } // 專案管理員的 ⋯ 選單裡灰掉的刪除
     if (a === 'members') return psetAct('members', id);
     if (a === 'statuses') { drawPerm(); return openStatusEditor(id); }
     if (a === 'visibility') { drawPerm(); return openVisibilityEditor(id); }
@@ -10211,6 +10557,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (a === 'createprojects') {
       if (pp.value === perm.gs?.createProjects) return;
       return saveGroupSettings({ createProjects: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能建立專案' : '已儲存：只有工作區管理員能建立專案');
+    }
+    if (a === 'deleteown') {
+      if (pp.value === perm.gs?.deleteOwnMessages) return;
+      return saveGroupSettings({ deleteOwnMessages: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能刪除自己的訊息' : '已儲存：只有工作區管理員能刪除訊息');
     }
     if (a === 'openjoin') { const on = pp.getAttribute('aria-checked') !== 'true'; return saveGroupSettings({ openJoin: on }, on ? '已開放自行註冊' : '已關閉自行註冊，只能用邀請連結加入'); }
     if (a === 'roomcode') {
@@ -10264,20 +10614,27 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         toast(on ? '已開放私訊' : '已關閉私訊');
       } else if (a === 'unarchive') {
         await api(`/api/projects/${encodeURIComponent(id)}/unarchive`, { method: 'POST' });
-      } else if (a === 'purge') { // 先看會刪掉多少；有擋下原因就只說明
+      } else if (a === 'pdelete') { // 先看會刪掉多少、什麼時候永久清除；有擋下原因就只說明
         const pv = await api(`/api/projects/${encodeURIComponent(id)}/delete-preview`);
         if (pv.blockers.length) {
-          await confirmDialog({ title: '還不能永久刪除', confirmText: '知道了', message: `<ul class="confirm-list">${pv.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` });
+          await confirmDialog({ title: '還不能刪除', confirmText: '知道了', message: `<ul class="confirm-list">${pv.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` });
           return;
         }
-        const c = pv.counts;
-        const ok = await confirmDialog({ title: `永久刪除「${pv.name}」？`, confirmText: '永久刪除', danger: true, expectText: pv.name,
-          message: `<p>刪掉就救不回來。會一起刪掉：</p><ul class="confirm-list"><li>訊息 ${c.messages} 則（含通知與決策紀錄）</li><li>卡片 ${c.cards} 張（含卡片紀錄）</li><li>文件 ${c.docs} 份、上傳檔 ${c.files} 個</li><li>技能 ${c.skills} 個</li>${pv.aisToDelete?.length ? `<li>只屬於這個專案的 AI 會一起刪除：${esc(pv.aisToDelete.join('、'))}</li>` : ''}</ul>` +
+        const c = pv.counts, now = !pv.recoveryDays;
+        const ok = await confirmDialog({ title: `刪除「${pv.name}」？`, confirmText: '刪除', danger: true, expectText: pv.name,
+          message: (now ? '<p>可復原期是 0 天：刪除後立刻永久清除，救不回來。會一起清除：</p>'
+            : `<p>刪除後進入可復原期（${pv.recoveryDays} 天），${esc(localYmdHm(pv.purgeAt))} 由系統永久清除；在那之前工作區管理員可以在「已刪除的專案」復原。到期會一起清除：</p>`) +
+            `<ul class="confirm-list"><li>訊息 ${c.messages} 則（含通知與決策紀錄）</li><li>卡片 ${c.cards} 張（含卡片紀錄）</li><li>文件 ${c.docs} 份、上傳檔 ${c.files} 個</li><li>技能 ${c.skills} 個</li>${pv.aisToDelete?.length ? (now ? `<li>只屬於這個專案的 AI 會一起刪除：${esc(pv.aisToDelete.join('、'))}</li>` : `<li>只屬於這個專案的 AI 會先暫停、永久清除時一起刪除：${esc(pv.aisToDelete.join('、'))}</li>`) : ''}</ul>` +
             `<p>${c.members} 位成員與 AI 的帳號會留著，只是不再屬於這個專案；跨專案頻道的訊息不動。</p>` });
         if (!ok) return;
-        await api(`/api/projects/${encodeURIComponent(id)}/delete`, { method: 'POST', body: { confirmName: pv.name } });
-        perm.deletions = undefined; // 重讀刪除紀錄
-        toast(`已永久刪除「${pv.name}」`);
+        const d = await api(`/api/projects/${encodeURIComponent(id)}/delete`, { method: 'POST', body: { confirmName: pv.name } });
+        perm.deletions = undefined; // 重讀已刪除的專案
+        toast(d.deleted?.purged ? `已永久清除「${pv.name}」` : `已刪除「${pv.name}」，${localYmdHm(d.deleted?.purgeAt)} 永久清除`);
+      } else if (a === 'restore') {
+        const name = perm.deletions?.find(x => x.projectId === id)?.name || '';
+        await api(`/api/projects/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+        perm.deletions = undefined;
+        toast(`已復原「${name}」，回到封存狀態`);
       }
       await Promise.all([loadProjectList(), loadParticipants()]);
       if (perm.openLog) perm.events[perm.openLog] = (await api(`/api/projects/${encodeURIComponent(perm.openLog)}/events?limit=20`).catch(() => ({ items: [] }))).items;
@@ -10835,11 +11192,12 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       : '<p class="small">這個站已經有資料，不能匯入；要搬家請在新架的空站匯入</p>';
     if (perm.platTtl === undefined) { // 平台預設的附件保存時間
       perm.platTtl = null;
-      api('/api/platform/settings').then(s => { perm.platTtl = s.fileTtl; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(err => toast(err.message));
+      api('/api/platform/settings').then(s => { perm.platTtl = s.fileTtl; perm.platRec = s.recoveryWindow; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(err => toast(err.message));
     }
     return `<div class="pm-projs">
       ${updCardHtml()}
       ${admTtlHtml(perm.platTtl)}
+      ${admRecHtml(perm.platRec)}
       ${demoCardHtml()}
       <div class="pm-card"><div class="pm-card-head"><strong>下載備份</strong><span class="muted small">整個群組的資料（成員、專案、訊息、卡片、決策、技能、設定）存成一個檔。不含 Token、密碼與登入連結：匯入後其他人要你在「成員」按「重設登入」，AI 要主人重發 Token。</span></div>
         <div class="pm-pad bk-row"><label class="bk-check"><input type="checkbox" id="bk-files" checked> 含附件與專案文件</label><button type="button" class="btn primary" data-bk="export"${bk.busy ? ' disabled' : ''}>下載備份</button></div>${bkMsgHtml('export')}</div>

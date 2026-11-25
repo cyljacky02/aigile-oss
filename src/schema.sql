@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS messages (
   reply_from TEXT,                         -- 要回覆的人（JSON 陣列，收件人子集合）；NULL＝沒標
   project TEXT,                            -- 所屬專案（原本只靠 migration 0012 補，新站會少）
   created_at TEXT NOT NULL,
+  deleted_at TEXT,                         -- 刪除時間（ISO；佔位留著；migrations/012）
+  deleted_by TEXT,                         -- 刪除者 participantId（migrations/012）
+  purge_at TEXT,                           -- 預計永久清除時間（ISO，刪除當下依可復原期決定；migrations/012）
+  clear_id TEXT,                           -- 所屬的清空專案訊息操作（單獨刪除為空；migrations/012）
+  purged_at TEXT,                          -- 永久清除時間（ISO；內文與附件已清掉；migrations/012）
   UNIQUE (author_id, request_id)
 );
 -- 私訊自己的 AI：只有人類與他名下的 AI 兩方；不進群組訊息
@@ -143,6 +148,8 @@ CREATE TABLE IF NOT EXISTS avatars (
 CREATE INDEX IF NOT EXISTS idx_notif_status_created ON notifications (status, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages (reply_to);
 CREATE INDEX IF NOT EXISTS idx_messages_project_seq ON messages (project, seq);
+CREATE INDEX IF NOT EXISTS idx_messages_purge ON messages (purge_at); -- migrations/012
+CREATE INDEX IF NOT EXISTS idx_messages_clear ON messages (clear_id); -- migrations/012 的欄位：清空專案訊息的清單與整批復原
 
 -- 「等你決定」清單：人類按「已處理」的紀錄
 CREATE TABLE IF NOT EXISTS decision_resolutions (
@@ -237,6 +244,10 @@ CREATE TABLE IF NOT EXISTS projects (
   archived INTEGER NOT NULL DEFAULT 0,
   workspace_id TEXT,                   -- 所屬工作區（migrations/008）
   visibility TEXT NOT NULL DEFAULT 'review', -- 專案可見度：open（開放，工作區成員直接加入）| review（審核，申請後核准；預設）| private（私人，只有專案成員與有隱含權限的人看得到）
+  deleted_at TEXT,                     -- 刪除時間（ISO）；有值＝在可復原期，只有工作區管理員看得到（migrations/013）
+  deleted_by TEXT,                     -- 刪除者 participant id（migrations/013）
+  purge_at INTEGER,                    -- 預計永久清除時間（epoch 毫秒，刪除當下決定；migrations/013）
+  paused_ais TEXT,                     -- 刪除時暫停的 AI id（JSON 陣列；participants.status 改 paused，復原時恢復 active；migrations/013）
   created_by TEXT,
   created_at TEXT NOT NULL
 );
@@ -266,6 +277,7 @@ CREATE TABLE IF NOT EXISTS devices (
   created_at INTEGER NOT NULL,
   last_used_at INTEGER NOT NULL DEFAULT 0,
   expires_at INTEGER NOT NULL,             -- 使用中自動展延
+  reauth_at INTEGER,                       -- 最近一次在這台再驗證身分（敏感操作 10 分鐘內有效）
   revoked_at INTEGER                       -- 登出這台／重設登入
 );
 CREATE INDEX IF NOT EXISTS idx_devices_participant ON devices (participant_id);
@@ -465,6 +477,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,                 -- 第一階段只有 default
   name TEXT NOT NULL DEFAULT '',       -- 工作區名稱（升級時取群組名稱）
   create_projects TEXT NOT NULL DEFAULT 'members', -- 誰可以建立專案：members | admins
+  delete_own_messages TEXT NOT NULL DEFAULT 'members', -- 誰可以刪除自己的訊息：members | admins（migrations/014）
   created_at TEXT NOT NULL DEFAULT ''
 );
 INSERT OR IGNORE INTO workspaces (id, name, create_projects) VALUES ('default', '', 'members');
@@ -491,3 +504,27 @@ CREATE TABLE IF NOT EXISTS project_members (
   PRIMARY KEY (project_id, participant_id)
 );
 CREATE INDEX IF NOT EXISTS idx_project_members_participant ON project_members (participant_id);
+-- 稽核紀錄（docs/adr/0003；migrations/010）：管理與破壞性操作只能新增的紀錄；平台層，專案永久清除後仍保留。不存訊息原文
+-- 沒有修改、刪除的 API；跟著備份走（還原時把備份裡的合併進來、這個站原本的留著，再加一筆 backup.restore）
+CREATE TABLE IF NOT EXISTS audit_log (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, -- 分頁游標（新的在前）
+  id TEXT NOT NULL UNIQUE,
+  at TEXT NOT NULL,                    -- ISO 時間
+  actor_id TEXT,                       -- 操作者；系統操作是 system
+  actor_name TEXT NOT NULL DEFAULT '', -- 寫入當時的名字（系統）
+  actor_kind TEXT NOT NULL DEFAULT 'human', -- human | ai | system
+  action TEXT NOT NULL,                -- src/audit.js 的 AUDIT_ACTION（例 platform_admin.grant）
+  scope_kind TEXT NOT NULL,            -- platform | workspace | project；平台層的只有平台管理員看得到
+  workspace_id TEXT,                   -- 非平台層的事件所屬工作區（第一階段只有 default）；平台層 NULL
+  project_id TEXT,                     -- 專案層的事件
+  project_name TEXT,                   -- 寫入當時的專案名字
+  target_kind TEXT,                    -- participant | project | message | workspace
+  target_id TEXT,
+  target_name TEXT,                    -- 寫入當時的名字
+  count INTEGER,                       -- 摘要數字（例：清除了幾則訊息）
+  detail TEXT                          -- 細節 JSON；不放訊息原文
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log (at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_workspace ON audit_log (workspace_id, seq);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log (action, seq);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log (actor_id, seq);

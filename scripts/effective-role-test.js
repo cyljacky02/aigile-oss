@@ -9,6 +9,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
+import { adminSession } from './test-admin.js';
 import { addToProject, setProjectRole, listProjectMembers } from './test-members.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-effrole-'));
@@ -30,6 +31,7 @@ try {
   const boss = await join('林志明'); // 平台管理員＋工作區管理員
   const chen = await join('陳昭宇'), wang = await join('王小美');
   const Bo = boss.participant.participantId, Cn = chen.participant.participantId, Wg = wang.participant.participantId;
+  boss.token = (await adminSession(call, boss.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入
   ok(await addToProject(call, boss.token, A, Cn), '陳昭宇加入');
   ok(await addToProject(call, boss.token, A, Wg, 'viewer'), '王小美以唯讀成員加入');
   const ai = ok(await call(chen.token, '/api/my-ais', 'POST', { projects: [A], roleKey: 'PG', role: '程式開發', name: '陳的PG', ...S }), '建 AI');

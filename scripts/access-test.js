@@ -61,7 +61,7 @@ try {
   console.log('✓ 實際角色');
 
   // 平台、工作區動作：只有管理員
-  for (const action of ['manage_platform', 'manage_accounts', 'assign_platform_admin']) {
+  for (const action of ['manage_platform', 'manage_accounts', 'disable_account', 'assign_platform_admin']) {
     assert.ok(v.can(admin, action, 'platform'), action);
     assert.ok(!v.can(lead, action, 'platform'), action + '：leader 不行');
   }
@@ -79,7 +79,7 @@ try {
 
   // 平台管理員：工作區管理員不等於平台管理員；平台管理員不是工作區成員也有工作區管理權、所有專案的專案管理權
   assert.equal(v.roleIn(admin2, 'platform'), null, '工作區管理員不是平台管理員');
-  for (const action of ['manage_platform', 'manage_accounts', 'assign_platform_admin']) assert.ok(!v.can(admin2, action, 'platform'), action + '：工作區管理員不行');
+  for (const action of ['manage_platform', 'manage_accounts', 'disable_account', 'assign_platform_admin']) assert.ok(!v.can(admin2, action, 'platform'), action + '：工作區管理員不行');
   assert.equal(v.roleIn(plat, 'platform'), PLATFORM_ADMIN);
   assert.equal(v.roleIn(plat, 'workspace'), WORKSPACE_ADMIN, '平台管理員有隱含的工作區管理權（被移出工作區也一樣）');
   assert.equal(v.roleIn(plat, { project: 'main' }), PROJECT_ADMIN, '也有所有專案的專案管理權');

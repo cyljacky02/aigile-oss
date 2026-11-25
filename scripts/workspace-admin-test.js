@@ -12,6 +12,7 @@ import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
+import { adminSession } from './test-admin.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-wsadmin-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
@@ -34,6 +35,7 @@ try {
   const chen = (await call(null, '/api/join', 'POST', { name: '陳昭宇', role: 'PG' })).body;
   const wang = (await call(null, '/api/join', 'POST', { name: '王小美', role: 'QA' })).body;
   const Bo = boss.participant.participantId, Cn = chen.participant.participantId, Wg = wang.participant.participantId;
+  boss.token = (await adminSession(call, boss.token)).token; // 任免管理員是敏感操作：用設了密碼、剛再驗證過的裝置登入
   assert.equal((await call(boss.token, `/api/participants/${Cn}/projects`, 'PUT', { projects: [A] })).status, 200);
   assert.equal((await call(boss.token, `/api/participants/${Wg}/projects`, 'PUT', { projects: [A] })).status, 200);
   const ai = (await call(chen.token, '/api/my-ais', 'POST', { projects: [A], roleKey: 'PG', role: '程式開發', name: '陳的PG', ...S })).body;
@@ -71,6 +73,7 @@ try {
   assert.equal(up.status, 200, JSON.stringify(up.body));
   assert.equal(up.body.participant.workspaceRole, 'admin');
   assert.equal((await me(chen.token)).workspaceRole, 'admin', '陳昭宇升為工作區管理員');
+  chen.token = (await adminSession(call, chen.token)).token; // 新的工作區管理員接著要任免管理員：換成剛再驗證過的裝置登入
   assert.deepEqual((await call(boss.token, '/api/participants')).body.items.filter(p => p.workspaceRole === 'admin').map(p => p.participantId).sort(), [Bo, Cn].sort(), '名單上兩位管理員');
   for (const [tok, who] of [[boss.token, '林志明'], [chen.token, '陳昭宇']]) {
     assert.equal((await call(tok, '/api/invites')).status, 200, `${who} 能看邀請`);

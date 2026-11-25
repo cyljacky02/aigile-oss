@@ -7,6 +7,7 @@ import path from 'node:path';
 import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { openTestDb } from './test-db.js';
+import { adminSession } from './test-admin.js';
 import { dbStorage } from '../src/storage-db.js';
 import { addToProject, setProjectRole, removeFromProject, listProjectMembers } from './test-members.js';
 
@@ -27,6 +28,7 @@ try {
   const wang = await join('王小明');
   const chen = await join('陳昭宇');
   const lin = await join('林美玲');
+  boss.token = (await adminSession(call, boss.token)).token; // 任免管理員、停用帳號是敏感操作：用設了密碼、剛再驗證過的裝置登入
   await call(boss.token, `/api/participants/${wang.id}/projects`, 'PUT', { projects: [A] });
 
   // 1) 工作區管理員任命專案管理員；成員清單帶專案角色

@@ -45,7 +45,8 @@ try {
     await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
     await login(lin.token, '/p/main/messages');
     await until(() => js("document.querySelectorAll('#messages .msg, #messages .flow-line').length > 0"), 20000, '第一次載入'); // 等第一次載完再設「上次看到」，不然它會蓋掉
-    await js(`localStorage.setItem('aigile-lang', '${lang}'); localStorage.setItem('aigile-switch-view', '${view}'); ${seen ? `localStorage.setItem('aigile-seen:${PJ}', '${seen}')` : `localStorage.removeItem('aigile-seen:${PJ}')`}; window.__staleReload = 1; location.reload(); true`);
+    // 設完就讓舊頁不能再寫 localStorage：舊頁還在收尾（英文字典載完才顯示、捲到底記「看到最新」），慢機器上會在換頁前把「上次看到」蓋掉
+    await js(`localStorage.setItem('aigile-lang', '${lang}'); localStorage.setItem('aigile-switch-view', '${view}'); ${seen ? `localStorage.setItem('aigile-seen:${PJ}', '${seen}')` : `localStorage.removeItem('aigile-seen:${PJ}')`}; Storage.prototype.setItem = () => {}; window.__staleReload = 1; location.reload(); true`);
     await until(() => js('!window.__staleReload'), 20000, '重新整理後換成新頁面');
     await sleep(400);
     await until(() => js("!!document.querySelector('.av-btn') && document.querySelectorAll('#messages .msg, #messages .flow-line').length > 3"), 20000, `訊息（${view}、${lang}）`);

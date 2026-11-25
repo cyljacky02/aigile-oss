@@ -1,4 +1,5 @@
 // 用詞統一：全站叫「要你處理」與「AI」，不再出現「要你做」「等你處理」「AI 助手」
+// 刪除與稽核（GLOSSARY）：說「刪除」「可復原期」「永久清除」，不再出現「永久刪除」
 // 掃網頁、伺服器、規格與 README（不連任何站）。用法：node scripts/wording-test.js
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,7 +10,7 @@ const files = [
   ...['public', 'src', 'docs'].flatMap(d => fs.readdirSync(path.join(root, d)).filter(f => /\.(js|mjs|html|css|md)$/.test(f)).map(f => path.join(d, f))),
   'README.md', 'package.json',
 ];
-const BAD = [/要你做/, /等你處理/, /AI ?助手/];
+const BAD = [/要你做/, /等你處理/, /AI ?助手/, /永久刪除/];
 const hits = [];
 for (const f of files) {
   fs.readFileSync(path.join(root, f), 'utf8').split('\n').forEach((line, i) => {

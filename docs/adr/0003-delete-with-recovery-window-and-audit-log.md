@@ -17,5 +17,6 @@ Deletes are soft with a configurable recovery window and a scheduled purge; ever
 ## Consequences
 
 - 「永久刪除」一詞退場：刪除＝進入可復原期，永久清除由系統在期滿時做。
+- 例外：**單則訊息的刪除與復原不通知管理員**，只寫稽核紀錄。作者刪自己貼錯的訊息是日常動作，每次都通知只會讓管理員忽略通知；要追查時稽核紀錄裡都有。清空專案訊息、刪除專案等整批的破壞性操作照常通知。Single-message delete and restore are the one exception to "admins are notified": they are audit-only, because authors deleting their own slips is routine and per-message notices would train admins to ignore them. Bulk actions (clearing a project's messages, deleting a project) still notify.
 - 舊的 `pdel:` 紀錄併入稽核紀錄。
 - 還原舊備份會帶回已永久清除的內容；這點寫進說明文件，不另外追蹤。

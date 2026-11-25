@@ -6,6 +6,7 @@
 //   - 匯入只在空站可用（只有你一位人類、沒有 AI、訊息、卡片、技能、文件）；先預覽數量再確認
 //   - 備份裡的平台管理員、工作區管理員原樣帶回來；匯入後你的登入（密碼、這台裝置）改掛到備份裡的平台管理員身上；其他人要你在「邀請」發重設登入連結，AI 要主人重發 Token
 import { APP_VERSION, cmpVersion } from './version.js';
+import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 
 export const BACKUP_FORMAT = 'aigile-backup';
 export const BACKUP_FORMAT_VERSION = 1;
@@ -13,15 +14,17 @@ export const BACKUP_FORMAT_VERSION = 1;
 export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'project_events', 'app_settings', 'accounts', 'participants', 'project_members', 'ai_state', 'messages', 'message_recipients', 'notifications', 'dms',
   'decision_resolutions', 'cards', 'card_log', 'card_msgs', 'suggestions', 'avatars', 'avatar_proposals',
   'skills', 'skill_allows', 'skill_installs', 'skill_syncs', 'join_requests', 'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
-  'kb_chunks', 'kb_pages']; // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
+  'kb_chunks', 'kb_pages', // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
+  'audit_log']; // 稽核紀錄：還原時不清掉這個站原本的，備份裡的合併進來（同一筆 id 不重複），結束匯入時再加一筆 backup.restore
+const KEEP_TABLES = ['audit_log']; // 開始匯入時不清的表（稽核紀錄只能新增）
 // 不匯出：登入用的（Token、密碼雜湊、裝置、登入碼、邀請、救援連結、登入通知、失敗次數）
 // schema_migrations：每個站自己套過哪些資料庫升級，不跟著備份搬；legacy_members：升級用的暫存，轉完就是空的
 export const SKIP_TABLES = ['devices', 'invites', 'pair_codes', 'credentials', 'login_fails', 'rescue_links', 'account_notices', 'schema_migrations', 'legacy_members'];
 const FILE_TABLES = ['docs', 'files', 'kb_chunks']; // 不含附件時整張不帶（kb_chunks 是文件內容，沒文件就不帶）
 const BLOB_COLS = { avatars: ['data'], avatar_proposals: ['data'], file_chunks: ['data'] };
 const DROP_COLS = { participants: ['token', 'token_expires_at'] }; // 匯入時換新：Token 隨機、已過期
-// app_settings 不帶的：AI 接入連結（一次性密鑰的雜湊）、預設管理員要改帳密的標記、快取用的版本、匯入中的標記、更新檢查的快取
-const skipSetting = k => k.startsWith('olink:') || k.startsWith('must_change_cred:') || k.startsWith('relogin:') || ['people_ver', 'restore_state', 'update_check'].includes(k);
+// app_settings 不帶的：AI 接入連結（一次性密鑰的雜湊）、預設管理員要改帳密的標記、快取用的版本（成員、訊息刪除）、匯入中的標記、更新檢查的快取
+const skipSetting = k => k.startsWith('olink:') || k.startsWith('must_change_cred:') || k.startsWith('relogin:') || ['people_ver', 'msg_ver', 'restore_state', 'update_check'].includes(k);
 // 每頁幾列：一般 500；大欄位的表少一點（技能一列最多 1 MB、file_chunks 一列 512 KB、頭像是圖片）
 const PAGES = { file_chunks: 1, skills: 4, avatar_proposals: 5, avatars: 20, kb_pages: 50 }; // 知識頁一頁最多 2 萬字
 const pageOf = t => PAGES[t] || 500;
@@ -30,7 +33,7 @@ const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s +=
 const unb64 = s => { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
 const toU8 = v => (v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new Uint8Array(v) : Array.isArray(v) ? Uint8Array.from(v) : null);
 
-export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, membership, afterRestore }) {
+export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, auditLog, membership, afterRestore }) {
   const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '備份與匯入' }); };
   const columnsOf = async t => (await db.all(`PRAGMA table_info(${t})`)).map(c => c.name);
   // 匯入中只認開始匯入的那位（備份的成員寫進來後，最早的人類會變成管理員，不能再用權限模組的管理員判斷）
@@ -111,11 +114,12 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     if (String(body.appVersion).split('.')[0] !== APP_VERSION.split('.')[0]) throw new ApiError(400, 'BACKUP_MAJOR', `備份是 ${body.appVersion} 版，跟這個站（${APP_VERSION}）的主版本不同，不能直接匯入`);
     if (!state && !(await isEmpty(me))) throw new ApiError(409, 'NOT_EMPTY', '只有空站能匯入：這個站已經有其他成員、訊息、卡片、技能或文件。請在新架的站匯入。');
     if (state && state.by !== me.id) throw new ApiError(409, 'RESTORE_BY_OTHER', '別的管理員正在匯入');
-    const stmts = [...EXPORT_TABLES.filter(t => !['participants', 'accounts'].includes(t)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []]);
+    const stmts = [...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES].includes(t)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []]);
     stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
-    stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${me.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
-    stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: me.name, code: me.code, appVersion: body.appVersion })]]);
+    const orig = state ? { name: state.name, code: state.code } : { name: me.name, code: me.code }; // 重來時你已經是暫時的名字：用第一次記下的
+    stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${orig.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
+    stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: orig.name, code: orig.code, appVersion: body.appVersion })]]);
     await db.batch(stmts);
     if (docStorage) for (const d of await db.all('SELECT id FROM docs')) await docStorage.delete(`docs/${d.id}`).catch(() => {}); // 上面已清表；這裡保險
     await afterRestore?.();
@@ -130,7 +134,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     const t = body.table;
     if (!EXPORT_TABLES.includes(t)) throw invalid('table 不在可匯入的清單');
     if (!Array.isArray(body.rows) || body.rows.length > 1000) throw invalid('rows 要是陣列，一次最多 1000 列');
-    const have = new Set(await columnsOf(t)), drop = DROP_COLS[t] || [], blobs = BLOB_COLS[t] || [];
+    const have = new Set(await columnsOf(t)), drop = [...(DROP_COLS[t] || []), ...(t === 'audit_log' ? ['seq'] : [])], blobs = BLOB_COLS[t] || [];
     const stmts = [];
     let inserted = 0;
     for (const r of body.rows) {
@@ -152,7 +156,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       const cols = Object.keys(row);
       if (!cols.length) continue;
       inserted++;
-      stmts.push([`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})${t === 'app_settings' ? ' ON CONFLICT(key) DO UPDATE SET value = excluded.value' : ''}`, cols.map(c => row[c])]);
+      // 稽核紀錄跟這個站原本的合併：流水號重新編（不跟原本的撞），已經有的 id 略過（中途重來不重複）
+      stmts.push([`INSERT${t === 'audit_log' ? ' OR IGNORE' : ''} INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})${t === 'app_settings' ? ' ON CONFLICT(key) DO UPDATE SET value = excluded.value' : ''}`, cols.map(c => row[c])]);
     }
     for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100));
     return { table: t, inserted };
@@ -195,6 +200,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     await afterRestore?.();
     const people = await peopleMap(ctx);
     const humans = [...people.values()].filter(p => p.kind === 'human').length, ais = [...people.values()].filter(p => p.kind === 'ai').length;
+    // 稽核紀錄在還原完才寫（備份裡的紀錄已經合併進來）；操作者是按還原的平台管理員（開始匯入時記下的身分與名字），不是登入改掛過去的那位
+    await auditLog.write({ actor: { id: state.by, name: state.name, kind: 'human' }, action: AUDIT_ACTION.BACKUP_RESTORE, scope: AUDIT_SCOPE.PLATFORM, detail: { appVersion: state.appVersion, humans, ais } });
     return { ok: true, admin: target ? { participantId: target.id, name: target.name } : { participantId: me.id, name: state.name }, humans, ais };
   });
 }
