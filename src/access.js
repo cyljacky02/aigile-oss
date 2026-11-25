@@ -147,10 +147,10 @@ const ACTIONS = {
       : d.err(403, 'NOT_ADMIN', `工作區政策設為只有工作區管理員能刪除訊息，自己的也一樣；要刪這則請找工作區管理員（${d.adminName()}）。`)) },
   // 刪除任何人的訊息（含平台管理員、AI 發的）：工作區管理員。內容管理不是管理權，不套「不能動上層管理員」；專案管理員不行
   delete_message: { admin: true, human: true, rule: workspaceAdmin },
-  // 復原被刪的訊息：工作區管理員復原任何一則；作者只能復原自己刪的（管理員刪的回 RESTORE_FORBIDDEN）
+  // 復原被刪的訊息：工作區管理員復原任何一則；作者只能復原自己刪的（工作區管理員刪的回 RESTORE_FORBIDDEN）
   restore_message: { human: true, rule: (v, me, s) => workspaceAdmin(v, me) || (me.kind === 'human' && s.message?.authorId === me.id && s.message?.deletedBy === me.id && !v.readOnlyAt(me, s.project)),
     deny: d => (d.s.message?.authorId !== d.me.id ? DENY.workspace({ ...d, what: '復原別人的訊息' })
-      : d.s.message?.deletedBy !== d.me.id ? d.err(403, 'RESTORE_FORBIDDEN', '這則訊息是管理員刪的，只有工作區管理員能復原。') : d.readOnly()) },
+      : d.s.message?.deletedBy !== d.me.id ? d.err(403, 'RESTORE_FORBIDDEN', '這則訊息是工作區管理員刪的，只有工作區管理員能復原。') : d.readOnly()) },
   // 清空專案訊息（一次刪除一個專案所有群組訊息）：只有工作區管理員；專案管理員不行
   clear_project_messages: { admin: true, human: true, sensitive: true, rule: workspaceAdmin }, // 清空（敏感：要再驗證身分）
   preview_messages_clear: { admin: true, human: true, rule: workspaceAdmin }, // 清空前的預覽：會刪掉幾則訊息、幾個附件（不用再驗證）
@@ -240,7 +240,9 @@ export function createAccess(deps) {
         const def = ACTIONS[action];
         if (!def) throw new Error(`沒有這個權限動作：${action}`);
         if (!me || (def.admin && me.kind !== 'human')) return false; // AI 不能做任何管理動作
-        return !!def.rule(v, me, scopeOf(scope));
+        const s = scopeOf(scope);
+        if (s.project && deps.isDeletedProject?.(s.project)) return false; // 可復原期內的專案：誰都不能對它做什麼
+        return !!def.rule(v, me, s);
       },
       implicitOnlyIn: (id, pj) => implicitOnly(people?.get(id), pj),
     };
@@ -270,7 +272,10 @@ export function createAccess(deps) {
     if (!def) throw new Error(`沒有這個權限動作：${action}`);
     if (def.human) requireHuman(me);
     const v = await load(ctx, { fresh: !!def.fresh, light: def.light });
-    if (!v.can(me, action, scope)) throw denial(v, me, action, scopeOf(scope), opts);
+    const s = scopeOf(scope);
+    // 可復原期內的專案：專案底下的動作對所有人（含管理員的隱含權限）都當專案不存在
+    if (s.project && deps.isDeletedProject?.(s.project)) throw DENY.notFound({ s, nameOf, err: (status, code, message) => new ApiError(status, code, message) });
+    if (!v.can(me, action, scope)) throw denial(v, me, action, s, opts);
     if (def.sensitive) await deps.requireRecentAuth?.(me, ctx); // 敏感動作：再驗證身分
     return v;
   }

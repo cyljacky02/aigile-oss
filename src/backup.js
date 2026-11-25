@@ -117,8 +117,9 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     const stmts = [...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES].includes(t)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []]);
     stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
-    stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${me.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
-    stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: me.name, code: me.code, appVersion: body.appVersion })]]);
+    const orig = state ? { name: state.name, code: state.code } : { name: me.name, code: me.code }; // 重來時你已經是暫時的名字：用第一次記下的
+    stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${orig.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
+    stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: orig.name, code: orig.code, appVersion: body.appVersion })]]);
     await db.batch(stmts);
     if (docStorage) for (const d of await db.all('SELECT id FROM docs')) await docStorage.delete(`docs/${d.id}`).catch(() => {}); // 上面已清表；這裡保險
     await afterRestore?.();
@@ -199,8 +200,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     await afterRestore?.();
     const people = await peopleMap(ctx);
     const humans = [...people.values()].filter(p => p.kind === 'human').length, ais = [...people.values()].filter(p => p.kind === 'ai').length;
-    // 稽核紀錄在還原完才寫（備份裡的紀錄已經合併進來）；操作者是你現在的身分（登入改掛過去的那位）
-    await auditLog.write({ actor: { id: you, name: target ? target.name : state.name, kind: 'human' }, action: AUDIT_ACTION.BACKUP_RESTORE, scope: AUDIT_SCOPE.PLATFORM, detail: { appVersion: state.appVersion, humans, ais } });
+    // 稽核紀錄在還原完才寫（備份裡的紀錄已經合併進來）；操作者是按還原的平台管理員（開始匯入時記下的身分與名字），不是登入改掛過去的那位
+    await auditLog.write({ actor: { id: state.by, name: state.name, kind: 'human' }, action: AUDIT_ACTION.BACKUP_RESTORE, scope: AUDIT_SCOPE.PLATFORM, detail: { appVersion: state.appVersion, humans, ais } });
     return { ok: true, admin: target ? { participantId: target.id, name: target.name } : { participantId: me.id, name: state.name }, humans, ais };
   });
 }

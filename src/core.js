@@ -9,7 +9,7 @@ import { registerCards, teamCards, workFrom, autoArchive, claimsOf, CLAIM_LOG } 
 import { createStatuses, registerStatusRoutes, firstStatusSql, readStatusList } from './statuses.js'; // 專案看板狀態
 import { createMembership, DEFAULT_WORKSPACE, PROJECT_ROLE, WORKSPACE_ROLE, readProjectRole as readRoleOf } from './membership.js'; // 成員資格：誰在哪些專案、專案角色
 import { registerLogin } from './login.js';
-import { registerSkills, KEYISH } from './skills.js'; // 角色技能庫
+import { registerSkills, KEYISH, packMeta } from './skills.js'; // 角色技能庫
 import { registerJoin, joinOpen } from './join.js'; // 申請加入專案
 import { registerDocs, DOC_MAX_TOTAL_BYTES } from './docs.js'; // 專案文件區
 import { registerKbPages } from './kb-pages.js'; // 知識頁、整理卡
@@ -21,6 +21,7 @@ import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, hasWorkspaceAdminRights, i
 import { createWorkspaceSettings, CREATE_PROJECTS, DELETE_OWN_MESSAGES } from './workspace-settings.js'; // 工作區設定（誰可以建立專案、誰可以刪除自己的訊息）
 import { createAudit, AUDIT_ACTION, AUDIT_ACTIONS, AUDIT_SCOPE } from './audit.js'; // 稽核紀錄（管理操作）
 import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js'; // 管理員異動通知
+import { isNotNullViolation } from './db-errors.js';
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -194,23 +195,24 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   }
   const flushBells = () => Promise.allSettled([...bellPending]);
   // 內建即時通道：只推給「連著、而且看得到」的人，只帶 ID；內容照舊由 API 依專案隔離給
-  async function liveMessage(people, m, recipients) {
-    const on = live ? live.connectedIds() : [];
-    if (!on.length) return;
+  // 連著、而且看得到訊息 m 的人（啟用中；m 可以只有 project、created_at：等於「看得到這個專案的新訊息」）
+  async function liveViewers(people, m) {
     const see = [];
-    for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
+    for (const id of live ? live.connectedIds() : []) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
+    return see;
+  }
+  async function liveMessage(people, m, recipients) {
+    if (!live?.connectedIds().length) return;
+    const see = await liveViewers(people, m);
     live.toPeople(see, 'message', { id: m.id, project: m.project || null });
     const rec = recipients.filter(id => see.includes(id));
     if (rec.length) live.toPeople(rec, 'notify', { messageId: m.id });
   }
   // 訊息被刪除或復原（message_deleted／message_restored）：推給看得到這則的人，網頁重讀這一則
-  // 推給連著、看得到訊息 m 的人（m 可以只有 project、created_at：等於「看得到這個專案的新訊息」）
+  // 推給連著、看得到訊息 m 的人
   async function liveToViewers(ctx, m, type, data) {
-    const on = live ? live.connectedIds() : [];
-    if (!on.length) return;
-    const people = await peopleMap(ctx), see = [];
-    for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
-    live.toPeople(see, type, data);
+    if (!live?.connectedIds().length) return;
+    live.toPeople(await liveViewers(await peopleMap(ctx), m), type, data);
   }
   const liveMessageChange = (ctx, m, type) => liveToViewers(ctx, m, type, { id: m.id, project: m.project || null });
   async function liveCard(ctx, cardId, project) {
@@ -389,6 +391,14 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 卡號（MAIN-12 或舊的 C-xxx）→ seq；找不到回 null
   const seqOfCardId = async id => { const m = /^C-(\d+)$/i.exec(String(id || '').trim()); return m ? Number(m[1]) - 100 : cardSeqByKey(id); };
   const invalidateProjects = () => { projectsAt = 0; };
+  // 刪除狀態的版本（app_settings 的 msg_ver：訊息與專案的刪除、復原、永久清除都換新，見 messagesChanged）。
+  // 每個請求讀這 1 列；別份程式剛刪了或復原了，這份的專案清單、團隊狀態、待處理通知快取馬上重讀（不等 60／180 秒過期）
+  let deletionVer = null;
+  async function syncDeletions() {
+    const v = (await db.get("SELECT value FROM app_settings WHERE key = 'msg_ver'").catch(() => null))?.value || '0';
+    if (deletionVer !== null && v !== deletionVer) { projectsAt = 0; pendCache = { at: 0, rows: null }; teamCache = { at: 0, data: null }; }
+    deletionVer = v;
+  }
   // 成員資格（誰在哪些專案、專案角色）的讀寫都走 src/membership.js；這裡沿用原本的名字
   // projectsOf＝目前所屬（未封存）專案；listOf＝含封存專案的原始清單
   const membership = createMembership({ db, PROJECTS, nowIso, onChange: () => invalidatePeople() });
@@ -1652,7 +1662,7 @@ ${ending}`;
     loadReadOnly: membership.loadReadOnly, isReadOnly: membership.isReadOnly, isPlatformAdmin: membership.isPlatformAdmin, ownerOf,
     requireRecentAuth: me => login.requireFreshAuth(me), // 敏感動作：這台裝置剛再驗證過（login 在下面註冊路由時才建立）
   });
-  // 稽核紀錄（auditLog；名字跟下面檔案稽核的 audit() 分開）、管理員異動通知：跟著管理操作一起寫（先改資料、確認改成了，再寫這一批）
+  // 稽核紀錄（auditLog；名字跟下面檔案稽核的 audit() 分開）、管理員異動通知：跟著管理操作的資料同一批寫（writeTogether；批次裡用 ensureStmt 確認真的改成了）
   const auditLog = createAudit({ db, randId, nowIso });
   // 舊的專案刪除紀錄（app_settings 的 pdel:）轉進稽核紀錄：每份程式第一個請求做一次；匯入備份中、還沒有資料表時下個請求再試
   // 轉不成只記下來、不擋請求（跟成員資料轉換不同：稽核紀錄沒轉完不影響其他功能）
@@ -1665,6 +1675,14 @@ ${ending}`;
   const auditTarget = p => ({ kind: 'participant', id: p.id, name: p.name });
   // auditLog.stmt 沒有要寫的回 null：去掉 null，清單空了就不呼叫 db.batch
   const writeStmts = list => { const s = list.filter(Boolean); return s.length ? db.batch(s) : Promise.resolve(); };
+  // 資料、稽核紀錄、管理員通知同一批寫入（一起成功或一起不寫；失敗後重試會從頭再做一次）。
+  // 批次裡的前提：ensureStmt(條件) 不成立時這句違反 NOT NULL，整批回復；成立時什麼都不寫。放在要檢查的那句之後
+  // （例：「這次的 UPDATE 有改到」＝之後的列是這次寫的值；別人剛好先改了就不成立）。
+  // writeTogether 回 false＝前提不成立、什麼都沒寫（呼叫端照情況回 404／409／410 或「沒有變」）
+  const ensureStmt = (cond, args = []) => [`INSERT INTO app_settings (key, value) SELECT NULL, NULL WHERE NOT (${cond})`, args];
+  async function writeTogether(list) {
+    try { await writeStmts(list); return true; } catch (e) { if (isNotNullViolation(e, 'app_settings')) return false; throw e; }
+  }
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
   const assertWritable = (me, pj) => access.check({}, me, 'write', { project: pj || null });
@@ -2096,7 +2114,8 @@ ${ending}`;
   route('PUT', '/api/projects/:id/members', goneMembers);
   // 工作區政策允不允許他刪自己的訊息（人類；工作區管理員永遠可以）。在哪個專案是唯讀成員由網頁另外看
   const canDeleteOwnMessages = async (ctx, me) => me.kind === 'human' && ((await workspace.load()).deleteOwnMessages === DELETE_OWN_MESSAGES.MEMBERS || (await access.can(ctx, me, 'delete_message', 'workspace')));
-  route('GET', '/api/projects', async ({ ctx, me }) => ({ ...(await projectsSeenBy(ctx, me)), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace'), canDeleteOwnMessages: await canDeleteOwnMessages(ctx, me) })); // canCreateProject：網頁要不要顯示「新增專案」；canDeleteOwnMessages：工作區政策允不允許他刪自己的訊息（唯讀另看專案）
+  route('GET', '/api/projects', async ({ ctx, me }) => ({ ...(await projectsSeenBy(ctx, me)), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace'),
+    ...(ctx.viewerKind === 'human' ? { canDeleteOwnMessages: await canDeleteOwnMessages(ctx, me) } : {}) })); // canCreateProject：網頁要不要顯示「新增專案」；canDeleteOwnMessages：工作區政策允不允許他刪自己的訊息（唯讀另看專案；只給人類，給 AI 的形狀不變）
   // 群組名稱（登入頁也要顯示，所以讀取不用登入）；只有管理員能改
   route('GET', '/api/group', async () => ({ name: await groupName() }), { open: true });
   // 第一次設定引導做完或全部略過：之後不再出現（群組名稱、專案、邀請、AI 都在管理頁改得到）
@@ -2833,7 +2852,10 @@ ${ending}`;
   }
   // 只屬於這個專案的 AI（AI 至少要一個專案）：含停用、暫停的
   const onlyHereAis = (people, id) => people.filter(p => p.kind === 'ai' && p.status !== 'deleted' && listOf(p).length === 1 && listOf(p)[0] === id);
-  const idList = s => { try { const v = JSON.parse(s || '[]'); return Array.isArray(v) ? v.map(String) : []; } catch { return []; } };
+  // 刪除時暫停的 AI（projects.paused_ais）：每個是 id（原本啟用）或 { id, was: 'disabled' }（原本就停用：復原後照舊停用，不會被啟用）
+  const pausedList = s => { let v; try { v = JSON.parse(s || '[]'); } catch { v = []; } return (Array.isArray(v) ? v : []).map(x => (typeof x === 'string' ? { id: x, was: 'active' } : { id: String(x?.id ?? ''), was: x?.was === 'disabled' ? 'disabled' : 'active' })).filter(x => x.id); };
+  const pausedJson = ais => JSON.stringify(ais.map(p => (p.status === 'disabled' ? { id: p.id, was: 'disabled' } : p.id)));
+  const resumeStmts = (list, at) => ['active', 'disabled'].map(was => { const ids = list.filter(x => x.was === was).map(x => x.id); return ids.length ? ["UPDATE participants SET status = ?, updated_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND status = 'paused'", [was, at, JSON.stringify(ids)]] : null; });
   async function projectFootprint(id) {
     const n = async (sql, ...a) => Number((await db.get(sql, ...a))?.n || 0);
     return {
@@ -2858,20 +2880,23 @@ ${ending}`;
     if (blockers.length) throw new ApiError(409, 'DELETE_BLOCKED', blockers.join('；'));
     const id = row.id, pj = { id, name: row.name }, code = projCodes[id] || null, counts = await projectFootprint(id);
     const now = Date.now(), at = nowIso(), { days, purgeAt } = await purgeAtFor(now);
-    const paused = onlyHere.filter(p => p.status === 'active'); // 已停用的維持停用（復原時也不動）
-    const done = await db.run('UPDATE projects SET deleted_at = ?, deleted_by = ?, purge_at = ?, paused_ais = ? WHERE id = ? AND deleted_at IS NULL', at, me.id, purgeAt, JSON.stringify(paused.map(p => p.id)), id);
-    if (!done?.changes) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案'); // 別人剛刪掉
-    invalidateProjects();
-    await writeStmts([
-      paused.length ? ["UPDATE participants SET status = 'paused', updated_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND status = 'active'", [at, JSON.stringify(paused.map(p => p.id))]] : null,
+    const paused = onlyHere.filter(p => p.status === 'active' || p.status === 'disabled'); // 已停用的也暫停（不然可復原期內所屬人類能自己啟用），復原時回到停用
+    // 刪除、暫停 AI、專案事件、稽核紀錄、管理員通知同一批；別人剛好先刪了就整批不寫
+    const done = await writeTogether([
+      ['UPDATE projects SET deleted_at = ?, deleted_by = ?, purge_at = ?, paused_ais = ? WHERE id = ? AND deleted_at IS NULL', [at, me.id, purgeAt, pausedJson(paused), id]],
+      ensureStmt('EXISTS (SELECT 1 FROM projects WHERE id = ? AND deleted_at = ? AND deleted_by = ?)', [id, at, me.id]),
+      paused.length ? ["UPDATE participants SET status = 'paused', updated_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND status IN ('active', 'disabled')", [at, JSON.stringify(paused.map(p => p.id))]] : null,
       projEvent(id, me.id, `${me.name} 刪除專案（可復原期 ${days} 天）`, at),
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_DELETE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
         detail: { code, counts, recoveryDays: days, purgeAt: iso(purgeAt), aisPaused: paused.map(p => p.name) } }),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_DELETE, detail: { a: me.name, p: row.name } }),
     ]);
+    if (!done) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    invalidateProjects();
     invalidatePeople();
+    await messagesChanged(); // 這個專案的訊息不見了：別份程式、開著的頁面跟著重讀
     await loadProjects(true);
-    const purged = days === 0 ? await purgeProject({ ...row, deleted_at: at, purge_at: purgeAt, paused_ais: JSON.stringify(paused.map(p => p.id)) }) : null;
+    const purged = days === 0 ? await purgeProject({ ...row, deleted_at: at, purge_at: purgeAt, paused_ais: pausedJson(paused) }) : null;
     return projectsSeenBy(ctx, me, { deleted: { projectId: id, name: row.name, code, counts, recoveryDays: days, purgeAt: iso(purgeAt), aisPaused: paused.map(p => p.name), purged: !!purged } });
   });
   // 已刪除的專案（可復原期內）：預計永久清除時間早的在前
@@ -2882,7 +2907,7 @@ ${ending}`;
     for (const r of allProjectRows.filter(x => x.deleted_at).sort((a, b) => Number(a.purge_at) - Number(b.purge_at))) {
       items.push({ projectId: r.id, name: r.name, code: projCodes[r.id] || null, deletedAt: r.deleted_at,
         deletedBy: r.deleted_by ? { id: r.deleted_by, name: people.get(r.deleted_by)?.name ?? null } : null, purgeAt: iso(Number(r.purge_at)),
-        counts: await projectFootprint(r.id), aisPaused: idList(r.paused_ais).map(x => people.get(x)?.name).filter(Boolean) });
+        counts: await projectFootprint(r.id), aisPaused: pausedList(r.paused_ais).map(x => people.get(x.id)?.name).filter(Boolean) });
     }
     return { items };
   });
@@ -2891,9 +2916,9 @@ ${ending}`;
   route('GET', '/api/project-deletions', async ({ ctx, me }) => {
     await access.check(ctx, me, 'see_deleted_projects', 'workspace', { what: '查看已刪除的專案' });
     const purges = (await auditLog.list({ action: AUDIT_ACTION.PROJECT_PURGE, limit: 50 })).items;
-    const dels = (await auditLog.list({ action: AUDIT_ACTION.PROJECT_DELETE, limit: 200 })).items;
-    return { items: purges.map(e => {
-      const by = dels.find(d => d.scope.projectId === e.scope.projectId && d.at <= e.at)?.actor || e.actor;
+    const dels = await Promise.all(purges.map(e => auditLog.latestForProject({ action: AUDIT_ACTION.PROJECT_DELETE, projectId: e.scope.projectId, at: e.at })));
+    return { items: purges.map((e, i) => {
+      const by = dels[i]?.actor || e.actor;
       return { projectId: e.scope.projectId, name: e.scope.projectName ?? e.target?.name ?? '', code: e.detail?.code ?? null, by: by.kind === 'system' ? null : by.id, byName: by.name,
         at: e.at, counts: e.detail?.counts || {}, aisDeleted: e.detail?.aisDeleted || [] };
     }) };
@@ -2904,41 +2929,58 @@ ${ending}`;
     await loadProjects(true);
     const row = allProjectRows.find(r => r.id === params.id && r.deleted_at);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    if (Number(row.purge_at) <= Date.now()) throw new ApiError(409, 'RECOVERY_EXPIRED', '可復原期已過，這個專案等待永久清除，不能復原');
-    const done = await db.run('UPDATE projects SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, paused_ais = NULL WHERE id = ? AND deleted_at IS NOT NULL', row.id);
-    if (!done?.changes) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案'); // 別人剛復原，或剛清除
-    const at = nowIso(), pj = { id: row.id, name: row.name }, paused = idList(row.paused_ais);
-    const people = await peopleMap(ctx), resumed = paused.map(x => people.get(x)?.name).filter(Boolean);
-    invalidateProjects();
-    await writeStmts([
-      paused.length ? ["UPDATE participants SET status = 'active', updated_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND status = 'paused'", [at, JSON.stringify(paused)]] : null,
+    const expired = () => new ApiError(409, 'RECOVERY_EXPIRED', '可復原期已過，這個專案等待永久清除，不能復原');
+    const now = Date.now();
+    if (Number(row.purge_at) <= now) throw expired();
+    const at = nowIso(), pj = { id: row.id, name: row.name }, paused = pausedList(row.paused_ais);
+    const people = await peopleMap(ctx), resumed = paused.map(x => people.get(x.id)?.name).filter(Boolean), counts = await projectFootprint(row.id); // 跟刪除那筆一樣記數量
+    // 先鎖這個專案（跟永久清除排隊），再確認還在可復原期內；復原、恢復 AI、專案事件、稽核紀錄、管理員通知同一批。
+    // 期限一過，排程就可能已經挑中它：這裡跟排程的「清除前確認到期」互斥，只有一邊會成功
+    const inWindow = 'id = ? AND deleted_at IS NOT NULL AND purge_at > ?';
+    const done = await writeTogether([
+      ['UPDATE projects SET name = name WHERE id = ?', [row.id]],
+      ensureStmt(`EXISTS (SELECT 1 FROM projects WHERE ${inWindow})`, [row.id, now]),
+      [`UPDATE projects SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, paused_ais = NULL WHERE ${inWindow}`, [row.id, now]],
+      ...resumeStmts(paused, at), // 原本啟用的恢復啟用、原本停用的回到停用
       projEvent(row.id, me.id, `${me.name} 復原專案（回到封存狀態）`, at),
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_RESTORE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
-        detail: { code: projCodes[row.id] || null, aisResumed: resumed } }),
+        detail: { code: projCodes[row.id] || null, counts, aisResumed: resumed } }),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_RESTORE, detail: { a: me.name, p: row.name } }),
     ]);
+    if (!done) { // 別人剛復原或剛清除：404；剛好過了期限：RECOVERY_EXPIRED
+      const cur = await db.get('SELECT deleted_at, purge_at FROM projects WHERE id = ?', row.id);
+      if (cur?.deleted_at) throw expired();
+      throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    }
+    invalidateProjects();
     invalidatePeople();
+    await messagesChanged(); // 訊息回來了：別份程式、開著的頁面跟著重讀
     await loadProjects(true);
     await membership.loadMembers(true);
     return projectsSeenBy(ctx, me, { restored: { projectId: row.id, name: row.name } });
   });
   // 永久清除（到期的排程、可復原期 0 的刪除當下）：
-  // 刪：卡片與紀錄、訊息與通知、決策、上傳檔與文件（含檔案本體）、知識庫、技能、加入申請、私訊、專案事件與設定；人和 AI 都留著，只是不再屬於這個專案
+  // 刪：卡片與紀錄、訊息與通知（含 AI 被擋過的草稿開頭）、決策、上傳檔與文件（含檔案本體）、知識庫、技能（含技能包的檔案本體）、加入申請、私訊、專案事件與設定；人和 AI 都留著，只是不再屬於這個專案
   // 只屬於這個專案的 AI（AI 至少要一個專案）此時才刪除：跟「刪除 AI」一樣，狀態改 deleted、Token 失效
   // 可復原期內被加進別的專案、不再只屬於它的暫停 AI：不刪，恢復啟用
   // 跨專案頻道（project=all）的訊息不動。D1：每張表一句（沒有索引的表只掃一次），不逐筆刪
   // 稽核紀錄的 project.purge 記名稱快照與數量（專案事件會跟著刪掉）；永久清除的操作者一律是系統（可復原期 0 天的刪除也是，刪除那筆才記操作的人）
+  // 清除前先認領：還是已刪除、已到期，而且 purge_at 還是挑中時的值（改成少 1 毫秒：同時另一份程式也挑中的就認領不到）。
+  // 復原剛好先寫入了就不清（回 null）；認領之後 purge_at 已過，復原那邊的「還在期限內」不成立。兩邊只有一邊會成功
   async function purgeProject(row) {
     const id = row.id, at = nowIso(), code = projCodes[id] || null;
+    const claim = await db.run('UPDATE projects SET purge_at = ? WHERE id = ? AND deleted_at IS NOT NULL AND purge_at = ? AND purge_at <= ?', Number(row.purge_at) - 1, id, Number(row.purge_at), Date.now());
+    if (!claim.changes) return null;
     invalidatePeople(); // 用最新的成員資料算「只屬於這個專案的 AI」
     const people = [...(await peopleMap({})).values()].filter(p => p.kind !== 'system');
     const onlyHere = onlyHereAis(people, id), onlyIds = new Set(onlyHere.map(p => p.id));
-    const resume = idList(row.paused_ais).filter(x => !onlyIds.has(x));
+    const resume = pausedList(row.paused_ais).filter(x => !onlyIds.has(x.id));
     const counts = await projectFootprint(id);
     // 檔案本體先刪（資料庫列刪了就找不到 id）
     const fileIds = (await db.all('SELECT id FROM files WHERE message_id IN (SELECT id FROM messages WHERE project = ?) OR id IN (SELECT file_id FROM messages WHERE project = ? AND file_id IS NOT NULL)', id, id)).map(r => r.id);
     const docIds = (await db.all('SELECT id FROM docs WHERE project = ?', id)).map(r => r.id);
-    if (storage) for (const fid of fileIds) await storage.delete(fid).catch(() => {});
+    const packKeys = (await db.all("SELECT files FROM skills WHERE project = ? AND substr(files, 1, 1) = '{'", id)).map(r => packMeta(r)?.key).filter(Boolean); // 技能包的檔案本體（分塊儲存）
+    if (storage) for (const fid of [...fileIds, ...packKeys]) await storage.delete(fid).catch(() => {});
     if (docStorage) for (const did of docIds) await docStorage.delete(`docs/${did}`).catch(() => {});
     const PM = 'SELECT id FROM messages WHERE project = ?', PC = 'SELECT seq FROM cards WHERE project = ?', PS = 'SELECT id FROM skills WHERE project = ?';
     await db.batch([ // 先刪掛在訊息、卡片、技能底下的
@@ -2951,7 +2993,8 @@ ${ending}`;
       ["DELETE FROM app_settings WHERE key >= 'cardmoved:' AND key < 'cardmoved;' AND value IN (SELECT CAST(seq AS TEXT) FROM cards WHERE project = ?)", [id]], // 從別的專案移進來的卡的舊號
       [`DELETE FROM skill_allows WHERE skill_id IN (${PS})`, [id]],
       [`DELETE FROM skill_installs WHERE skill_id IN (${PS})`, [id]],
-      ['DELETE FROM file_chunks WHERE file_id IN (SELECT value FROM json_each(?))', [JSON.stringify(fileIds)]], // dbStorage 的本體（其他儲存上面已刪）
+      ['DELETE FROM file_chunks WHERE file_id IN (SELECT value FROM json_each(?))', [JSON.stringify([...fileIds, ...packKeys])]], // dbStorage 的本體（其他儲存上面已刪）
+      ...await draftScrubStmts('project = ?', [id]), // AI 被擋過的草稿開頭
       ['DELETE FROM files WHERE id IN (SELECT value FROM json_each(?))', [JSON.stringify(fileIds)]],
     ]);
     const dmIds = (await db.all('SELECT id FROM dms WHERE project = ?', id)).map(r => r.id);
@@ -2992,7 +3035,7 @@ ${ending}`;
       ['DELETE FROM ai_state WHERE participant_id = ?', [ai.id]],
       ['DELETE FROM skill_syncs WHERE ai_id = ?', [ai.id]],
       [`UPDATE cards SET owner_id = NULL, status = '待處理', status_id = ${firstStatusSql('待處理')}, updated_at = ?, version = version + 1 WHERE owner_id = ? AND project != ? AND status IN ('待整理','待處理','進行中','待確認','受阻')`, [at, ai.id, id]]);
-    if (resume.length) settings.push(["UPDATE participants SET status = 'active', updated_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND status = 'paused'", [at, JSON.stringify(resume)]]);
+    settings.push(...resumeStmts(resume, at).filter(Boolean));
     for (const inv of await db.all("SELECT id, projects FROM invites WHERE used_at IS NULL AND revoked_at IS NULL AND (',' || projects || ',') LIKE ?", `%,${id},%`))
       settings.push(['UPDATE invites SET projects = ? WHERE id = ?', [String(inv.projects).split(',').filter(x => x && x !== id).join(','), inv.id]]);
     settings.push(['DELETE FROM projects WHERE id = ?', [id]]);
@@ -3001,6 +3044,7 @@ ${ending}`;
       detail: { code, counts, aisDeleted } })]);
     titlesAt = 0;
     invalidatePeople(); invalidateProjects();
+    await messagesChanged();
     await membership.loadMembers(true);
     return { projectId: id, name: row.name, code, counts, aisDeleted };
   }
@@ -3203,24 +3247,27 @@ ${ending}`;
     if (t.status === 'disabled') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyDisabled: true };
     await assertNotLastAdmin(ctx, t, { platform: true });
     const now = Date.now(), at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
-    // 最後一位管理員在寫入那句再擋一次（上面的檢查之後、寫入之前，另一位可能剛好被停用或降級）；沒停用成功就不登出他的裝置、不換 AI 的 Token
+    // 最後一位管理員在寫入那句再擋一次（上面的檢查之後、寫入之前，另一位可能剛好被停用或降級）；沒停用成功整批不寫（不登出他的裝置、不換 AI 的 Token、不記不通知）
+    // 第一句鎖工作區這列；接著確認還沒被停用（別的管理員剛好先停用了：不重複記）。通知寫入前算：被停用的人不收
+    const [lock, ...disable] = membership.disableStmts(t.id, at, await tokenKey(newToken()));
     const done = "EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'disabled')";
-    await db.batch([
-      ...membership.disableStmts(t.id, at, await tokenKey(newToken())),
+    const ok = await writeTogether([
+      lock, ensureStmt("EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'active')", [t.id]),
+      ...disable, ensureStmt(done, [t.id]),
       [`UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL AND ${done}`, [now, t.id, t.id]],
       [`DELETE FROM pair_codes WHERE participant_id = ? AND ${done}`, [t.id, t.id]],
       ...await Promise.all(ais.map(async a => [`UPDATE participants SET token = ?, token_expires_at = 1, updated_at = ? WHERE id = ? AND ${done}`, [await tokenKey(newToken()), at, a.id, t.id]])),
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.ACCOUNT_DISABLE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t), detail: { revokedAiTokens: ais.length } }),
+      ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: [me.id, t.id], kind: ADMIN_NOTICE.ACCOUNT_DISABLE, detail: { a: me.name, t: t.name } }),
     ]);
     invalidatePeople();
-    if ((await db.get('SELECT status FROM participants WHERE id = ?', t.id))?.status !== 'disabled') { // 另一位管理員剛好同時被停用或降級：資料庫那句檢查擋下來了
-      await membership.loadMembers(true);
-      await assertNotLastAdmin(ctx, await db.get('SELECT * FROM participants WHERE id = ?', t.id), { platform: true });
+    if (!ok) {
+      const cur = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
+      if (cur?.status === 'disabled') return { participant: publicParticipant(cur, await peopleMap(ctx)), alreadyDisabled: true }; // 別的管理員剛好先停用了
+      await membership.loadMembers(true); // 另一位管理員剛好同時被停用或降級：資料庫那句檢查擋下來了
+      await assertNotLastAdmin(ctx, cur, { platform: true });
       throw lastAdminError();
     }
-    await writeStmts([
-      auditLog.stmt({ actor: me, action: AUDIT_ACTION.ACCOUNT_DISABLE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t), detail: { revokedAiTokens: ais.length } }),
-      ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: me.id, kind: ADMIN_NOTICE.ACCOUNT_DISABLE, detail: { a: me.name, t: t.name } }),
-    ]);
     live?.dropPerson?.(t.id); // 連著的即時通道也斷掉（有實作才做）
     console.log(`成員已停用：${t.name}（${me.name} 操作）`);
     return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)), revokedAiTokens: ais.length };
@@ -3230,12 +3277,18 @@ ${ending}`;
     if (t.status !== 'disabled') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyActive: true };
     await assertNameFree(t.name, t.id).catch(() => { throw new ApiError(409, 'NAME_TAKEN', `已經有人叫「${t.name}」，先請對方改名再恢復。`); });
     const at = nowIso();
-    await db.batch([["UPDATE participants SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?", [at, t.id]], ...membership.accountStatusStmts(t.id, 'active', at)]);
-    invalidatePeople();
-    await writeStmts([
+    // 第一句鎖工作區這列（跟停用、升降管理員排隊），再確認還是停用中（別的管理員剛好先恢復了：不重複記）。
+    // 通知寫入前算：恢復的人是平台管理員的話，恢復後他也是收件人
+    const platformRole = (await db.get('SELECT platform_role FROM accounts WHERE id = ?', t.account_id).catch(() => null))?.platform_role;
+    const ok = await writeTogether([
+      ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+      ensureStmt("EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'disabled')", [t.id]),
+      ["UPDATE participants SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?", [at, t.id]], ...membership.accountStatusStmts(t.id, 'active', at),
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.ACCOUNT_ENABLE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t) }),
-      ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: me.id, kind: ADMIN_NOTICE.ACCOUNT_ENABLE, detail: { a: me.name, t: t.name } }),
+      ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: me.id, include: platformRole === 'admin' ? [t.id] : [], kind: ADMIN_NOTICE.ACCOUNT_ENABLE, detail: { a: me.name, t: t.name } }),
     ]);
+    invalidatePeople();
+    if (!ok) return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)), alreadyActive: true }; // 別的管理員剛好先恢復了
     return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)) };
   });
   // ---------- 移出工作區（工作區管理員）----------
@@ -3249,23 +3302,35 @@ ${ending}`;
     if (t.id === me.id) throw new ApiError(400, 'SELF', '不能把自己移出工作區。');
     if (t.workspace_status === 'removed') return { participant: publicParticipant(t, await peopleMap(ctx)), alreadyRemoved: true };
     await access.check(ctx, me, 'remove_member', { target: t }); // 不能動上層管理權：移出平台管理員要是平台管理員
+    if (isWorkspaceAdmin(t)) await access.check(ctx, me, 'assign_workspace_admin', 'workspace', { what: '移出工作區管理員' }); // 也是解除工作區管理員：要再驗證身分
     return removeFromWorkspace(ctx, me, t);
   });
   // 移出工作區（工作區管理員移出別人、自己離開都走這裡）：t 是資料庫裡最新的那列
+  // t 是工作區管理員時也是解除工作區管理員：另記 workspace_admin.revoke、通知其他工作區管理員（跟降級一樣），跟移出同一批
   async function removeFromWorkspace(ctx, me, t) {
     await assertNotLastAdmin(ctx, t);
     const at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
-    await db.batch([
-      ...(isWorkspaceAdmin(t) ? membership.setWorkspaceRoleStmts(t.id, WORKSPACE_ROLE.MEMBER, at) : []), // 移出的人不再是工作區管理員（最後一位時這句不改，下一句也就不移出）
+    // 一批寫完：先鎖工作區這列（跟升降、停用排隊），確認還沒被移出（別人剛好先移出了：不重複記），改完確認真的移出了（最後一位管理員的檢查擋下來就整批不寫）
+    const removed = "EXISTS (SELECT 1 FROM participants WHERE id = ? AND workspace_status = 'removed')";
+    const ok = await writeTogether([
+      ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+      ensureStmt(`NOT ${removed}`, [t.id]),
+      ...(isWorkspaceAdmin(t) ? membership.setWorkspaceRoleStmts(t.id, WORKSPACE_ROLE.MEMBER, at).slice(1) : []), // 移出的人不再是工作區管理員（最後一位時這句不改，下一句也就不移出）
       ["UPDATE participants SET workspace_status = 'removed', updated_at = ?, version = version + 1 WHERE id = ? AND workspace_role = 'member'", [at, t.id]],
+      ensureStmt(removed, [t.id]),
       ...await Promise.all(ais.map(async a => ["UPDATE participants SET status = 'disabled', workspace_status = 'removed', token = ?, token_expires_at = 1, updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')",
         [await tokenKey(newToken()), at, a.id, t.id]])),
       ["DELETE FROM join_requests WHERE participant_id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')", [t.id, t.id]], // 還在審核的加入申請一併清掉
+      auditLog.stmt({ actor: me, action: t.id === me.id ? AUDIT_ACTION.MEMBER_LEAVE : AUDIT_ACTION.MEMBER_REMOVE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t), detail: { revokedAiTokens: ais.length } }),
+      ...(isWorkspaceAdmin(t) ? [auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_ADMIN_REVOKE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t) }),
+        ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, include: [t.id], kind: ADMIN_NOTICE.WORKSPACE_REVOKE, detail: { a: me.name, t: t.name } })] : []),
     ]);
     invalidatePeople();
     const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
-    if (after.workspace_status !== 'removed') throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
-    await auditLog.write({ actor: me, action: t.id === me.id ? AUDIT_ACTION.MEMBER_LEAVE : AUDIT_ACTION.MEMBER_REMOVE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t), detail: { revokedAiTokens: ais.length } });
+    if (!ok) {
+      if (after?.workspace_status === 'removed') return { participant: publicParticipant(after, await peopleMap(ctx)), alreadyRemoved: true }; // 別人剛好先移出了
+      throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
+    }
     const [impact] = t.status === 'active' ? await applyMembership(ctx, me, [{ id: t.id, projects: [], allowEmpty: true }]) : []; // 專案成員資格結束：卡片退回、專案紀錄
     // 剩下的成員資格（封存的專案；帳號停用中時是全部）也一併結束
     await db.run("DELETE FROM project_members WHERE participant_id = ? AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')", t.id, t.id);
@@ -3297,7 +3362,7 @@ ${ending}`;
     if (!admin) await assertNotLastAdmin(ctx, t);
     if (admin && !inWorkspace(t)) throw notMember();
     if (admin !== isWorkspaceAdmin(t)) {
-      const at = nowIso(), stmts = membership.setWorkspaceRoleStmts(t.id, role, at);
+      const at = nowIso(), [lock, ...stmts] = membership.setWorkspaceRoleStmts(t.id, role, at);
       if (!admin) {
         // 降級後沒有隱含權限：他的 AI 所在的專案，他自己要是成員（AI 的專案不超出所屬人類）。只在真的降了才寫
         await membership.loadMembers(true);
@@ -3305,19 +3370,19 @@ ${ending}`;
         const keep = [...new Set([...listOf(t), ...ais.flatMap(a => listOf(a))])];
         if (keep.length > listOf(t).length) stmts.push(...setProjectsStmts(t.id, keep, null, { onlyIfWorkspaceRole: WORKSPACE_ROLE.MEMBER }));
       }
-      await db.batch(stmts);
-      invalidatePeople();
-      await membership.loadMembers(true);
-    }
-    const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
-    if (admin !== isWorkspaceAdmin(after)) throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
-    if (after.workspace_role !== t.workspace_role) {
-      console.log(`工作區管理員：${me.name} 把 ${t.name} ${admin ? '升為工作區管理員' : '降為成員'}`);
-      await writeStmts([ // 被降級的人已經不是工作區管理員，也要通知（include）
+      // 鎖之後確認還是原本的角色（別人剛好先改了：不重複記）、改完確實是新角色（最後一位的檢查擋下來就整批不寫）。
+      // 稽核紀錄、通知跟著同一批；被降級的人已經不是工作區管理員，也要通知（include）
+      const adminIs = `EXISTS (SELECT 1 FROM participants WHERE id = ? AND workspace_role = '${WORKSPACE_ROLE.ADMIN}')`;
+      const ok = await writeTogether([lock, ensureStmt(admin ? `NOT ${adminIs}` : adminIs, [t.id]), ...stmts, ensureStmt(admin ? adminIs : `NOT ${adminIs}`, [t.id]),
         auditLog.stmt({ actor: me, action: admin ? AUDIT_ACTION.WORKSPACE_ADMIN_GRANT : AUDIT_ACTION.WORKSPACE_ADMIN_REVOKE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t) }),
         ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, include: [t.id], kind: admin ? ADMIN_NOTICE.WORKSPACE_GRANT : ADMIN_NOTICE.WORKSPACE_REVOKE, detail: { a: me.name, t: t.name } }),
       ]);
+      invalidatePeople();
+      await membership.loadMembers(true);
+      if (ok) console.log(`工作區管理員：${me.name} 把 ${t.name} ${admin ? '升為工作區管理員' : '降為成員'}`);
     }
+    const after = await db.get('SELECT * FROM participants WHERE id = ?', t.id);
+    if (admin !== isWorkspaceAdmin(after)) throw lastAdminError(); // 另一位管理員剛好同時被降：資料庫那句檢查擋下來了
     return { participant: publicParticipant(after, await peopleMap(ctx)) };
   });
   // 升降平台管理員（只有平台管理員；AI 不行）。role：admin | none。立刻生效；不能降最後一位。平台管理員對工作區有隱含的管理權，不必是工作區管理員
@@ -3332,15 +3397,17 @@ ${ending}`;
     const v = access.view({ people: await peopleMap(ctx) });
     if (role === 'none' && v.lastAdmin(t, 'platform')) throw lastPlatformError();
     if ((role === 'admin') !== membership.isPlatformAdmin(t)) {
-      await db.batch(membership.setPlatformRoleStmts(t.id, role, nowIso()));
-      invalidatePeople();
-      await membership.loadMembers(true);
-      if ((role === 'admin') !== membership.isPlatformAdmin(t)) throw lastPlatformError(); // 另一位剛好同時被降：資料庫那句檢查擋下來了
-      console.log(`平台管理員：${me.name} 把 ${t.name} ${role === 'admin' ? '升為平台管理員' : '降為一般帳號'}`);
-      await writeStmts([ // 被降級的人已經不是平台管理員，也要通知（include）
+      // 跟升降工作區管理員一樣：鎖之後確認還是原本的角色、改完確實是新角色；角色、稽核紀錄、通知同一批（被降級的人也通知：include）
+      const [lock, ...stmts] = membership.setPlatformRoleStmts(t.id, role, nowIso());
+      const adminIs = "EXISTS (SELECT 1 FROM accounts WHERE id = ? AND platform_role = 'admin')", grant = role === 'admin';
+      const ok = await writeTogether([lock, ensureStmt(grant ? `NOT ${adminIs}` : adminIs, [t.account_id]), ...stmts, ensureStmt(grant ? adminIs : `NOT ${adminIs}`, [t.account_id]),
         auditLog.stmt({ actor: me, action: role === 'admin' ? AUDIT_ACTION.PLATFORM_ADMIN_GRANT : AUDIT_ACTION.PLATFORM_ADMIN_REVOKE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t) }),
         ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: me.id, include: [t.id], kind: role === 'admin' ? ADMIN_NOTICE.PLATFORM_GRANT : ADMIN_NOTICE.PLATFORM_REVOKE, detail: { a: me.name, t: t.name } }),
       ]);
+      invalidatePeople();
+      await membership.loadMembers(true);
+      if ((role === 'admin') !== membership.isPlatformAdmin(t)) throw lastPlatformError(); // 另一位剛好同時被降：資料庫那句檢查擋下來了
+      if (ok) console.log(`平台管理員：${me.name} 把 ${t.name} ${role === 'admin' ? '升為平台管理員' : '降為一般帳號'}`);
     }
     return { participant: publicParticipant(t, await peopleMap(ctx)) };
   });
@@ -3479,8 +3546,8 @@ ${ending}`;
     if (!m || !(await canSeeMessage(me, m))) throw new ApiError(404, 'NOT_FOUND', '找不到訊息');
     return m;
   }
-  // 訊息被刪除、復原、永久清除：團隊狀態與待處理通知的快取重讀；msg_ver 換新（網頁輪詢時比對，有變就重讀已載入的訊息；
-  // Workers 沒有即時通道，開著的頁面靠這個換成佔位或復原）
+  // 訊息被刪除、復原、永久清除（專案的刪除、復原、永久清除也是）：團隊狀態與待處理通知的快取重讀；msg_ver 換新（網頁輪詢時比對，有變就重讀已載入的訊息；
+  // Workers 沒有即時通道，開著的頁面靠這個換成佔位或復原；別份程式每個請求比對，見 syncDeletions）
   async function messagesChanged() {
     pendCache = { at: 0, rows: null };
     teamCache = { at: 0, data: null };
@@ -3493,14 +3560,15 @@ ${ending}`;
     await access.check(ctx, me, m.author_id === me.id ? 'delete_own_message' : 'delete_message', msgAccessScope(m), { what: '刪除別人的訊息' });
     if (m.deleted_at) throw new ApiError(410, 'MESSAGE_DELETED', '這則訊息已刪除');
     const { at, days, purgeIso } = await deleteTiming();
-    const r = await db.run('UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = NULL WHERE id = ? AND deleted_at IS NULL', at, me.id, purgeIso, m.id);
-    if (!r.changes) throw new ApiError(410, 'MESSAGE_DELETED', '這則訊息已刪除'); // 別人剛好先刪了
     const author = (await peopleMap(ctx, [m.author_id])).get(m.author_id);
-    await writeStmts([
+    const done = await writeTogether([
+      ['UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = NULL WHERE id = ? AND deleted_at IS NULL', [at, me.id, purgeIso, m.id]],
+      ensureStmt('EXISTS (SELECT 1 FROM messages WHERE id = ? AND deleted_at = ? AND deleted_by = ?)', [m.id, at, me.id]), // 別人剛好先刪了：整批不寫
       ["UPDATE notifications SET status = 'acked', acked_at = COALESCE(acked_at, ?) WHERE message_id = ? AND status = 'pending'", [at, m.id]],
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_DELETE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, days, purgeAt: purgeIso }, at }),
       msgFileAuditStmt('msg_delete', me, 'MESSAGE_DELETED', at, '?', [m.id]),
     ]);
+    if (!done) throw new ApiError(410, 'MESSAGE_DELETED', '這則訊息已刪除');
     await messagesChanged();
     if (days === 0) await purgeMessages([m.id]);
     await liveMessageChange(ctx, m, 'message_deleted').catch(() => {});
@@ -3513,13 +3581,21 @@ ${ending}`;
     await access.check(ctx, me, 'restore_message', msgAccessScope(m), { what: '復原別人的訊息' });
     const at = nowIso();
     if (m.purged_at || (m.purge_at && m.purge_at <= at)) throw new ApiError(409, 'RECOVERY_EXPIRED', '已經過了可復原期，這則訊息不能復原');
-    const r = await db.run('UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE id = ? AND deleted_at = ? AND purged_at IS NULL', m.id, m.deleted_at);
-    if (!r.changes) throw new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
     const author = (await peopleMap(ctx, [m.author_id])).get(m.author_id);
-    await writeStmts([
+    // 先鎖這則（同時復原、永久清除的排隊），再確認還是剛剛讀到的那次刪除、還沒清除、還在可復原期內；不是就整批不寫
+    const still = 'id = ? AND deleted_at = ? AND purged_at IS NULL AND (purge_at IS NULL OR purge_at > ?)';
+    const done = await writeTogether([
+      ['UPDATE messages SET purge_at = purge_at WHERE id = ?', [m.id]],
+      ensureStmt(`EXISTS (SELECT 1 FROM messages WHERE ${still})`, [m.id, m.deleted_at, at]),
+      [`UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE ${still}`, [m.id, m.deleted_at, at]],
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.MESSAGE_RESTORE, ...msgAuditScope(m), target: { kind: 'message', id: m.id, name: author?.name ?? '' }, detail: { authorId: m.author_id, deletedBy: m.deleted_by }, at }),
       msgFileAuditStmt('msg_restore', me, 'MESSAGE_RESTORED', at, '?', [m.id]),
     ]);
+    if (!done) {
+      const now = await db.get('SELECT purge_at, purged_at FROM messages WHERE id = ?', m.id);
+      if (now?.purged_at || (now?.purge_at && now.purge_at <= nowIso())) throw new ApiError(409, 'RECOVERY_EXPIRED', '已經過了可復原期，這則訊息不能復原');
+      throw new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
+    }
     await messagesChanged();
     await liveMessageChange(ctx, m, 'message_restored').catch(() => {});
     return { ok: true, message: await serializeMessage(ctx, await db.get('SELECT * FROM messages WHERE id = ?', m.id)) };
@@ -3529,6 +3605,24 @@ ${ending}`;
   // 操作者一律是系統（可復原期 0 天的刪除、清空也是；刪除、清空那筆才記操作的人）。回清除了幾則。可復原期 0 天的刪除、到期清除、清空專案訊息都走這裡
   // 一次最多 MESSAGE_PURGE_BATCH 則一批（資料與稽核紀錄同一批寫入）；稽核紀錄每批、每個專案一筆 message.purge（count＝幾則，detail 只有 id 與附件數，不存原文）
   const MESSAGE_PURGE_BATCH = Math.max(1, Number(config.purgeBatch) || 200); // 測試可調小
+  // AI 被格式檢查擋過的草稿開頭（app_settings 的 postblock:<作者>，最多 40 字，見 post-format.js）：那則訊息永久清除時一起拿掉
+  // （照送的那次 requestId 就是訊息的 request_id）。msgWhere／args 選出要清除的訊息；回改寫或刪掉設定的語句，放進清除的同一批
+  async function draftScrubStmts(msgWhere, args) {
+    const authors = (await db.all(`SELECT DISTINCT author_id FROM messages WHERE ${msgWhere}`, ...args)).map(r => r.author_id);
+    if (!authors.length) return [];
+    const rows = await db.all('SELECT key, value FROM app_settings WHERE key IN (SELECT value FROM json_each(?))', JSON.stringify(authors.map(a => 'postblock:' + a)));
+    const out = [];
+    for (const { key, value } of rows) {
+      let list; try { list = JSON.parse(value); } catch { list = null; }
+      if (!Array.isArray(list) || !list.length) continue;
+      const rids = JSON.stringify(list.map(x => x?.rid).filter(Boolean));
+      const gone = new Set((await db.all(`SELECT request_id FROM messages WHERE author_id = ? AND request_id IN (SELECT value FROM json_each(?)) AND ${msgWhere}`, key.slice('postblock:'.length), rids, ...args)).map(r => r.request_id));
+      if (!gone.size) continue;
+      const keep = list.filter(x => !gone.has(x?.rid));
+      out.push(keep.length ? ['UPDATE app_settings SET value = ? WHERE key = ?', [JSON.stringify(keep), key]] : ['DELETE FROM app_settings WHERE key = ?', [key]]);
+    }
+    return out;
+  }
   async function purgeMessages(ids) {
     let total = 0;
     for (let i = 0; i < ids.length; i += MESSAGE_PURGE_BATCH) total += await purgeMessageBatch(ids.slice(i, i + MESSAGE_PURGE_BATCH));
@@ -3536,12 +3630,12 @@ ${ending}`;
     return total;
   }
   async function purgeMessageBatch(ids) {
-    const rows = await db.all('SELECT id, project, file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL', JSON.stringify(ids));
+    const at = nowIso(), due = 'deleted_at IS NOT NULL AND purged_at IS NULL AND purge_at <= ?'; // 已刪除、還沒清除、已到期（可復原期 0 天的刪除當下就到期）
+    const rows = await db.all(`SELECT id, project, file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND ${due}`, JSON.stringify(ids), at);
     if (!rows.length) return 0;
-    const mids = JSON.stringify(rows.map(m => m.id)), at = nowIso();
+    const mids = JSON.stringify(rows.map(m => m.id));
     // 一則可掛多個檔（files.message_id）；messages.file_id 是第一個。已到期的檔本體早就刪了，列一樣拿掉
     const fileRows = await db.all('SELECT id, message_id FROM files WHERE message_id IN (SELECT value FROM json_each(?)) OR id IN (SELECT file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND file_id IS NOT NULL)', mids, mids);
-    if (storage) for (const f of fileRows) await storage.delete(f.id).catch(() => {}); // 本體先刪（列刪了就找不到 id）
     const fids = JSON.stringify(fileRows.map(f => f.id)), groups = new Map(); // 專案 → 這批清除的訊息與附件數
     for (const m of rows) {
       const k = m.project || '';
@@ -3550,15 +3644,21 @@ ${ending}`;
       g.ids.push(m.id);
       g.files += fileRows.filter(f => f.message_id === m.id || (!f.message_id && f.id === m.file_id)).length;
     }
-    await writeStmts([
+    // 先鎖這批訊息（跟復原排隊），確認每則都還是已刪除、還沒清除、已到期；剛好有一則被復原了就整批不寫（下次重挑）。復原那邊也鎖了再確認還沒到期，兩邊只有一邊會成功
+    const done = await writeTogether([
+      ['UPDATE messages SET purge_at = purge_at WHERE id IN (SELECT value FROM json_each(?))', [mids]],
+      ensureStmt(`NOT EXISTS (SELECT 1 FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND NOT (${due}))`, [mids, at]),
       [`INSERT INTO file_audit (id, file_id, action, actor_id, actor_kind, at, name, size, sha256, declared, detail)
         SELECT ? || id, id, 'purge', ?, ?, ?, name, size, sha256, declared, 'MESSAGE_PURGED' FROM files WHERE id IN (SELECT value FROM json_each(?))`,
         [randId('aud') + '_', 'system', 'system', at, fids]],
-      ['DELETE FROM file_chunks WHERE file_id IN (SELECT value FROM json_each(?))', [fids]], // dbStorage 的本體（其他儲存上面已刪）
+      ['DELETE FROM file_chunks WHERE file_id IN (SELECT value FROM json_each(?))', [fids]], // dbStorage 的本體（其他儲存寫完再刪）
       ['DELETE FROM files WHERE id IN (SELECT value FROM json_each(?))', [fids]],
-      ["UPDATE messages SET text = '', purged_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL", [at, mids]],
+      ...await draftScrubStmts('id IN (SELECT value FROM json_each(?))', [mids]),
+      [`UPDATE messages SET text = '', purged_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND ${due}`, [at, mids, at]],
       ...[...groups.values()].map(g => auditLog.stmt({ actor: null, action: AUDIT_ACTION.MESSAGE_PURGE, ...msgAuditScope(g.m), count: g.ids.length, detail: { messageIds: g.ids, files: g.files }, at })),
     ]);
+    if (!done) return 0;
+    if (storage) for (const f of fileRows) await storage.delete(f.id).catch(() => {}); // 本體在資料寫完之後才刪（id 先記在上面）
     return rows.length;
   }
   // ---------- 清空專案訊息與整批復原（詞彙見 GLOSSARY「清空專案訊息」） ----------
@@ -3590,16 +3690,21 @@ ${ending}`;
     if (String(body.confirmName ?? '').trim() !== row.name) throw invalid(`請輸入專案名稱「${row.name}」確認`);
     const pj = { id: row.id, name: row.name }, clearId = randId('clr');
     const { at, days, purgeIso } = await deleteTiming();
-    const r = await db.run('UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = ? WHERE project = ? AND deleted_at IS NULL', at, me.id, purgeIso, clearId, row.id);
-    if (!r.changes) return { ok: true, clear: { clearId: null, projectId: row.id, name: row.name, messages: 0, files: 0 } };
-    const files = await msgClearFiles('clear_id = ?', clearId);
-    await writeStmts([
+    const nothing = { ok: true, clear: { clearId: null, projectId: row.id, name: row.name, messages: 0, files: 0 } };
+    if (!Number((await db.get('SELECT COUNT(*) AS n FROM messages WHERE project = ? AND deleted_at IS NULL', row.id))?.n || 0)) return nothing;
+    const files = await msgClearFiles('project = ? AND deleted_at IS NULL', row.id); // 稽核細節用（跟預覽一樣算）
+    // 清空、通知自動確認、稽核紀錄（幾則在同一批裡算）、檔案稽核、管理員通知同一批；剛好都被刪光了（沒有一則屬於這次清空）就整批不寫
+    const done = await writeTogether([
+      ['UPDATE messages SET deleted_at = ?, deleted_by = ?, purge_at = ?, clear_id = ? WHERE project = ? AND deleted_at IS NULL', [at, me.id, purgeIso, clearId, row.id]],
+      ensureStmt('EXISTS (SELECT 1 FROM messages WHERE clear_id = ?)', [clearId]),
       ["UPDATE notifications SET status = 'acked', acked_at = COALESCE(acked_at, ?) WHERE message_id IN (SELECT id FROM messages WHERE clear_id = ?) AND status = 'pending'", [at, clearId]],
-      auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_CLEAR, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, count: r.changes, at,
-        detail: { clearId, files, recoveryDays: days, purgeAt: purgeIso } }),
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_CLEAR, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
+        countOf: ['SELECT COUNT(*) FROM messages WHERE clear_id = ?', [clearId]], detail: { clearId, files, recoveryDays: days, purgeAt: purgeIso } }),
       msgFileAuditStmt('msg_delete', me, 'PROJECT_MESSAGES_CLEARED', at, 'SELECT id FROM messages WHERE clear_id = ?', [clearId]),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_CLEAR, detail: { a: me.name, p: row.name } }),
     ]);
+    if (!done) return nothing;
+    const r = { changes: Number((await db.get('SELECT COUNT(*) AS n FROM messages WHERE clear_id = ?', clearId))?.n || 0) };
     await messagesChanged();
     if (days === 0) await purgeMessages((await db.all('SELECT id FROM messages WHERE clear_id = ?', clearId)).map(x => x.id));
     await liveProjectMessages(ctx, row.id, 'messages_cleared', { clearId }).catch(() => {});
@@ -3627,16 +3732,21 @@ ${ending}`;
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這次清空');
     const at = nowIso();
     if (Number(c.purged) || c.purge_at <= at) throw new ApiError(409, 'RECOVERY_EXPIRED', '已經過了可復原期，這次清空不能復原');
-    const ids = JSON.stringify((await db.all('SELECT id FROM messages WHERE clear_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL', params.id)).map(x => x.id)); // 檔案稽核用（復原後 clear_id 就清掉了）
-    const r = await db.run('UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE clear_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL', params.id);
-    if (!r.changes) throw new ApiError(404, 'NOT_FOUND', '找不到這次清空'); // 別人剛好先復原了
+    // 先鎖這次清空的訊息（同時復原、永久清除的排隊），確認還有可以帶回來的；稽核紀錄（幾則）、檔案稽核在復原那句之前寫（復原後 clear_id 就清掉了），全部同一批
+    const back = 'SELECT id FROM messages WHERE clear_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL AND purge_at > ?';
+    const n = Number((await db.get(`SELECT COUNT(*) AS n FROM messages WHERE clear_id = ? AND deleted_at IS NOT NULL AND purged_at IS NULL AND purge_at > ?`, params.id, at))?.n || 0);
     const pj = { id: row.id, name: row.name };
-    await writeStmts([
-      auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_RESTORE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, count: r.changes, at,
-        detail: { clearId: params.id } }),
-      msgFileAuditStmt('msg_restore', me, 'PROJECT_MESSAGES_RESTORED', at, 'SELECT value FROM json_each(?)', [ids]),
+    const done = n > 0 && await writeTogether([
+      ['UPDATE messages SET purge_at = purge_at WHERE clear_id = ?', [params.id]],
+      ensureStmt(`EXISTS (${back})`, [params.id, at]),
+      auditLog.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_MESSAGES_RESTORE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
+        countOf: [`SELECT COUNT(*) FROM (${back}) x`, [params.id, at]], detail: { clearId: params.id } }),
+      msgFileAuditStmt('msg_restore', me, 'PROJECT_MESSAGES_RESTORED', at, back, [params.id, at]),
+      [`UPDATE messages SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, clear_id = NULL WHERE id IN (${back})`, [params.id, at]],
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_MESSAGES_RESTORE, detail: { a: me.name, p: row.name } }),
     ]);
+    if (!done) throw new ApiError(404, 'NOT_FOUND', '找不到這次清空'); // 別人剛好先復原了
+    const r = { changes: n };
     await messagesChanged();
     await liveProjectMessages(ctx, row.id, 'messages_restored', { clearId: params.id }).catch(() => {});
     return { ok: true, restored: { clearId: params.id, projectId: row.id, name: row.name, messages: r.changes } };
@@ -4088,13 +4198,13 @@ ${ending}`;
   const headline = text => String(text).trimStart().split('\n')[0].replace(/^\[[^\]]*\]\s*/, '').slice(0, 80);
 
   // 團隊狀態用的最近 200 則訊息與 [需確認] 的回覆：保留在記憶體，之後只補讀新訊息
-  // 被刪除的訊息不算（不露出原文）：每次另查這段範圍裡被刪的（別份程式剛刪的也算）
+  // 被刪除的訊息不算（不露出原文）：每次另查這段範圍裡被刪的（別份程式剛刪的也算）；可復原期內的專案裡的也不算
   let recentCache = { rows: null, maxSeq: 0, replies: new Map() }; // replies: [需確認] id → 回覆列
   async function recentMessages() {
-    const rows = await recentRows();
+    const [rows] = await Promise.all([recentRows(), loadProjects()]);
     if (!rows.length) return rows;
     const gone = new Set((await db.all('SELECT id FROM messages WHERE seq >= ? AND deleted_at IS NOT NULL', rows[rows.length - 1].seq)).map(r => r.id));
-    return gone.size ? rows.filter(m => !gone.has(m.id)) : rows;
+    return rows.filter(m => !gone.has(m.id) && !deletedProjects.has(m.project));
   }
   async function recentRows() {
     const cols = 'SELECT id, seq, author_id, text, reply_to, reply_from, created_at, project FROM messages';
@@ -4312,7 +4422,7 @@ ${ending}`;
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });
   const cardsApi = registerCards({ route: cardRoute, statuses, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, hiddenArchived, canSeeMessage, discovers, visibleProjects, archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
   registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, access, cardKey, projEvent, moveCardStmts: cardsApi.moveCardStmts, invalidatePeople,
-    projectExists: async pj => !!(await db.get('SELECT id FROM projects WHERE id = ?', pj)) });
+    projectExists: async pj => !!(await db.get('SELECT id FROM projects WHERE id = ? AND deleted_at IS NULL', pj)) }); // 可復原期內的專案當它不存在
   Object.assign(kbHooks, registerKbPages({ route, db, ApiError, invalid, readJson, randId, nowIso, peopleMap, identity, projectsOf, PROJECTS, assertWritable, roIn: access.readOnlyIn, kbManager, findSecret, getJson, setJson, createMessage, cardKey, cardsApi, claimsOf, kbSkillState: (pj, ais) => skillsApi.templateState(pj, 'kb-curation', ais) })); // 知識頁、整理卡
 
   // 只屬部分專案的人：每個人的目前工作、張數、待處理則數只算看的人也在的專案（卡片看專案、訊息照隔離規則）
@@ -4436,8 +4546,9 @@ ${ending}`;
   async function purgeDueProjects() {
     const due = await db.all('SELECT * FROM projects WHERE deleted_at IS NOT NULL AND purge_at <= ? ORDER BY purge_at LIMIT 5', Date.now()).catch(() => []);
     if (due.length) await loadProjects(true);
-    for (const row of due) await purgeProject(row);
-    return due.length;
+    let n = 0;
+    for (const row of due) if (await purgeProject(row)) n++;
+    return n;
   }
   handle.runScheduled = async () => ({ filesCleaned: await cleanupExpired(), cardsArchived: await autoArchive(db),
     proposalsExpired: (await db.run("UPDATE avatar_proposals SET status = 'expired', data = NULL WHERE status = 'pending' AND created_at < ?", Date.now() - 24 * 3600_000).catch(() => ({ changes: 0 }))).changes,
@@ -4527,6 +4638,7 @@ ${ending}`;
         if (!m) continue;
         let params; try { params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])])); } catch { throw invalid('網址參數編碼不對'); } // 壞的 % 編碼回 400，不是 500
         const ctx = {};
+        await syncDeletions(); // 別份程式剛刪除或復原了：快取重讀
         await loadProjects();
         if (!tokensHashed) await hashOldTokens();
         await migrateMembers(); // 舊資料轉到新的成員資料表（要在「有沒有管理員」之前）

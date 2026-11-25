@@ -6,6 +6,7 @@
 // D. 每次清除寫稽核紀錄 message.purge（排程的操作者是系統，附數量，不含原文）；附件寫進檔案稽核 purge
 // E. 每次處理有上限，沒處理完的下次繼續
 // F. 可復原期 0 天：刪除當下就永久清除（同樣清掉附件、寫稽核紀錄）；刪除記操作的人，永久清除的操作者是系統
+// G. AI 的草稿被格式檢查擋過時記下的開頭，跟著那則訊息永久清除
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres
 // 本機暫存資料庫，不連任何站。用法：node scripts/message-purge-test.js
 import './test-home.mjs'; // 不寫到真的家目錄
@@ -158,6 +159,20 @@ try {
   assert.ok((await call(boss.token, '/api/files/audit')).body.items.filter(a => a.fileId === f0 && a.action === 'purge').every(a => a.actor.memberType === 'system'), 'F 檔案稽核的清除也是系統');
   assert.equal(await run(), 0, 'F 排程沒有剩下要清的');
   assert.equal((await call(boss.token, '/api/recovery-window', 'PUT', { days: null })).status, 200, '改回跟平台預設');
+
+  // ---------- G AI 的草稿被格式檢查擋過、第 3 次照送：擋的時候記下的草稿開頭跟著訊息永久清除 ----------
+  // 修正前：訊息清除了，草稿開頭（最多 40 字）還留在設定裡、備份帶得走
+  const draft = { project: PJ, text: '[通知] 草稿開頭 ZQD 要清掉', recipientIds: [WANG, lin.id], replyFrom: [WANG, lin.id], requestId: 'ai-draft' };
+  for (let i = 0; i < 2; i++) assert.equal(code(await call(chenAi.token, '/api/messages', 'POST', draft)), '400 FORMAT_BLOCKED', 'G AI 草稿被擋');
+  const drafted = (await call(chenAi.token, '/api/messages', 'POST', draft)).body;
+  assert.ok(drafted.messageId, 'G 第 3 次照送');
+  const draftInSettings = async () => JSON.stringify(await dump('app_settings')).includes('ZQD');
+  assert.ok(await draftInSettings(), 'G 擋的時候記下了草稿開頭');
+  assert.equal((await del(boss.token, drafted.messageId)).status, 200, 'G 管理員刪除');
+  await expire([drafted.messageId]);
+  assert.equal(await run(), 1, 'G 到期清除');
+  assert.ok(!(await inBackup('ZQD')), 'G 內文消失');
+  assert.ok(!(await draftInSettings()), 'G 草稿開頭也消失（備份裡沒有）');
 
   console.log('message-purge-test：全部通過');
 } finally {

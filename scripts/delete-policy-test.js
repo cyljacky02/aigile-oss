@@ -1,5 +1,5 @@
 // 工作區政策「誰可以刪除自己的訊息」（GLOSSARY「成員與權限」：工作區政策；docs/adr/0003）
-// A. 預設＝所有成員：一般成員刪得了自己的訊息；網頁旗標 canDeleteOwnMessages 為 true
+// A. 預設＝所有成員：一般成員刪得了自己的訊息；網頁旗標 canDeleteOwnMessages 為 true（只給人類；給 AI 的形狀不變）
 // B. 只有工作區管理員（含平台管理員）能改；AI、一般成員 403；值只能是 members 或 admins（400 INVALID_REQUEST）
 // C. 設為「只有管理員」：一般成員刪自己的被拒（403 NOT_ADMIN，訊息說明是工作區政策）；工作區管理員、平台管理員刪自己的、刪別人的都照常
 //    作者自己刪掉的訊息照樣能自己復原（政策只管刪除）
@@ -63,7 +63,7 @@ try {
   assert.equal(s0.status, 200, JSON.stringify(s0.body));
   assert.equal(s0.body.deleteOwnMessages, 'members', 'A 新安裝預設所有成員都能刪自己的訊息');
   assert.equal(await canDel(chen.token), true, 'A 一般成員的旗標：可以刪自己的訊息');
-  assert.equal(await canDel(aiToken), false, 'A AI 一律不能刪');
+  assert.ok(!('canDeleteOwnMessages' in (await call(aiToken, '/api/projects')).body), 'A 給 AI 的專案清單形狀不變：沒有 canDeleteOwnMessages（AI 本來就不能刪）');
   assert.equal(code(await del(chen.token, await post(chen.token, '貼錯了'))), '200 ', 'A 所有成員：作者刪自己的訊息');
   console.log('✓ A 預設所有成員');
 
