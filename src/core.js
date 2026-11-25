@@ -195,23 +195,24 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   }
   const flushBells = () => Promise.allSettled([...bellPending]);
   // 內建即時通道：只推給「連著、而且看得到」的人，只帶 ID；內容照舊由 API 依專案隔離給
-  async function liveMessage(people, m, recipients) {
-    const on = live ? live.connectedIds() : [];
-    if (!on.length) return;
+  // 連著、而且看得到訊息 m 的人（啟用中；m 可以只有 project、created_at：等於「看得到這個專案的新訊息」）
+  async function liveViewers(people, m) {
     const see = [];
-    for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
+    for (const id of live ? live.connectedIds() : []) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
+    return see;
+  }
+  async function liveMessage(people, m, recipients) {
+    if (!live?.connectedIds().length) return;
+    const see = await liveViewers(people, m);
     live.toPeople(see, 'message', { id: m.id, project: m.project || null });
     const rec = recipients.filter(id => see.includes(id));
     if (rec.length) live.toPeople(rec, 'notify', { messageId: m.id });
   }
   // 訊息被刪除或復原（message_deleted／message_restored）：推給看得到這則的人，網頁重讀這一則
-  // 推給連著、看得到訊息 m 的人（m 可以只有 project、created_at：等於「看得到這個專案的新訊息」）
+  // 推給連著、看得到訊息 m 的人
   async function liveToViewers(ctx, m, type, data) {
-    const on = live ? live.connectedIds() : [];
-    if (!on.length) return;
-    const people = await peopleMap(ctx), see = [];
-    for (const id of on) { const p = people.get(id); if (p && p.status === 'active' && await canSeeMessage(p, m)) see.push(id); }
-    live.toPeople(see, type, data);
+    if (!live?.connectedIds().length) return;
+    live.toPeople(await liveViewers(await peopleMap(ctx), m), type, data);
   }
   const liveMessageChange = (ctx, m, type) => liveToViewers(ctx, m, type, { id: m.id, project: m.project || null });
   async function liveCard(ctx, cardId, project) {
