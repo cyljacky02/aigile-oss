@@ -3727,5 +3727,16 @@ window.AIGILE_EN = {
     "這個 AI 只屬於已刪除的專案，在可復原期內暫停；專案復原後會自動恢復。": "This AI belongs only to a deleted project and is paused during the recovery window; it resumes automatically if the project is restored.",
 
     // #35 工作區政策：誰可以刪除自己的訊息
+    "誰可以刪除自己的訊息": "Who can delete their own messages",
+    "誰可以刪除自己的訊息：{0} → {1}": "Who can delete their own messages: {0} → {1}",
+    "作者可以刪自己的訊息，在可復原期內也能自己復原；唯讀成員與 AI 不行": "Authors can delete their own messages and restore them during the recovery window. Viewers and AIs can't.",
+    "一般成員要請工作區管理員刪除": "Members ask a workspace admin to delete them",
+    "已儲存：所有成員都能刪除自己的訊息": "Saved: all members can delete their own messages",
+    "已儲存：只有工作區管理員能刪除訊息": "Saved: only workspace admins can delete messages",
+    "deleteOwnMessages 只能是 members（所有成員）或 admins（只有工作區管理員）": "deleteOwnMessages must be members (all members) or admins (workspace admins only)",
+    "工作區政策設為只有工作區管理員能刪除訊息，自己的也一樣：請找工作區管理員刪除。": "The workspace policy lets only workspace admins delete messages, including your own. Ask a workspace admin to delete it.",
+    "工作區政策設為只有工作區管理員能刪除訊息，自己的也一樣；要刪這則請找工作區管理員（{0}）。": "The workspace policy lets only workspace admins delete messages, including your own. To delete this one, ask a workspace admin ({0}).",
+    "{0} 設定誰可以刪除自己的訊息：所有成員": "{0} set who can delete their own messages: all members",
+    "{0} 設定誰可以刪除自己的訊息：只有工作區管理員": "{0} set who can delete their own messages: workspace admins only",
   },
 };

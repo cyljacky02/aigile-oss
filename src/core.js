@@ -18,7 +18,7 @@ import { registerUpdateCheck } from './update.js'; // 管理頁「有新版本�
 import { registerDemo } from './demo.js'; // 示範資料
 import { registerRoster } from './roster.js'; // 成員名冊
 import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, hasWorkspaceAdminRights, inWorkspace, effectiveProjects, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
-import { createWorkspaceSettings, CREATE_PROJECTS } from './workspace-settings.js'; // 工作區設定（誰可以建立專案）
+import { createWorkspaceSettings, CREATE_PROJECTS, DELETE_OWN_MESSAGES } from './workspace-settings.js'; // 工作區設定（誰可以建立專案、誰可以刪除自己的訊息）
 import { createAudit, AUDIT_ACTION, AUDIT_ACTIONS, AUDIT_SCOPE } from './audit.js'; // 稽核紀錄（管理操作）
 import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js'; // 管理員異動通知
 import { optionWarnings } from './questions.js';
@@ -1633,7 +1633,7 @@ ${ending}`;
   const workspace = createWorkspaceSettings({ db, env: { openJoin: OPEN_JOIN, roomCode: ROOM_CODE }, hashPassword, verifyPassword });
   // nameOf 在下面才定義（const），所以包一層
   const access = createAccess({
-    loadWorkspace: workspace.load, membersCreateProjects: workspace.membersCreateProjects,
+    loadWorkspace: workspace.load, membersCreateProjects: workspace.membersCreateProjects, membersDeleteOwn: workspace.membersDeleteOwn,
     ApiError, requireHuman, nameOf: id => nameOf(id), people: peopleMap, projects: () => PROJECTS, projectsOf, isolatedFrom, hiddenArchived,
     memberProjectsOf: membership.projectsOf, visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
     isDeletedProject: pj => deletedProjects.has(pj), // 可復原期內的專案：各處都當它不存在
@@ -2083,7 +2083,9 @@ ${ending}`;
   const goneMembers = () => { throw new ApiError(410, 'GONE', '這個端點已移除：專案成員請改用 GET／POST /api/projects/:id/members（列出、加入）與 PUT／DELETE /api/projects/:id/members/:participantId（設定專案角色、移出）；要讓人在每個專案，請把他加進各專案。'); };
   route('PUT', '/api/members/matrix', goneMembers);
   route('PUT', '/api/projects/:id/members', goneMembers);
-  route('GET', '/api/projects', async ({ ctx, me }) => ({ ...(await projectsSeenBy(ctx, me)), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace') })); // canCreateProject：網頁要不要顯示「新增專案」
+  // 工作區政策允不允許他刪自己的訊息（人類；工作區管理員永遠可以）。在哪個專案是唯讀成員由網頁另外看
+  const canDeleteOwnMessages = async (ctx, me) => me.kind === 'human' && ((await workspace.load()).deleteOwnMessages === DELETE_OWN_MESSAGES.MEMBERS || (await access.can(ctx, me, 'delete_message', 'workspace')));
+  route('GET', '/api/projects', async ({ ctx, me }) => ({ ...(await projectsSeenBy(ctx, me)), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace'), canDeleteOwnMessages: await canDeleteOwnMessages(ctx, me) })); // canCreateProject：網頁要不要顯示「新增專案」；canDeleteOwnMessages：工作區政策允不允許他刪自己的訊息（唯讀另看專案）
   // 群組名稱（登入頁也要顯示，所以讀取不用登入）；只有管理員能改
   route('GET', '/api/group', async () => ({ name: await groupName() }), { open: true });
   // 第一次設定引導做完或全部略過：之後不再出現（群組名稱、專案、邀請、AI 都在管理頁改得到）
@@ -2109,14 +2111,18 @@ ${ending}`;
     await db.batch(stmts);
     pageName = { at: 0, name: null }; // 網頁上的群組名立刻換新
   }
-  const groupSettings = async () => { const js = await joinSettings(); return { name: await groupName(), openJoin: js.openJoin, roomCodeSet: js.roomCodeSet, source: js.source, createProjects: (await workspace.load(true)).createProjects }; };
-  // 工作區設定（工作區管理員）：開放自行註冊、房間碼、工作區名稱、誰可以建立專案；存資料庫立刻生效。房間碼只回「有沒有設」
+  const groupSettings = async () => {
+    const js = await joinSettings(), ws = await workspace.load(true);
+    return { name: await groupName(), openJoin: js.openJoin, roomCodeSet: js.roomCodeSet, source: js.source, createProjects: ws.createProjects, deleteOwnMessages: ws.deleteOwnMessages };
+  };
+  // 工作區設定（工作區管理員）：開放自行註冊、房間碼、工作區名稱、誰可以建立專案、誰可以刪除自己的訊息；存資料庫立刻生效。房間碼只回「有沒有設」
   // /api/workspace/settings 是新名字；/api/group/settings 留著給舊的網頁與整合（同一份）
   for (const pattern of ['/api/workspace/settings', '/api/group/settings']) route('GET', pattern, async ({ ctx, me }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看加入設定' });
     return groupSettings();
   });
   const CREATE_PROJECTS_LABEL = { [CREATE_PROJECTS.MEMBERS]: '所有成員', [CREATE_PROJECTS.ADMINS]: '只有工作區管理員' };
+  const DELETE_OWN_LABEL = { [DELETE_OWN_MESSAGES.MEMBERS]: '所有成員', [DELETE_OWN_MESSAGES.ADMINS]: '只有工作區管理員' };
   for (const pattern of ['/api/workspace/settings', '/api/group/settings']) route('PUT', pattern, async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '改加入設定' });
     const body = await readJson(req);
@@ -2128,6 +2134,7 @@ ${ending}`;
       if (code && (code.length < 4 || code.length > 64 || /\s/.test(code))) throw invalid('房間碼需為 4～64 字，不可有空白；要清除請送空字串');
     }
     if (has('createProjects') && !Object.values(CREATE_PROJECTS).includes(body.createProjects)) throw invalid('createProjects 只能是 members（所有成員）或 admins（只有工作區管理員）');
+    if (has('deleteOwnMessages') && !Object.values(DELETE_OWN_MESSAGES).includes(body.deleteOwnMessages)) throw invalid('deleteOwnMessages 只能是 members（所有成員）或 admins（只有工作區管理員）');
     let name = null;
     if (has('name')) {
       name = String(body.name ?? '').trim();
@@ -2147,6 +2154,12 @@ ${ending}`;
     if (has('createProjects') && createBefore !== body.createProjects) {
       stmts.push(...workspace.setCreateProjectsStmts(body.createProjects), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以建立專案：${CREATE_PROJECTS_LABEL[body.createProjects]}`, at),
         auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'createProjects', from: createBefore, to: body.createProjects } }));
+    }
+    // 誰可以刪除自己的訊息：值沒變不存、不記
+    const delBefore = has('deleteOwnMessages') ? (await workspace.load(true)).deleteOwnMessages : null;
+    if (has('deleteOwnMessages') && delBefore !== body.deleteOwnMessages) {
+      stmts.push(...workspace.setDeleteOwnStmts(body.deleteOwnMessages), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以刪除自己的訊息：${DELETE_OWN_LABEL[body.deleteOwnMessages]}`, at),
+        auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'deleteOwnMessages', from: delBefore, to: body.deleteOwnMessages } }));
     }
     await writeStmts(stmts);
     workspace.invalidate();

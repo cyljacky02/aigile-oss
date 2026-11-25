@@ -14,7 +14,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { migrateNode, listMigrations, TRACK_SQL } from '../src/migrations.js';
+import { migrateNode, listMigrations, versionOf, TRACK_SQL } from '../src/migrations.js';
 import { d1Steps } from './migrate.js';
 import { startServer, sleep } from './browser-kit.js';
 import { scriptHashes } from './script-hashes.mjs';
@@ -31,6 +31,7 @@ const OLD = SCHEMA.split('\n').filter(l => !/^\s+wake_(day|count|at) /.test(l) &
   .replace(/\n\s*reauth_at [^\n]*/, '') // 011 再驗證身分加的欄位也去掉
   .replace(/\n[^\n]*migrations\/012[^\n]*/g, '') // 012 刪除訊息加的欄位與索引也去掉
   .replace(/\n[^\n]*migrations\/013[^\n]*/g, '') // 013 刪除專案加的欄位也去掉
+  .replace(/\n[^\n]*migrations\/015[^\n]*/g, '') // 015 工作區政策（誰可以刪除自己的訊息）加的欄位也去掉
   .replace(/(\n  status TEXT NOT NULL DEFAULT 'active',[^\n]*)/, "$1\n  is_admin INTEGER NOT NULL DEFAULT 0,     -- 群組管理員（同時只有一位人類；可以交給別人）")
   .replace(/(\n  standby_at [^\n]*)\n\);/, "$1\n  projects TEXT NOT NULL DEFAULT ''  -- 所屬專案（逗號分隔，至少一個）\n);"); // 009 拿掉的舊欄位補回來
 assert.notEqual(OLD, SCHEMA, '測試用的舊結構真的少了叫醒欄位');
@@ -91,7 +92,7 @@ try {
   // ---------- 3. 新版程式開舊資料庫：自動升級 ----------
   const BASE = await startServer(kids, dataDir, { TEAM_CACHE_MS: '0', AIGILE_TEST_PG_URL: '' }); // 這裡驗的是舊 SQLite 檔升級：Postgres 模式也開 SQLite
   const ALL_MIGS = listMigrations(MIG_DIR).map(f => f.name); // 002 之後還有別的升級時一起套
-  assert.ok(kids[0].tail.includes(`資料庫升級：套用 ${ALL_MIGS.filter(n => !OLD_MIGS.includes(n)).join('、')}（目前版本 ${ALL_MIGS.length}）`) && /套用 002_wake_counts\.sql/.test(kids[0].tail), '啟動時自動套 002：' + kids[0].tail);
+  assert.ok(kids[0].tail.includes(`資料庫升級：套用 ${ALL_MIGS.filter(n => !OLD_MIGS.includes(n)).join('、')}（目前版本 ${versionOf(ALL_MIGS)}）`) && /套用 002_wake_counts\.sql/.test(kids[0].tail), '啟動時自動套 002：' + kids[0].tail);
   {
     const db = new DatabaseSync(file);
     assert.ok(['wake_day', 'wake_count', 'wake_at'].every(c => cols(db, 'participants').includes(c)), 'Node：升級後有三欄');

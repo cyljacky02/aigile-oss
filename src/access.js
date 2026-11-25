@@ -140,8 +140,11 @@ const ACTIONS = {
   see_platform_audit_log: { admin: true, rule: platformAdmin, deny: DENY.platform }, // 平台層的事件（任免平台管理員、停用帳號、備份還原…）
   // 訊息（範圍帶 { project: 訊息的專案, message: { authorId, deletedBy } }）。AI 一律不行（包括自己發的）
   // 刪除自己的訊息：人類作者；在訊息所屬專案是唯讀成員就不行（包括以前發的）。工作區管理員刪自己的也走這條
-  delete_own_message: { human: true, rule: (v, me, s) => me.kind === 'human' && s.message?.authorId === me.id && !v.readOnlyAt(me, s.project),
-    deny: d => d.readOnly() },
+  // 工作區政策設為「只有管理員」時只有工作區管理員（含平台管理員）。fresh：check 時重讀工作區設定
+  delete_own_message: { human: true, fresh: true, rule: (v, me, s) => me.kind === 'human' && s.message?.authorId === me.id && !v.readOnlyAt(me, s.project)
+      && (v.membersDeleteOwn() || workspaceAdmin(v, me)),
+    deny: d => (d.v.readOnlyAt(d.me, d.s.project) || d.s.message?.authorId !== d.me.id ? d.readOnly()
+      : d.err(403, 'NOT_ADMIN', `工作區政策設為只有工作區管理員能刪除訊息，自己的也一樣；要刪這則請找工作區管理員（${d.adminName()}）。`)) },
   // 刪除任何人的訊息（含平台管理員、AI 發的）：工作區管理員。內容管理不是管理權，不套「不能動上層管理員」；專案管理員不行
   delete_message: { admin: true, human: true, rule: workspaceAdmin },
   // 復原被刪的訊息：工作區管理員復原任何一則；作者只能復原自己刪的（管理員刪的回 RESTORE_FORBIDDEN）
@@ -169,6 +172,7 @@ const scopeOf = scope => {
 //   ownerOf(ai)              → AI 所屬人類的列（實際的唯讀要看他有沒有隱含權限）
 //   memberProjectsOf(p)      → 他明確加入的（未封存）專案（不含隱含權限；沒給就用 projectsOf）
 //   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
+//                            membersDeleteOwn() → 目前快取裡「一般成員可以刪除自己的訊息」（沒注入＝不行）
 //   isPlatformAdmin(p)       → 他的帳號是平台管理員（沒注入＝沒有平台管理員）
 //   visibilityOf(pj)         → 專案可見度（PROJECT_VISIBILITY；沒注入或不認得的值＝審核）
 //   isDeletedProject(pj)     → 專案在可復原期（已刪除、還沒永久清除）：對所有人都當它不存在（沒注入＝沒有）
@@ -210,6 +214,7 @@ export function createAccess(deps) {
       },
       active: pj => projects().includes(pj),
       membersCreateProjects: () => !!deps.membersCreateProjects?.(),
+      membersDeleteOwn: () => !!deps.membersDeleteOwn?.(),
       visibilityOf: pj => { const x = deps.visibilityOf?.(pj); return PROJECT_VISIBILITIES.includes(x) ? x : VIS.REVIEW; },
       // 私人專案只有專案成員與有隱含權限的人（工作區管理員等）看得到它存在；開放、審核所有人都看得到
       // （成員先判，不必讀成員資料；非成員看私人專案才要判上層管理員）
