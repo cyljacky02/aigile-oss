@@ -2950,8 +2950,12 @@ ${ending}`;
   // 可復原期內被加進別的專案、不再只屬於它的暫停 AI：不刪，恢復啟用
   // 跨專案頻道（project=all）的訊息不動。D1：每張表一句（沒有索引的表只掃一次），不逐筆刪
   // 稽核紀錄的 project.purge 記名稱快照與數量（專案事件會跟著刪掉）；永久清除的操作者一律是系統（可復原期 0 天的刪除也是，刪除那筆才記操作的人）
+  // 清除前先認領：還是已刪除、已到期，而且 purge_at 還是挑中時的值（改成少 1 毫秒：同時另一份程式也挑中的就認領不到）。
+  // 復原剛好先寫入了就不清（回 null）；認領之後 purge_at 已過，復原那邊的「還在期限內」不成立。兩邊只有一邊會成功
   async function purgeProject(row) {
     const id = row.id, at = nowIso(), code = projCodes[id] || null;
+    const claim = await db.run('UPDATE projects SET purge_at = ? WHERE id = ? AND deleted_at IS NOT NULL AND purge_at = ? AND purge_at <= ?', Number(row.purge_at) - 1, id, Number(row.purge_at), Date.now());
+    if (!claim.changes) return null;
     invalidatePeople(); // 用最新的成員資料算「只屬於這個專案的 AI」
     const people = [...(await peopleMap({})).values()].filter(p => p.kind !== 'system');
     const onlyHere = onlyHereAis(people, id), onlyIds = new Set(onlyHere.map(p => p.id));
@@ -3575,12 +3579,12 @@ ${ending}`;
     return total;
   }
   async function purgeMessageBatch(ids) {
-    const rows = await db.all('SELECT id, project, file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL', JSON.stringify(ids));
+    const at = nowIso(), due = 'deleted_at IS NOT NULL AND purged_at IS NULL AND purge_at <= ?'; // 已刪除、還沒清除、已到期（可復原期 0 天的刪除當下就到期）
+    const rows = await db.all(`SELECT id, project, file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND ${due}`, JSON.stringify(ids), at);
     if (!rows.length) return 0;
-    const mids = JSON.stringify(rows.map(m => m.id)), at = nowIso();
+    const mids = JSON.stringify(rows.map(m => m.id));
     // 一則可掛多個檔（files.message_id）；messages.file_id 是第一個。已到期的檔本體早就刪了，列一樣拿掉
     const fileRows = await db.all('SELECT id, message_id FROM files WHERE message_id IN (SELECT value FROM json_each(?)) OR id IN (SELECT file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND file_id IS NOT NULL)', mids, mids);
-    if (storage) for (const f of fileRows) await storage.delete(f.id).catch(() => {}); // 本體先刪（列刪了就找不到 id）
     const fids = JSON.stringify(fileRows.map(f => f.id)), groups = new Map(); // 專案 → 這批清除的訊息與附件數
     for (const m of rows) {
       const k = m.project || '';
@@ -3589,15 +3593,20 @@ ${ending}`;
       g.ids.push(m.id);
       g.files += fileRows.filter(f => f.message_id === m.id || (!f.message_id && f.id === m.file_id)).length;
     }
-    await writeStmts([
+    // 先鎖這批訊息（跟復原排隊），確認每則都還是已刪除、還沒清除、已到期；剛好有一則被復原了就整批不寫（下次重挑）。復原那邊也鎖了再確認還沒到期，兩邊只有一邊會成功
+    const done = await writeTogether([
+      ['UPDATE messages SET purge_at = purge_at WHERE id IN (SELECT value FROM json_each(?))', [mids]],
+      ensureStmt(`NOT EXISTS (SELECT 1 FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND NOT (${due}))`, [mids, at]),
       [`INSERT INTO file_audit (id, file_id, action, actor_id, actor_kind, at, name, size, sha256, declared, detail)
         SELECT ? || id, id, 'purge', ?, ?, ?, name, size, sha256, declared, 'MESSAGE_PURGED' FROM files WHERE id IN (SELECT value FROM json_each(?))`,
         [randId('aud') + '_', 'system', 'system', at, fids]],
-      ['DELETE FROM file_chunks WHERE file_id IN (SELECT value FROM json_each(?))', [fids]], // dbStorage 的本體（其他儲存上面已刪）
+      ['DELETE FROM file_chunks WHERE file_id IN (SELECT value FROM json_each(?))', [fids]], // dbStorage 的本體（其他儲存寫完再刪）
       ['DELETE FROM files WHERE id IN (SELECT value FROM json_each(?))', [fids]],
-      ["UPDATE messages SET text = '', purged_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND deleted_at IS NOT NULL AND purged_at IS NULL", [at, mids]],
+      [`UPDATE messages SET text = '', purged_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND ${due}`, [at, mids, at]],
       ...[...groups.values()].map(g => auditLog.stmt({ actor: null, action: AUDIT_ACTION.MESSAGE_PURGE, ...msgAuditScope(g.m), count: g.ids.length, detail: { messageIds: g.ids, files: g.files }, at })),
     ]);
+    if (!done) return 0;
+    if (storage) for (const f of fileRows) await storage.delete(f.id).catch(() => {}); // 本體在資料寫完之後才刪（id 先記在上面）
     return rows.length;
   }
   // ---------- 清空專案訊息與整批復原（詞彙見 GLOSSARY「清空專案訊息」） ----------
@@ -4485,8 +4494,9 @@ ${ending}`;
   async function purgeDueProjects() {
     const due = await db.all('SELECT * FROM projects WHERE deleted_at IS NOT NULL AND purge_at <= ? ORDER BY purge_at LIMIT 5', Date.now()).catch(() => []);
     if (due.length) await loadProjects(true);
-    for (const row of due) await purgeProject(row);
-    return due.length;
+    let n = 0;
+    for (const row of due) if (await purgeProject(row)) n++;
+    return n;
   }
   handle.runScheduled = async () => ({ filesCleaned: await cleanupExpired(), cardsArchived: await autoArchive(db),
     proposalsExpired: (await db.run("UPDATE avatar_proposals SET status = 'expired', data = NULL WHERE status = 'pending' AND created_at < ?", Date.now() - 24 * 3600_000).catch(() => ({ changes: 0 }))).changes,
