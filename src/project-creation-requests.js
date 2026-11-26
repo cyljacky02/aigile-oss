@@ -70,7 +70,12 @@ export function transitionStmts({ id, to, at, by = null, rejectReason = null, ca
   ];
 }
 // 取消（系統）：這個工作區（requesterId：只取消這位申請人的）交易內實際存在的待審申請。不通知、不寫稽核（數字記在觸發它的操作的稽核，用 pendingCountSql）
-const pendingWhere = (workspaceId, requesterId) => ({ where: `workspace_id = ? AND state = 'pending'${requesterId ? ' AND requester_id = ?' : ''}`, args: requesterId ? [workspaceId, requesterId] : [workspaceId] });
+// workspaceId＝null：所有工作區（停用帳號；一定要給 requesterId）。第一階段一個帳號只有一個成員列（participant）；第二階段要改成帳號的所有成員列
+function pendingWhere(workspaceId, requesterId) {
+  if (workspaceId === null && !requesterId) throw new Error('建立專案申請：跨工作區取消一定要指定申請人');
+  const where = [...(workspaceId === null ? [] : ['workspace_id = ?']), "state = 'pending'", ...(requesterId ? ['requester_id = ?'] : [])];
+  return { where: where.join(' AND '), args: [...(workspaceId === null ? [] : [workspaceId]), ...(requesterId ? [requesterId] : [])] };
+}
 export function cancelStmts({ workspaceId = DEFAULT_WORKSPACE, requesterId = null, cancelCode, at }) {
   if (!PCR_CANCEL_CODES.includes(cancelCode)) throw new Error(`建立專案申請：不認得的取消原因 ${cancelCode}`);
   if (!at) throw new Error('建立專案申請：取消要有時間');
@@ -79,6 +84,18 @@ export function cancelStmts({ workspaceId = DEFAULT_WORKSPACE, requesterId = nul
 }
 // 待審申請的數量（[sql, args]；放在 cancelStmts 之前的稽核 countOf，或交易外的預覽）
 export const pendingCountSql = ({ workspaceId = DEFAULT_WORKSPACE, requesterId = null } = {}) => { const { where, args } = pendingWhere(workspaceId, requesterId); return [`SELECT COUNT(*) FROM ${PCR_TABLE} WHERE ${where}`, args]; };
+// 因政策改變而取消時通知申請人（#46）：交易內實際待審的申請人每人一則（同一人好幾份也只一則），內容最小化（不帶名稱、原因、數量）。
+// 放在 cancelStmts 之前（之後就沒有待審的了）。noticeId：這次操作的前綴（每位申請人一列：前綴＋申請人 id）
+export const PCR_NOTICE_CANCELLED = 'project_creation_request_cancelled';
+export function cancelNoticeStmts({ workspaceId = DEFAULT_WORKSPACE, noticeId, now = Date.now() }) {
+  const { where, args } = pendingWhere(workspaceId, null);
+  return [[`INSERT INTO account_notices (id, participant_id, kind, detail, created_at)
+    SELECT ? || requester_id, requester_id, ?, '', ? FROM ${PCR_TABLE} WHERE ${where} GROUP BY requester_id`, [`${noticeId}_`, PCR_NOTICE_CANCELLED, now, ...args]]];
+}
+// 申請資料表在不在（程式先部署、資料庫還沒升級時沒有）：沒有就不取消（也就沒有待審申請），觸發的操作照常。其他讀取錯誤照丟
+export async function requestsTableReady(db) {
+  try { await db.get(`SELECT 1 AS x FROM ${PCR_TABLE} LIMIT 1`); return true; } catch (e) { if (isMissingTable(e)) return false; throw e; }
+}
 
 // 申請內容的正規化（冪等比較用的就是這份）：name、reason、visibility、slug、code、statuses；「自動」的欄位是 null，不以預估值比較
 const sameContent = (row, c) => row.name === c.name && row.reason === c.reason && row.visibility === c.visibility
@@ -129,10 +146,10 @@ export function registerProjectCreationRequests(d) {
   const byId = id => db.get(`SELECT * FROM ${PCR_TABLE} WHERE id = ?`, String(id));
   const byRequestId = (requesterId, requestId) => db.get(`SELECT * FROM ${PCR_TABLE} WHERE workspace_id = ? AND requester_id = ? AND request_id = ?`, workspaceId, requesterId, requestId);
   // 提交後：叫申請人與目前的審核人重新抓取（不帶內容）。收件人照改完之後的成員資料
-  async function poke(requesterId) {
+  async function poke(requesterId) { // 一位或好幾位申請人（陣列）
     const people = await peopleMap({});
     const v = access.view({ people });
-    const ids = new Set([requesterId, ...v.admins().map(p => p.id), ...v.platformAdmins().map(p => p.id)]);
+    const ids = new Set([...[].concat(requesterId), ...v.admins().map(p => p.id), ...v.platformAdmins().map(p => p.id)]);
     liveTo([...ids], LIVE_STALE, {});
   }
   const pokeLater = requesterId => poke(requesterId).catch(e => console.error('建立專案申請的即時事件沒送出', e?.message));
@@ -259,5 +276,6 @@ export function registerProjectCreationRequests(d) {
     return view(v, me, await byId(row.id));
   }));
 
-  return { visibleTo, view, transitionStmts, cancelStmts, pendingCountSql };
+  // pokeLater(ids)：系統取消（#46）提交後叫這些申請人與目前的審核人重新抓取
+  return { visibleTo, view, transitionStmts, cancelStmts, pendingCountSql, pokeLater: ids => pokeLater([...new Set(ids)]) };
 }

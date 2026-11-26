@@ -20,6 +20,7 @@
 //   countOf    [sql, args]：數字在同一批裡用這句 SELECT 算（例：這次清空了幾則），取代 count
 //   detail     細節物件（存成 JSON）；不放訊息原文
 //   at         ISO 時間；不給＝現在
+//   id         這筆的 id；不給＝隨機。提交後要讀回 countOf 算出的數字時給（例：這次實際取消了幾份建立專案申請）
 // 不寫的情況：沒有真的改到東西（no-op）、競態檢查擋下來（409）都不寫
 
 // 動作（存在 action 欄位；網頁的篩選與顯示文字照這張表）
@@ -72,7 +73,7 @@ export function createAudit({ db, randId, nowIso }) {
   let ready = true;
   const stmt = evt => {
     if (!ready || !evt?.action) return null;
-    const v = values(evt, randId('aud'), evt.at || nowIso());
+    const v = values(evt, evt.id || randId('aud'), evt.at || nowIso());
     if (!evt.countOf) return [INSERT, v];
     const [sql, args = []] = evt.countOf; // count 是倒數第二欄
     return [INSERT.replace(/\?,\?\)$/, `(${sql}),?)`), [...v.slice(0, -2), ...args, v[v.length - 1]]];

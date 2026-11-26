@@ -24,7 +24,7 @@ import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, writeOrdered } from './write-order.js'; // 工作區寫入排序與交易內斷言（ADR 0005）
 import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS } from './project-identity.js'; // 專案網址英文名與代號（#42）
 import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯（#43）
-import { registerProjectCreationRequests } from './project-creation-requests.js'; // 建立專案申請（#44）
+import { registerProjectCreationRequests, cancelStmts as pcrCancelStmts, cancelNoticeStmts as pcrCancelNoticeStmts, pendingCountSql as pcrPendingCountSql, requestsTableReady as pcrTableReady, PCR_TABLE, PCR_CANCEL_CODE } from './project-creation-requests.js'; // 建立專案申請（#44、#46）
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -1689,6 +1689,31 @@ ${ending}`;
   // 還原備份還沒收尾完（鎖之後的「不在還原中」斷言失敗）：什麼都沒寫，還原完成後再送一次
   const restoringError = () => new ApiError(503, 'RESTORING', '正在還原備份，這次沒有存；還原完成後再試。', { retryAfter: 5 });
   const writeInWorkspace = list => writeOrdered(db, [lockWorkspaceStmt(DEFAULT_WORKSPACE), ...list], { busy: busyError, restoring: restoringError });
+  // 成員資格的寫入（升降管理員、停用／恢復帳號、移出、離開）：list 的第一句就是工作區列鎖（membership 的 *Stmts 自己帶），
+  // 跟 writeInWorkspace 一樣在鎖之後斷言不在還原中（503 RESTORING）、忙磌時整批重試；交易內斷言不成立回 false（什麼都沒寫）
+  const writeMembership = list => writeOrdered(db, list, { busy: busyError, restoring: restoringError });
+  // 建立專案申請的系統取消（#46；GLOSSARY「取消」）：掛在觸發它的操作那一批（政策切走、移出、離開、停用帳號），取消交易內實際待審的申請。
+  // 觸發的操作失敗（最後一位管理員保護…）整批回復，就沒有任何申請被取消。沒有公開的取消 API。
+  // 實際取消數：用該操作既有的那筆稽核的 countOf 在同一批算（audit() 那句要放在 stmts 之前），提交後 count() 讀回來給操作者；不為每份申請另寫稽核。
+  // notify：通知每位申請人（只有政策切走時）。workspaceId＝null：所有工作區（停用帳號）。
+  // 申請資料表還沒建立（程式先部署）：不取消、稽核照舊（沒有數字），操作照常
+  async function pcrCancellation({ workspaceId = DEFAULT_WORKSPACE, requesterId = null, cancelCode, at, notify = false }) {
+    if (!(await pcrTableReady(db))) return { audit: evt => auditLog.stmt(evt), stmts: [], count: async () => 0, requesters: async () => [] };
+    const auditId = randId('aud');
+    const ended = `SELECT %s FROM ${PCR_TABLE} WHERE state = 'cancelled' AND cancel_code = ? AND ended_at = ?${workspaceId === null ? '' : ' AND workspace_id = ?'}${requesterId ? ' AND requester_id = ?' : ''}`;
+    const endedArgs = [cancelCode, at, ...(workspaceId === null ? [] : [workspaceId]), ...(requesterId ? [requesterId] : [])];
+    return {
+      audit: evt => auditLog.stmt({ ...evt, id: auditId, countOf: pcrPendingCountSql({ workspaceId, requesterId }), detail: { ...evt.detail, counted: 'cancelledProjectCreationRequests' } }),
+      stmts: [...(notify ? pcrCancelNoticeStmts({ workspaceId, noticeId: randId('ntc_pcrc') }) : []), ...pcrCancelStmts({ workspaceId, requesterId, cancelCode, at })],
+      // 稽核那一筆記的數字；稽核表還沒就緒（沒寫）時，數這次取消寫下的結束時間與原因
+      count: async () => {
+        const row = await db.get('SELECT count FROM audit_log WHERE id = ?', auditId).catch(() => null);
+        return Number(row ? row.count ?? 0 : (await db.get(ended.replace('%s', 'COUNT(*) AS n'), ...endedArgs))?.n ?? 0);
+      },
+      // 提交後要叫哪些申請人重新抓取（只用來發「請重新抓取」訊號）
+      requesters: async () => (await db.all(ended.replace('%s', 'DISTINCT requester_id'), ...endedArgs).catch(() => [])).map(r => r.requester_id),
+    };
+  }
   // 專案網址英文名與代號存進資料庫（#42，src/project-identity.js）：每份程式第一個請求做一次啟動正規化；還原備份中先不做（收尾會做）。
   // 做不成只記下來、不擋請求：只有會動到名稱或識別碼命名空間的寫入回 503（writeIdentity），其他功能照常；下個請求再試
   const projectIdentity = createProjectIdentity({ db, nowIso });
@@ -2212,9 +2237,18 @@ ${ending}`;
       stmts.push(projEvent(GROUP_EVT, me.id, code ? `${me.name} 設定房間碼` : `${me.name} 清除房間碼`, at)); // 紀錄不寫房間碼本身
     }
     const createBefore = has('createProjects') ? (await workspace.load(true)).createProjects : null;
-    if (has('createProjects') && createBefore !== body.createProjects) {
-      stmts.push(...workspace.setCreateProjectsStmts(body.createProjects), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以建立專案：${CREATE_PROJECTS_LABEL[body.createProjects]}`, at),
-        auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'createProjects', from: createBefore, to: body.createProjects } }));
+    // 從「成員申請」切到其他模式（#46）：同一批取消這個工作區所有待審的建立專案申請（policy_changed）、通知每位申請人；其他方向不處理任何申請。
+    // 政策在交易內確認仍是讀到的舊值（不然稽核的 from 與取消的範圍都不對：別人剛好先改了回 409）
+    const changeCreate = has('createProjects') && createBefore !== body.createProjects;
+    const leavingApproval = changeCreate && createBefore === CREATE_PROJECTS.APPROVAL;
+    const cancel = leavingApproval ? await pcrCancellation({ cancelCode: PCR_CANCEL_CODE.POLICY_CHANGED, at, notify: true }) : null;
+    if (changeCreate) {
+      const evt = { actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'createProjects', from: createBefore, to: body.createProjects } };
+      // 讀到 admins 也可能是不認得的值（當作 admins）：那就斷言「不是另外兩種」
+      const was = createBefore === CREATE_PROJECTS.ADMINS ? ["NOT (COALESCE(create_projects, '') IN (?, ?))", [CREATE_PROJECTS.MEMBERS, CREATE_PROJECTS.APPROVAL]] : ['create_projects = ?', [createBefore]];
+      stmts.push(ensureStmt(`EXISTS (SELECT 1 FROM workspaces WHERE id = ? AND ${was[0]})`, [DEFAULT_WORKSPACE, ...was[1]]),
+        ...workspace.setCreateProjectsStmts(body.createProjects), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以建立專案：${CREATE_PROJECTS_LABEL[body.createProjects]}`, at),
+        cancel ? cancel.audit(evt) : auditLog.stmt(evt), ...(cancel?.stmts || [])); // 稽核在取消之前：數的是交易內實際待審的
     }
     // 誰可以刪除自己的訊息：值沒變不存、不記
     const delBefore = has('deleteOwnMessages') ? (await workspace.load(true)).deleteOwnMessages : null;
@@ -2222,11 +2256,26 @@ ${ending}`;
       stmts.push(...workspace.setDeleteOwnStmts(body.deleteOwnMessages), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以刪除自己的訊息：${DELETE_OWN_LABEL[body.deleteOwnMessages]}`, at),
         auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'deleteOwnMessages', from: delBefore, to: body.deleteOwnMessages } }));
     }
-    // 第一句工作區列鎖：建立專案政策跟建立專案（之後的建立專案申請）排隊（ADR 0005）；沒有要寫的就不送
-    if (stmts.length) await writeInWorkspace(stmts);
+    // 第一句工作區列鎖：建立專案政策跟建立專案、建立專案申請的送出與核准排隊（ADR 0005）；沒有要寫的就不送
+    if (stmts.length && !(await writeInWorkspace(stmts))) {
+      workspace.invalidate();
+      throw new ApiError(409, 'CONFLICT', '剛好有人同時在改工作區政策，這次沒有存；請重新讀取後再試。');
+    }
     workspace.invalidate();
     if (name !== null) await saveGroupName(me, name);
-    return groupSettings();
+    const out = await groupSettings();
+    if (has('createProjects')) out.cancelledProjectCreationRequests = cancel ? await cancel.count() : 0; // 交易內實際取消的數量（不是預覽的）
+    if (cancel && out.cancelledProjectCreationRequests) creationRequests.pokeLater(await cancel.requesters());
+    return out;
+  });
+  // 切換「誰可以建立專案」的預覽（#46）：目前的政策與待審的建立專案申請數量（從 approval 切走會取消這些）。只給有權修改政策的人；
+  // 只是預估，實際取消數以儲存回應的 cancelledProjectCreationRequests 為準
+  route('GET', '/api/workspace/settings/create-projects-preview', async ({ ctx, me }) => {
+    await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看切換政策的影響' });
+    const ws = await workspace.load(true);
+    let pending = 0;
+    if (await pcrTableReady(db)) { const [sql, args] = pcrPendingCountSql({}); pending = Number((await db.get(sql.replace('COUNT(*)', 'COUNT(*) AS n'), ...args))?.n ?? 0); }
+    return { createProjects: ws.createProjects, pendingProjectCreationRequests: pending };
   });
   route('GET', '/api/group/events', async ({ ctx, me, url }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看工作區異動紀錄' });
@@ -3374,13 +3423,16 @@ ${ending}`;
     // 第一句鎖工作區這列；接著確認還沒被停用（別的管理員剛好先停用了：不重複記）。通知寫入前算：被停用的人不收
     const [lock, ...disable] = membership.disableStmts(t.id, at, await tokenKey(newToken()));
     const done = "EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'disabled')";
-    const ok = await writeTogether([
+    // 他在所有工作區的待審建立專案申請同一批取消（account_disabled，不通知）；實際數記在 account.disable 稽核。停用沒成功整批回復，不取消
+    const cancel = await pcrCancellation({ workspaceId: null, requesterId: t.id, cancelCode: PCR_CANCEL_CODE.ACCOUNT_DISABLED, at });
+    // 還原備份中：鎖之後的斷言擋下（503 RESTORING）
+    const ok = await writeMembership([
       lock, ensureStmt("EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'active')", [t.id]),
       ...disable, ensureStmt(done, [t.id]),
       [`UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL AND ${done}`, [now, t.id, t.id]],
       [`DELETE FROM pair_codes WHERE participant_id = ? AND ${done}`, [t.id, t.id]],
       ...await Promise.all(ais.map(async a => [`UPDATE participants SET token = ?, token_expires_at = 1, updated_at = ? WHERE id = ? AND ${done}`, [await tokenKey(newToken()), at, a.id, t.id]])),
-      auditLog.stmt({ actor: me, action: AUDIT_ACTION.ACCOUNT_DISABLE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t), detail: { revokedAiTokens: ais.length } }),
+      cancel.audit({ actor: me, action: AUDIT_ACTION.ACCOUNT_DISABLE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t), detail: { revokedAiTokens: ais.length } }), ...cancel.stmts,
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: [me.id, t.id], kind: ADMIN_NOTICE.ACCOUNT_DISABLE, detail: { a: me.name, t: t.name } }),
     ]);
     invalidatePeople();
@@ -3393,7 +3445,9 @@ ${ending}`;
     }
     live?.dropPerson?.(t.id); // 連著的即時通道也斷掉（有實作才做）
     console.log(`成員已停用：${t.name}（${me.name} 操作）`);
-    return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)), revokedAiTokens: ais.length };
+    const cancelled = await cancel.count();
+    if (cancelled) creationRequests.pokeLater([t.id]); // 審核人的待審清單重新抓取
+    return { participant: publicParticipant(await db.get('SELECT * FROM participants WHERE id = ?', t.id), await peopleMap(ctx)), revokedAiTokens: ais.length, cancelledProjectCreationRequests: cancelled };
   });
   route('POST', '/api/participants/:id/enable', async ({ ctx, me, params }) => {
     const t = await humanTarget(ctx, me, params.id, 'manage_accounts');
@@ -3403,7 +3457,8 @@ ${ending}`;
     // 第一句鎖工作區這列（跟停用、升降管理員排隊），再確認還是停用中（別的管理員剛好先恢復了：不重複記）。
     // 通知寫入前算：恢復的人是平台管理員的話，恢復後他也是收件人
     const platformRole = (await db.get('SELECT platform_role FROM accounts WHERE id = ?', t.account_id).catch(() => null))?.platform_role;
-    const ok = await writeTogether([
+    // 恢復不恢復已取消的建立專案申請（終止狀態不可逆）。還原備份中：鎖之後的斷言擋下（503 RESTORING）
+    const ok = await writeMembership([
       lockWorkspaceStmt(DEFAULT_WORKSPACE),
       ensureStmt("EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'disabled')", [t.id]),
       ["UPDATE participants SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?", [at, t.id]], ...membership.accountStatusStmts(t.id, 'active', at),
@@ -3435,7 +3490,10 @@ ${ending}`;
     const at = nowIso(), ais = await db.all("SELECT id FROM participants WHERE owner_id = ? AND kind = 'ai' AND status != 'deleted'", t.id);
     // 一批寫完：先鎖工作區這列（跟升降、停用排隊），確認還沒被移出（別人剛好先移出了：不重複記），改完確認真的移出了（最後一位管理員的檢查擋下來就整批不寫）
     const removed = "EXISTS (SELECT 1 FROM participants WHERE id = ? AND workspace_status = 'removed')";
-    const ok = await writeTogether([
+    // 他在這個工作區的待審建立專案申請同一批取消（移出：workspace_member_removed，離開：workspace_member_left；不通知），
+    // 實際數記在 member.remove／member.leave 稽核。最後一位管理員保護擋下時整批回復，不取消。還原備份中：503 RESTORING
+    const cancel = await pcrCancellation({ requesterId: t.id, cancelCode: t.id === me.id ? PCR_CANCEL_CODE.MEMBER_LEFT : PCR_CANCEL_CODE.MEMBER_REMOVED, at });
+    const ok = await writeMembership([
       lockWorkspaceStmt(DEFAULT_WORKSPACE),
       ensureStmt(`NOT ${removed}`, [t.id]),
       ...(isWorkspaceAdmin(t) ? membership.setWorkspaceRoleStmts(t.id, WORKSPACE_ROLE.MEMBER, at).slice(1) : []), // 移出的人不再是工作區管理員（最後一位時這句不改，下一句也就不移出）
@@ -3444,7 +3502,7 @@ ${ending}`;
       ...await Promise.all(ais.map(async a => ["UPDATE participants SET status = 'disabled', workspace_status = 'removed', token = ?, token_expires_at = 1, updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')",
         [await tokenKey(newToken()), at, a.id, t.id]])),
       ["DELETE FROM join_requests WHERE participant_id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM participants o WHERE o.id = ? AND o.workspace_status = 'removed')", [t.id, t.id]], // 還在審核的加入申請一併清掉
-      auditLog.stmt({ actor: me, action: t.id === me.id ? AUDIT_ACTION.MEMBER_LEAVE : AUDIT_ACTION.MEMBER_REMOVE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t), detail: { revokedAiTokens: ais.length } }),
+      cancel.audit({ actor: me, action: t.id === me.id ? AUDIT_ACTION.MEMBER_LEAVE : AUDIT_ACTION.MEMBER_REMOVE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t), detail: { revokedAiTokens: ais.length } }), ...cancel.stmts,
       ...(isWorkspaceAdmin(t) ? [auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_ADMIN_REVOKE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t) }),
         ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, include: [t.id], kind: ADMIN_NOTICE.WORKSPACE_REVOKE, detail: { a: me.name, t: t.name } })] : []),
     ]);
@@ -3461,7 +3519,9 @@ ${ending}`;
     live?.dropPerson?.(t.id);
     for (const a of ais) live?.dropPerson?.(a.id);
     console.log(t.id === me.id ? `成員離開工作區：${t.name}` : `成員已移出工作區：${t.name}（${me.name} 操作）`);
-    return { participant: publicParticipant(after, await peopleMap(ctx)), revokedAiTokens: ais.length, returnedCards: impact?.returnedCards || [] };
+    const cancelled = await cancel.count();
+    if (cancelled) creationRequests.pokeLater([t.id]); // 審核人的待審清單重新抓取
+    return { participant: publicParticipant(after, await peopleMap(ctx)), revokedAiTokens: ais.length, returnedCards: impact?.returnedCards || [], cancelledProjectCreationRequests: cancelled };
   }
   // 已停用的人類（只有管理員看）：成員頁列出來、可以恢復
   route('GET', '/api/participants/disabled', async ({ ctx, me }) => {
@@ -3494,9 +3554,10 @@ ${ending}`;
         if (keep.length > listOf(t).length) stmts.push(...setProjectsStmts(t.id, keep, null, { onlyIfWorkspaceRole: WORKSPACE_ROLE.MEMBER }));
       }
       // 鎖之後確認還是原本的角色（別人剛好先改了：不重複記）、改完確實是新角色（最後一位的檢查擋下來就整批不寫）。
-      // 稽核紀錄、通知跟著同一批；被降級的人已經不是工作區管理員，也要通知（include）
+      // 稽核紀錄、通知跟著同一批；被降級的人已經不是工作區管理員，也要通知（include）。還原備份中：鎖之後的斷言擋下（503 RESTORING）。
+      // 申請人升為工作區管理員時，他的待審建立專案申請保留（#46：他可以自己核准或撤回後直接建立）
       const adminIs = `EXISTS (SELECT 1 FROM participants WHERE id = ? AND workspace_role = '${WORKSPACE_ROLE.ADMIN}')`;
-      const ok = await writeTogether([lock, ensureStmt(admin ? `NOT ${adminIs}` : adminIs, [t.id]), ...stmts, ensureStmt(admin ? adminIs : `NOT ${adminIs}`, [t.id]),
+      const ok = await writeMembership([lock, ensureStmt(admin ? `NOT ${adminIs}` : adminIs, [t.id]), ...stmts, ensureStmt(admin ? adminIs : `NOT ${adminIs}`, [t.id]),
         auditLog.stmt({ actor: me, action: admin ? AUDIT_ACTION.WORKSPACE_ADMIN_GRANT : AUDIT_ACTION.WORKSPACE_ADMIN_REVOKE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t) }),
         ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, include: [t.id], kind: admin ? ADMIN_NOTICE.WORKSPACE_GRANT : ADMIN_NOTICE.WORKSPACE_REVOKE, detail: { a: me.name, t: t.name } }),
       ]);
@@ -3520,10 +3581,10 @@ ${ending}`;
     const v = access.view({ people: await peopleMap(ctx) });
     if (role === 'none' && v.lastAdmin(t, 'platform')) throw lastPlatformError();
     if ((role === 'admin') !== membership.isPlatformAdmin(t)) {
-      // 跟升降工作區管理員一樣：鎖之後確認還是原本的角色、改完確實是新角色；角色、稽核紀錄、通知同一批（被降級的人也通知：include）
+      // 跟升降工作區管理員一樣：鎖之後確認還是原本的角色、改完確實是新角色；角色、稽核紀錄、通知同一批（被降級的人也通知：include）；還原中 503 RESTORING
       const [lock, ...stmts] = membership.setPlatformRoleStmts(t.id, role, nowIso());
       const adminIs = "EXISTS (SELECT 1 FROM accounts WHERE id = ? AND platform_role = 'admin')", grant = role === 'admin';
-      const ok = await writeTogether([lock, ensureStmt(grant ? `NOT ${adminIs}` : adminIs, [t.account_id]), ...stmts, ensureStmt(grant ? adminIs : `NOT ${adminIs}`, [t.account_id]),
+      const ok = await writeMembership([lock, ensureStmt(grant ? `NOT ${adminIs}` : adminIs, [t.account_id]), ...stmts, ensureStmt(grant ? adminIs : `NOT ${adminIs}`, [t.account_id]),
         auditLog.stmt({ actor: me, action: role === 'admin' ? AUDIT_ACTION.PLATFORM_ADMIN_GRANT : AUDIT_ACTION.PLATFORM_ADMIN_REVOKE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t) }),
         ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.PLATFORM, except: me.id, include: [t.id], kind: role === 'admin' ? ADMIN_NOTICE.PLATFORM_GRANT : ADMIN_NOTICE.PLATFORM_REVOKE, detail: { a: me.name, t: t.name } }),
       ]);
@@ -4637,13 +4698,13 @@ ${ending}`;
     requireHuman(me);
     const t = await db.get('SELECT * FROM participants WHERE id = ?', me.id);
     if (t.workspace_status === 'removed') return { ok: true }; // 平台管理員被移出後還進得來
-    await removeFromWorkspace(ctx, me, t);
+    const { cancelledProjectCreationRequests } = await removeFromWorkspace(ctx, me, t);
     // 一併登出所有裝置、清掉本人與他的 AI 的待處理通知（不留殘留資料）
     await db.batch([
       ['UPDATE devices SET revoked_at = ? WHERE participant_id = ? AND revoked_at IS NULL', [Date.now(), me.id]],
       ["UPDATE notifications SET status = 'acked', acked_at = ? WHERE status = 'pending' AND recipient_id IN (SELECT id FROM participants WHERE id = ? OR owner_id = ?)", [nowIso(), me.id, me.id]],
     ]);
-    return { ok: true };
+    return { ok: true, cancelledProjectCreationRequests: cancelledProjectCreationRequests ?? 0 }; // 他的待審建立專案申請同一批取消了幾份
   });
 
   // 對外：處理 /api/*；base 為對外網址（例如 https://xxx.workers.dev）
