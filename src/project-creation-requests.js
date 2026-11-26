@@ -91,11 +91,66 @@ function pendingWhere(workspaceId, requesterId) {
   const where = [...(workspaceId === null ? [] : ['workspace_id = ?']), "state = 'pending'", ...(requesterId ? ['requester_id = ?'] : [])];
   return { where: where.join(' AND '), args: [...(workspaceId === null ? [] : [workspaceId]), ...(requesterId ? [requesterId] : [])] };
 }
-export function cancelStmts({ workspaceId = DEFAULT_WORKSPACE, requesterId = null, cancelCode, at }) {
+// 取消的那一句（where 一定要含 state = 'pending'：只動待審的）
+function cancelWhereStmt(where, args, cancelCode, at) {
   if (!PCR_CANCEL_CODES.includes(cancelCode)) throw new Error(`建立專案申請：不認得的取消原因 ${cancelCode}`);
   if (!at) throw new Error('建立專案申請：取消要有時間');
+  return [`UPDATE ${PCR_TABLE} SET state = 'cancelled', ended_at = ?, cancel_code = ? WHERE ${where}`, [at, cancelCode, ...args]];
+}
+export function cancelStmts({ workspaceId = DEFAULT_WORKSPACE, requesterId = null, cancelCode, at }) {
   const { where, args } = pendingWhere(workspaceId, requesterId);
-  return [[`UPDATE ${PCR_TABLE} SET state = 'cancelled', ended_at = ?, cancel_code = ? WHERE ${where}`, [at, cancelCode, ...args]]];
+  return [cancelWhereStmt(where, args, cancelCode, at)];
+}
+
+// ---------- 還原備份後的待審申請檢查（#47） ----------
+// 每一份待審申請依固定順序檢查，第一個成立的就是取消原因（同一份資料每次還原得到相同原因）；都不成立的保留待審核。
+// 條件都寫成 EXISTS／NOT EXISTS（不會是 SQL NULL）；用表名參照外層那一列（UPDATE 不用別名，SQLite／Postgres／D1 都能用）
+const R = PCR_TABLE;
+export const RESTORE_CHECKS = Object.freeze([
+  // 1. 資料關聯：工作區不存在；申請人不存在、不是人類、不屬於這個工作區、或沒有對應的帳號
+  { cancelCode: PCR_CANCEL_CODE.RESTORE_INVALID, cond: `(NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = ${R}.workspace_id)
+    OR NOT EXISTS (SELECT 1 FROM participants p WHERE p.id = ${R}.requester_id AND p.kind = 'human' AND p.status != 'deleted' AND p.workspace_id = ${R}.workspace_id
+      AND p.account_id IS NOT NULL AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id)))` },
+  // 2. 政策：不是 approval（不認得或缺少的值當作 admins，一樣不是 approval）
+  { cancelCode: PCR_CANCEL_CODE.POLICY_CHANGED, cond: `NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = ${R}.workspace_id AND w.create_projects = '${CREATE_PROJECTS.APPROVAL}')` },
+  // 3. 成員資格：成員列或帳號停用
+  { cancelCode: PCR_CANCEL_CODE.ACCOUNT_DISABLED, cond: `EXISTS (SELECT 1 FROM participants p WHERE p.id = ${R}.requester_id
+    AND (p.status != 'active' OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.status != 'active')))` },
+  // 4. 成員資格：不在工作區（已移出）
+  { cancelCode: PCR_CANCEL_CODE.MEMBER_REMOVED, cond: `EXISTS (SELECT 1 FROM participants p WHERE p.id = ${R}.requester_id AND p.workspace_status != 'active')` },
+]);
+const staleWhere = `state = 'pending' AND (${RESTORE_CHECKS.map(c => c.cond).join(' OR ')})`;
+// 這次要取消幾份（[sql, args]，回一列 n）：收尾在交易外先數，交易內再斷言數字沒變（見 restoreCheckStmts）
+export const restoreStaleCountSql = () => [`SELECT COUNT(*) AS n FROM ${PCR_TABLE} WHERE ${staleWhere}`, []];
+// 還原收尾的取消：先斷言交易內不再成立的待審申請剛好 expected 份（數字跟實際取消的一致），再依順序每個原因一句
+// （前面的句子取消過的已經不是 pending，後面的句子不會再動到它）。所有工作區一起做；不通知、不寫稽核（數字記在 backup.restore）。
+// 只動 pending：終止的申請（含已核准但專案已不存在的）原樣保留
+export function restoreCheckStmts({ at, expected }) {
+  if (!Number.isInteger(expected) || expected < 0) throw new Error('建立專案申請：還原檢查要給預期取消數');
+  return [
+    ensureStmt(`(SELECT COUNT(*) FROM ${PCR_TABLE} WHERE ${staleWhere}) = ?`, [expected]),
+    ...RESTORE_CHECKS.map(c => cancelWhereStmt(`state = 'pending' AND ${c.cond}`, [], c.cancelCode, at)),
+  ];
+}
+
+// 備份裡的一列申請合不合法（跟資料表的 CHECK、NOT NULL 一致）：回問題說明，合法回 null。
+// 還原匯入時先檢查，不合法就整批不寫、回明確的格式錯誤（不修改資料、不繞過資料庫約束）
+const filled = v => typeof v === 'string' && v.trim() !== '';
+const none = v => v === null || v === undefined;
+const ROW_SHAPE = {
+  [PCR_STATE.PENDING]: r => none(r.ended_at) && none(r.ended_by) && none(r.project_id) && none(r.reject_reason) && none(r.cancel_code),
+  [PCR_STATE.APPROVED]: r => filled(r.ended_at) && filled(r.ended_by) && filled(r.project_id) && none(r.reject_reason) && none(r.cancel_code),
+  [PCR_STATE.REJECTED]: r => filled(r.ended_at) && filled(r.ended_by) && none(r.project_id) && filled(r.reject_reason) && none(r.cancel_code),
+  [PCR_STATE.WITHDRAWN]: r => filled(r.ended_at) && filled(r.ended_by) && r.ended_by === r.requester_id && none(r.project_id) && none(r.reject_reason) && none(r.cancel_code),
+  [PCR_STATE.CANCELLED]: r => filled(r.ended_at) && none(r.ended_by) && none(r.project_id) && none(r.reject_reason) && PCR_CANCEL_CODES.includes(r.cancel_code),
+};
+export function restoreRowProblem(r) {
+  const missing = ['id', 'workspace_id', 'requester_id', 'request_id', 'name', 'reason', 'created_at'].filter(k => !filled(r[k]));
+  if (missing.length) return `缺少必要欄位：${missing.join('、')}`;
+  if (!PCR_STATES.includes(r.state)) return `不認得的狀態：${r.state ?? '（空）'}`;
+  if (r.visibility !== undefined && !['open', 'review', 'private'].includes(r.visibility)) return `不認得的可見度：${r.visibility}`;
+  if (!ROW_SHAPE[r.state](r)) return `狀態 ${r.state} 的結束時間、處理人、專案、拒絕理由或取消原因不合`;
+  return null;
 }
 // 待審申請的數量（[sql, args]；放在 cancelStmts 之前的稽核 countOf，或交易外的預覽）
 export const pendingCountSql = ({ workspaceId = DEFAULT_WORKSPACE, requesterId = null } = {}) => { const { where, args } = pendingWhere(workspaceId, requesterId); return [`SELECT COUNT(*) FROM ${PCR_TABLE} WHERE ${where}`, args]; };

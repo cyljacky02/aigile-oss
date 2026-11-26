@@ -12,6 +12,8 @@ import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, RESTORE_STATE_KEY } from './write-order.js';
 import { IDENTITY_READY_KEY } from './project-identity.js';
+import { PCR_TABLE, restoreRowProblem } from './project-creation-requests.js';
+import { isConstraintViolation } from './db-errors.js';
 
 export const BACKUP_FORMAT = 'aigile-backup';
 export const BACKUP_FORMAT_VERSION = 1;
@@ -19,7 +21,7 @@ export const BACKUP_FORMAT_VERSION = 1;
 export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'project_events', 'app_settings', 'accounts', 'participants', 'project_members', 'ai_state', 'messages', 'message_recipients', 'notifications', 'dms',
   'decision_resolutions', 'cards', 'card_log', 'card_msgs', 'suggestions', 'avatars', 'avatar_proposals',
   'skills', 'skill_allows', 'skill_installs', 'skill_syncs', 'join_requests',
-  'project_creation_requests', // 建立專案申請：所有狀態原樣帶（舊備份沒有這張表＝還原後是空的；還原後的待審申請檢查在 #47）
+  'project_creation_requests', // 建立專案申請：所有狀態原樣帶（舊備份沒有這張表＝還原後是空的；收尾時檢查待審的，見 core.js 的 restoreSteps）
   'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages', // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
   'audit_log']; // 稽核紀錄：還原時不清掉這個站原本的，備份裡的合併進來（同一筆 id 不重複），結束匯入時再加一筆 backup.restore
@@ -36,6 +38,9 @@ const skipSetting = k => k.startsWith('olink:') || k.startsWith('must_change_cre
 // 每頁幾列：一般 500；大欄位的表少一點（技能一列最多 1 MB、file_chunks 一列 512 KB、頭像是圖片）
 const PAGES = { file_chunks: 1, skills: 4, avatar_proposals: 5, avatars: 20, kb_pages: 50 }; // 知識頁一頁最多 2 萬字
 const pageOf = t => PAGES[t] || 500;
+// 匯入前逐列檢查的表（跟資料表的 CHECK、NOT NULL 一致）：不合法的列整批不寫，回明確的格式錯誤（不修改資料、不繞過資料庫約束）。
+// 檢查回問題說明（合法回 null）。這些表寫入時撞到資料庫約束（例：同一申請人兩份同名的待審申請）也回同一個格式錯誤
+const ROW_CHECKS = { [PCR_TABLE]: restoreRowProblem };
 
 const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
 const unb64 = s => { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
@@ -178,15 +183,26 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
         if (admin && have.has('workspace_role')) row.workspace_role = 'admin';
         stmts.push(['INSERT OR IGNORE INTO legacy_members (participant_id, is_admin, projects) VALUES (?, ?, ?)', [r.id, admin ? 1 : 0, r.projects === undefined ? '' : r.projects]]);
       }
+      const problem = ROW_CHECKS[t]?.(row);
+      if (problem) throw rowInvalid(t, row, problem);
       const cols = Object.keys(row);
       if (!cols.length) continue;
       inserted++;
       // 稽核紀錄跟這個站原本的合併：流水號重新編（不跟原本的撞），已經有的 id 略過（中途重來不重複）
       stmts.push([`INSERT${t === 'audit_log' ? ' OR IGNORE' : ''} INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})${t === 'app_settings' ? ' ON CONFLICT(key) DO UPDATE SET value = excluded.value' : ''}`, cols.map(c => row[c])]);
     }
-    for (let i = 0; i < stmts.length; i += 100) await db.batch(stmts.slice(i, i + 100));
+    for (let i = 0; i < stmts.length; i += 100) {
+      try { await db.batch(stmts.slice(i, i + 100)); } catch (e) {
+        if (ROW_CHECKS[t] && isConstraintViolation(e)) throw rowInvalid(t, null, '違反資料表的約束（重複或欄位不合法）');
+        throw e;
+      }
+    }
     return { table: t, inserted };
   });
+  function rowInvalid(t, row, problem) {
+    const which = row && typeof row.id === 'string' ? `（id ${row.id.slice(0, 80)}）` : '';
+    return new ApiError(400, 'BACKUP_ROW_INVALID', `備份檔的 ${t} 有不合法的資料列${which}：${problem}。這一批沒有寫入；請確認備份檔沒有被改壞。`, { table: t });
+  }
   // 專案文件本體：資料表的 docs 列先匯入，才收它的檔案
   route('POST', '/api/admin/restore/doc', async ({ ctx, me, req, url }) => {
     await restorer(me);
@@ -203,15 +219,27 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   // 備份裡找不到平台管理員（沒有人類，或都停用了）：你照舊是你，名字改回來。
   // 收尾的固定順序（每一步都要能重跑；任何一步失敗都維持「還原中」、回 503 RESTORE_UNFINISHED，再按一次從第 1 步重跑）：
   //   1. 成員與帳號轉換：登入改掛、其他人要重設登入，跟「已轉移」的記號同一批（重跑時已轉移就略過）；Postgres 接續流水號
-  //   2. 收尾修整步驟 restoreSteps（依序；這時還在還原中，其他會動到共同不變量的寫入都被擋下）
-  //   3. 寫入 backup.restore 稽核，跟解除「還原中」同一批（稽核只會有一筆）
+  //   2. 收尾修整步驟 restoreSteps（依序；這時還在還原中，其他會動到共同不變量的寫入都被擋下）。
+  //      每一步拿到 { state, keepStmts }：state 是目前的 restore_state（前一次收尾記下的結果也在）；keepStmts(patch) 回把 patch 記進 restore_state 的語句，
+  //      放進那一步自己的那一批（跟那一步的修改一起提交或一起不做）。重試時不能從現況重算的結果（例：這次還原取消了幾份申請）就這樣跨次保留
+  //   3. 寫入 backup.restore 稽核（含檢查待審申請時因還原而取消的數量），跟解除「還原中」同一批（稽核只會有一筆）
   //   4. 清快取
   route('POST', '/api/admin/restore/finish', async ({ me }) => {
     let state = await restorer(me, { finishing: true });
     try {
       if (!state.you) state = await transferLogin(me, state);
       await db.syncIds?.(); // Postgres：匯入時明寫了流水號，自動編號要接到最大號後面（SQLite／D1 會自己接，沒有這個方法）
-      for (const step of restoreSteps) if ((await step.run()) === false) throw new Error(`還原收尾的「${step.name}」沒有做完`);
+      for (const step of restoreSteps) {
+        const cur = await readState();
+        if (!cur) throw notRestoring();
+        // 斷言 restore_state 沒被別的收尾改過，再寫入新的值（同時按兩次收尾：後提交的那批整批不做）
+        const keepStmts = patch => [ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, cur.raw]),
+          ['UPDATE app_settings SET value = ? WHERE key = ?', [JSON.stringify({ ...cur.st, ...patch }), RESTORE_STATE_KEY]]];
+        if ((await step.run({ state: cur.st, keepStmts })) === false) throw new Error(`還原收尾的「${step.name}」沒有做完`);
+      }
+      state = (await readState())?.st || state;
+      // 檢查待審申請時因還原而取消的數量：記在 restore_state（第一次收尾已取消、之後重試的不會被數成零）
+      const cancelled = Number(state.cancelledProjectCreationRequests) || 0;
       const counts = new Map((await db.all("SELECT kind, COUNT(*) AS n FROM participants WHERE kind IN ('human', 'ai') GROUP BY kind")).map(r => [r.kind, Number(r.n)]));
       const humans = counts.get('human') || 0, ais = counts.get('ai') || 0;
       // 稽核紀錄在還原完才寫（備份裡的紀錄已經合併進來）；操作者是按還原的平台管理員（開始匯入時記下的身分與名字），不是登入改掛過去的那位。
@@ -219,11 +247,12 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       try {
         await db.batch([lockWorkspaceStmt(DEFAULT_WORKSPACE),
           ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ?)', [RESTORE_STATE_KEY]),
-          auditLog.stmt({ actor: { id: state.by, name: state.name, kind: 'human' }, action: AUDIT_ACTION.BACKUP_RESTORE, scope: AUDIT_SCOPE.PLATFORM, detail: { appVersion: state.appVersion, humans, ais } }),
+          auditLog.stmt({ actor: { id: state.by, name: state.name, kind: 'human' }, action: AUDIT_ACTION.BACKUP_RESTORE, scope: AUDIT_SCOPE.PLATFORM, count: cancelled,
+            detail: { appVersion: state.appVersion, humans, ais, counted: 'cancelledProjectCreationRequests' } }),
           ['DELETE FROM app_settings WHERE key = ?', [RESTORE_STATE_KEY]]].filter(Boolean));
       } catch (e) { if (isAssertionFailure(e)) throw notRestoring(); throw e; }
       await clearCaches?.().catch(e => console.error('還原完成，清快取失敗（快取過期後自然重讀）', e));
-      return { ok: true, admin: state.admin, humans, ais };
+      return { ok: true, admin: state.admin, humans, ais, cancelledProjectCreationRequests: cancelled };
     } catch (e) {
       if (e instanceof ApiError) throw e;
       console.error('還原收尾失敗（維持還原中，可以再按一次收尾）', e);

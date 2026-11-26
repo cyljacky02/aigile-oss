@@ -24,7 +24,8 @@ import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, writeOrdered } from './write-order.js'; // 工作區寫入排序與交易內斷言（ADR 0005）
 import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS } from './project-identity.js'; // 專案網址英文名與代號（#42）
 import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯（#43）
-import { registerProjectCreationRequests, cancelStmts as pcrCancelStmts, cancelNoticeStmts as pcrCancelNoticeStmts, pendingCountSql as pcrPendingCountSql, requestsTableReady as pcrTableReady, PCR_TABLE, PCR_CANCEL_CODE } from './project-creation-requests.js'; // 建立專案申請（#44、#46）
+import { registerProjectCreationRequests, cancelStmts as pcrCancelStmts, cancelNoticeStmts as pcrCancelNoticeStmts, pendingCountSql as pcrPendingCountSql, requestsTableReady as pcrTableReady, PCR_TABLE, PCR_CANCEL_CODE,
+  restoreStaleCountSql as pcrRestoreStaleCountSql, restoreCheckStmts as pcrRestoreCheckStmts } from './project-creation-requests.js'; // 建立專案申請（#44、#46）
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -4612,6 +4613,18 @@ ${ending}`;
       { name: '稽核紀錄轉換', run: () => auditLog.migrateLegacy({ finishingRestore: true }) }, // 舊的專案刪除紀錄轉進稽核紀錄
       // 專案網址英文名與代號存進資料庫：不看「已正規化」的標記，一定照備份的資料重算（舊備份沒有存的值照舊規則推導，畫面上的值不變）
       { name: '專案識別碼正規化', run: () => projectIdentity.normalize({ finishingRestore: true }) },
+      // 待審的建立專案申請（#47）：成員轉換之後才看得到正確的成員資格與政策。不再成立的依固定順序取消，有效的保留；不通知、不核准、不建立專案。
+      // 取消數跟取消同一批記進 restore_state（累加）：稽核寫入失敗重試時，第一次已取消的不會被數成零
+      { name: '檢查待審的建立專案申請', run: async ({ state, keepStmts }) => {
+        if (!(await pcrTableReady(db))) return true; // 申請資料表還沒建立（程式先部署）：沒有待審申請
+        const [sql, args] = pcrRestoreStaleCountSql();
+        const expected = Number((await db.get(sql, ...args))?.n) || 0;
+        if (!expected) return true;
+        // 第一句鎖工作區這列（ADR 0005）；交易內斷言要取消的數字沒變、restore_state 沒被別的收尾改過；不成立整批不做（丟錯，維持還原中）
+        await db.batch([lockWorkspaceStmt(DEFAULT_WORKSPACE), ...pcrRestoreCheckStmts({ at: nowIso(), expected }),
+          ...keepStmts({ cancelledProjectCreationRequests: (Number(state.cancelledProjectCreationRequests) || 0) + expected })]);
+        return true;
+      } },
     ] });
   registerUpdateCheck({ route, db, access, requireHuman, config });
   registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership,

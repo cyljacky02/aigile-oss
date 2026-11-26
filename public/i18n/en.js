@@ -2023,6 +2023,7 @@ window.AIGILE_EN = {
     "備份完成：{0} 位成員、{1} 則訊息、{2} 張卡{3}。": "Backup complete: {0} members, {1} messages, {2} cards{3}.",
     "備份是 {0} 版，比這個站（{1}）新；請先把這個站升級到 {2} 以上再匯入": "The backup is version {0}, newer than this site ({1}). Upgrade this site to {2} or later before importing",
     "備份是 {0} 版，跟這個站（{1}）的主版本不同，不能直接匯入": "The backup is version {0}, a different major version from this site ({1}); it can't be imported directly",
+    "備份檔的 {0} 有不合法的資料列{1}：{2}。這一批沒有寫入；請確認備份檔沒有被改壞。": "The backup file has an invalid row in {0}{1}: {2}. This batch was not written; check that the backup file has not been corrupted.",
     "備註": "Note",
     "最上層": "Top level",
     "最上層要有 SKILL.md": "SKILL.md is required at the top level",

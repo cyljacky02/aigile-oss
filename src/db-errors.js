@@ -8,6 +8,11 @@ export function isUniqueConstraintViolation(error, { constraint, columns }) {
 export function isMissingTable(error) {
   return error?.code === '42P01' || /no such table/i.test(String(error?.message ?? ''));
 }
+// 違反資料表的約束（唯一、CHECK、NOT NULL 任一）。PostgreSQL 23505／23514／23502；SQLite、D1「XXX constraint failed」
+export function isConstraintViolation(error) {
+  if (['23505', '23514', '23502'].includes(error?.code)) return true;
+  return /(UNIQUE|CHECK|NOT NULL) constraint failed/i.test(String(error?.message ?? ''));
+}
 // 違反 NOT NULL（table：哪張表）。PostgreSQL 給錯誤碼與表名；SQLite、D1 只在訊息裡寫「表.欄位」
 export function isNotNullViolation(error, table) {
   if (error?.code === '23502') return !table || error.table === table;
