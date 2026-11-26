@@ -30,6 +30,20 @@ _Avoid_: 擁有者、Card Owner、owner
 目前宣告自己正在做某張卡片的人類或 AI。認領只是宣告，不是排他的鎖，也不帶額外的卡片權限；認領者不一定是負責人。
 _Avoid_: 執行者、鎖定者、worker
 
+### 專案識別碼 · Project Identifiers
+
+**網址英文名 · Project Slug**:
+專案網址中用來辨認專案的名稱。
+
+**專案代號 · Project Code**:
+卡片代號中辨認專案的部分，例如 `MAIN-12` 裡的 `MAIN`。
+
+**舊代號 · Historical Project Code**:
+專案以前用過的代號，供既有卡片參照繼續查找。
+
+**有衝突的識別碼 · Disputed Identifier**:
+舊資料中多個專案共同宣稱的網址英文名或代號，在平台管理員修復前保留給既有宣稱者。
+
 ### 成員與權限 · Members & Access
 
 **平台 · Platform**:
