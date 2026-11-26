@@ -3,8 +3,6 @@
 // 標記：建了什麼記在 app_settings 的 demo_data；訊息與卡片的 request_id 一律以 demo: 開頭
 // 清除只刪這些（含它們的通知、收件人、卡片紀錄）；示範專案裡如果有你們自己發的訊息或建的卡，專案保留、只刪示範的部分
 // 內容是虛構的通用情境（活動報名網站），不含任何真實人名；示範成員不能登入（沒有密碼、登入碼已過期）
-import { DEFAULT_WORKSPACE } from './membership.js';
-
 export const DEMO_KEY = 'demo_data';
 const TAG = 'demo:';
 // 示範內容的文字：網頁是英文介面時（lang=en）用英文。協定標籤（[接單]、[需確認]、選項：、建議：）、卡片狀態與類型是 AI／程式在解析的值，兩種語言都照原文
@@ -58,7 +56,7 @@ const TEXT = {
 };
 
 // identity：示範專案的名稱與識別碼（core.js 提供，#42）。pick() 挑沒被用的網址英文名與代號（demo／DEMO 優先）；
-// stmts(專案, { name, slug, code }) 是交易內斷言與寫入；write(語句) 鎖工作區列後送出，斷言不成立回 false（重算重試）
+// stmts(專案, { name, slug, code, at, actor, eventText }) 是共用建立專案邏輯的交易內斷言與寫入（專案、異動紀錄、識別碼、project.create 稽核）；write(語句) 鎖工作區列後送出，斷言不成立回 false（重算重試）
 export function registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership, identity, afterChange }) {
   const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '載入或清除示範資料' }); };
   const loadMark = async () => { try { return JSON.parse((await db.get('SELECT value FROM app_settings WHERE key = ?', DEMO_KEY))?.value || 'null'); } catch { return null; } };
@@ -96,13 +94,10 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
     const people = [po, dev, ux];
     // 加入時間一定要是現在：管理員＝最早加入的人類，示範成員比你早就會變成管理員
     const joinedAt = new Date(now + 1000).toISOString();
-    const stmts = [
-      ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at) VALUES (?,?,0,?,?,?)', [pj, pname, DEFAULT_WORKSPACE, me.id, iso(6 * H)]],
-      ['INSERT INTO project_events (project_id, at, actor_id, text) VALUES (?,?,?,?)', [pj, iso(6 * H), me.id, T.loaded(me.name)]],
-    ];
-    // 網址英文名與代號一定存：demo／DEMO 被用了就挑別的；寫入那批在交易內確認名稱、網址英文名、代號都沒被用掉
+    // 示範專案走共用的建立專案邏輯（執行者＝你、寫 project.create）。網址英文名與代號一定存：demo／DEMO 被用了就挑別的；
+    // 寫入那批在交易內確認名稱、網址英文名、代號都沒被用掉
     const { slug, code } = await identity.pick();
-    stmts.push(...identity.stmts(pj, { name: pname, slug, code }));
+    const stmts = [...identity.stmts(pj, { name: pname, slug, code, at: iso(6 * H), actor: me, eventText: T.loaded(me.name) })];
     for (const p of people) {
       stmts.push([`INSERT INTO participants (id, kind, name, role, role_key, code, owner_id, duties, token, token_expires_at, status, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?)`, [p.id, p.kind, p.name, p.role, p.role_key, p.code, p.owner_id, p.duties, 'demo_' + newToken(), joinedAt, joinedAt]], // token_expires_at=1：AI 顯示「Token 已過期」；人類沒有密碼、沒有裝置，登入碼是沒人拿得到的亂數

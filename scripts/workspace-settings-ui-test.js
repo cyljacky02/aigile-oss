@@ -53,6 +53,28 @@ try {
   await js("(() => { const i = document.querySelector('#np-form input[name=\"name\"]'); i.value = '陳的專案'; i.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#np-form').requestSubmit(); return true; })()");
   const mine = await until(async () => (await kit.call(mate.token, '/api/projects')).body.items.find(p => p.name === '陳的專案'), 8000, '建好專案');
   assert.deepEqual((await kit.call(mate.token, '/api/projects')).body.leaders[mine.id], [mateId], '建立者是專案管理員');
+  assert.equal(mine.visibility, 'review', '沒動可見度：審核');
+
+  // 新增專案表單有可見度選項（預設審核）；選私人建好就是私人專案
+  await until(() => js("!document.querySelector('#np-form')"), 8000, '視窗關了');
+  await until(() => js("!!document.querySelector('.hub-join[data-hub-newproj]')"), 10000, '「＋ 新增專案」');
+  await click('.hub-join[data-hub-newproj]');
+  await until(() => js("!!document.querySelector('#np-form [name=\"visibility\"]')"), 8000, '新增專案視窗有可見度');
+  assert.deepEqual(await js("[...document.querySelectorAll('#np-form [name=\"visibility\"]')].map(i => i.value)"), ['open', 'review', 'private'], '三種可見度');
+  assert.equal(await js("document.querySelector('#np-form [name=\"visibility\"]:checked')?.value"), 'review', '預設審核');
+  await click('#np-form [name="visibility"][value="private"]');
+  await js("(() => { const i = document.querySelector('#np-form input[name=\"name\"]'); i.value = '陳的私人專案'; i.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#np-form').requestSubmit(); return true; })()");
+  const priv = await until(async () => (await kit.call(mate.token, '/api/projects')).body.items.find(p => p.name === '陳的私人專案'), 8000, '建好私人專案');
+  assert.equal(priv.visibility, 'private', '選私人：建好就是私人');
+  // 375：新增專案視窗（含可見度）不橫向捲動
+  await until(() => js("!document.querySelector('#np-form')"), 8000, '視窗關了');
+  await size(375, 812);
+  await login(mate.token, '/');
+  await until(() => js("document.querySelector('.hub-join[data-hub-newproj]')?.offsetParent != null"), 10000, '手機「＋ 新增專案」');
+  await click('.hub-join[data-hub-newproj]');
+  await until(() => js("!!document.querySelector('#np-form [name=\"visibility\"]')"), 8000, '手機新增專案視窗');
+  assert.ok(await js('document.documentElement.scrollWidth <= innerWidth + 1'), '375 新增專案視窗不橫向捲動');
+  await size(1280, 860);
 
   // 375：不橫向捲動
   await size(375, 812);
