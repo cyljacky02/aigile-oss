@@ -99,6 +99,10 @@ try {
   const att = await A.call(liu.token, `/api/files?name=note.txt&declared=true&project=${pj}`, 'POST', null, enc('附件內容'));
   assert.equal(att.status, 201, JSON.stringify(att.body));
   await A.db.run("INSERT INTO app_settings (key, value) VALUES ('olink:p_x', '{\"h\":\"secret\"}')");
+  // 建立專案申請（#44）：待審與已撤回各一份，原樣跟著備份走（還原後的待審檢查在 #47）
+  const pcrAt = new Date().toISOString(), Cn = chen.participant.participantId;
+  await A.db.run("INSERT INTO project_creation_requests (id, workspace_id, requester_id, request_id, name, reason, visibility, slug, code, statuses_json, state, created_at) VALUES ('pcr_bk1','default',?,'r1','行動版','要做 app','private','mobile','MOB',NULL,'pending',?)", Cn, pcrAt);
+  await A.db.run("INSERT INTO project_creation_requests (id, workspace_id, requester_id, request_id, name, reason, visibility, state, created_at, ended_at, ended_by) VALUES ('pcr_bk2','default',?,'r2','舊申請','x','review','withdrawn',?,?,?)", Cn, pcrAt, pcrAt, Cn);
 
   // 只有管理員能匯出
   assert.equal((await A.call(chen.token, '/api/admin/backup')).status, 403, '非管理員不能匯出');
@@ -151,9 +155,13 @@ try {
   assert.equal(fin.body.admin.name, '王小明', '管理員是備份裡的');
 
   // 5. 資料一樣
-  for (const t of ['participants', 'messages', 'cards', 'card_log', 'skills', 'docs', 'files', 'projects', 'kb_chunks', 'kb_pages']) {
+  for (const t of ['participants', 'messages', 'cards', 'card_log', 'skills', 'docs', 'files', 'projects', 'kb_chunks', 'kb_pages', 'project_creation_requests']) {
     assert.equal((await B.db.get(`SELECT COUNT(*) AS n FROM ${t}`)).n, backup.tables[t].length, t + ' 列數一樣');
   }
+  const pcrB = await B.db.all('SELECT id, state, requester_id, name, slug, code, visibility, ended_by FROM project_creation_requests ORDER BY id');
+  assert.deepEqual(pcrB.map(r => ({ ...r })), [
+    { id: 'pcr_bk1', state: 'pending', requester_id: chen.participant.participantId, name: '行動版', slug: 'mobile', code: 'MOB', visibility: 'private', ended_by: null },
+    { id: 'pcr_bk2', state: 'withdrawn', requester_id: chen.participant.participantId, name: '舊申請', slug: null, code: null, visibility: 'review', ended_by: chen.participant.participantId }], '建立專案申請原樣還原');
   const meB = (await B.call(dev, '/api/me')).body;
   assert.equal(meB.participantId, liu.participant.participantId, '你的裝置登入改掛到備份裡的管理員');
   assert.deepEqual([meB.workspaceRole, meB.platformRole], ['admin', 'admin'], '還原的人是工作區管理員與平台管理員');

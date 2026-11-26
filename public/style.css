@@ -3091,6 +3091,16 @@ input[aria-invalid="true"] { border-color: var(--danger, #c62828); }
 .hub-join-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .hub-join-row .jl-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .hub-join-row .btn { min-height: 44px; }
+/* 我的建立專案申請（#44）：總覽的專案列表上方 */
+.pcr-mine { display: grid; gap: 8px; padding: 12px 14px; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.pcr-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pcr-head h3 { margin: 0; font-size: 15px; }
+.pcr-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.pcr-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
+.pcr-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pcr-why { margin-top: 2px; }
+.pcr-acts { display: flex; align-items: center; gap: 8px; }
+.pcr-acts .btn, .pcr-mine .pcr-head .btn { min-height: 36px; }
 /* 中英切換：英文字典載好前先不顯示畫面（避免閃中文）；登入頁的語言切換 */
 .i18n-wait body { visibility: hidden; }
 .lang-switch { display: flex; justify-content: center; gap: 4px; margin: 10px 0 0; font-size: 13px; color: var(--muted); }

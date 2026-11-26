@@ -401,6 +401,42 @@ CREATE TABLE IF NOT EXISTS join_requests (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_join_pending ON join_requests (project, participant_id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_join_status ON join_requests (status, project);
 CREATE INDEX IF NOT EXISTS idx_join_person ON join_requests (participant_id, created_at);
+-- 建立專案申請（docs/adr/0004；migrations/015）：一般成員在 approval 政策下送出，審核人核准後才建立專案。申請不是專案，內容送出後不可修改；
+-- 只有 pending 可以轉換，四種終止狀態不可逆（src/project-creation-requests.js 的 transitionStmts）。沒有外鍵：專案清除、成員移出都不連帶刪除申請歷史
+CREATE TABLE IF NOT EXISTS project_creation_requests (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  requester_id TEXT NOT NULL,              -- 申請人（工作區成員資格的 participant id）
+  request_id TEXT NOT NULL,                -- 前端產生的冪等鍵（1～128 字）
+  name TEXT NOT NULL,                      -- 專案名稱（已去頭尾空白）
+  reason TEXT NOT NULL,                    -- 申請原因（1～200 字）
+  visibility TEXT NOT NULL DEFAULT 'review', -- open | review | private
+  slug TEXT,                               -- 指定的網址英文名；NULL＝核准時自動產生
+  code TEXT,                               -- 指定的專案代號；NULL＝核准時自動產生
+  statuses_json TEXT,                      -- 指定的看板狀態（JSON 陣列）；NULL＝預設狀態組
+  state TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected | withdrawn | cancelled
+  created_at TEXT NOT NULL,
+  ended_at TEXT,                           -- 結束時間（pending 時 NULL）
+  ended_by TEXT,                           -- 審核人（approved、rejected）或申請人本人（withdrawn）；cancelled 是系統，NULL
+  reject_reason TEXT,                      -- 拒絕理由（只有 rejected）
+  cancel_code TEXT,                        -- 取消原因代碼（只有 cancelled）
+  project_id TEXT,                         -- 核准時建立的專案（只有 approved；專案之後被清除也保留）
+  CHECK (visibility IN ('open', 'review', 'private')),
+  CHECK (state IN ('pending', 'approved', 'rejected', 'withdrawn', 'cancelled')),
+  CHECK (
+    (state = 'pending' AND ended_at IS NULL AND ended_by IS NULL AND project_id IS NULL AND reject_reason IS NULL AND cancel_code IS NULL)
+    OR (state = 'approved' AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND project_id IS NOT NULL AND reject_reason IS NULL AND cancel_code IS NULL)
+    OR (state = 'rejected' AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND project_id IS NULL AND reject_reason IS NOT NULL AND length(trim(reject_reason)) > 0 AND cancel_code IS NULL)
+    OR (state = 'withdrawn' AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND ended_by = requester_id AND project_id IS NULL AND reject_reason IS NULL AND cancel_code IS NULL)
+    OR (state = 'cancelled' AND ended_at IS NOT NULL AND ended_by IS NULL AND project_id IS NULL AND reject_reason IS NULL AND cancel_code IS NOT NULL
+      AND cancel_code IN ('policy_changed', 'workspace_member_removed', 'workspace_member_left', 'account_disabled', 'restore_invalid'))
+  )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pcr_request ON project_creation_requests (workspace_id, requester_id, request_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pcr_pending_name ON project_creation_requests (workspace_id, requester_id, name) WHERE state = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pcr_project ON project_creation_requests (project_id) WHERE project_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_pcr_state ON project_creation_requests (workspace_id, state, created_at);
+CREATE INDEX IF NOT EXISTS idx_pcr_requester ON project_creation_requests (workspace_id, requester_id, created_at);
 -- 專案文件區：本體存 R2（本機用資料夾），這裡是目錄與中繼資料；資料夾最多兩層，刪除只標記
 CREATE TABLE IF NOT EXISTS doc_folders (
   id TEXT PRIMARY KEY,
@@ -476,7 +512,7 @@ CREATE INDEX IF NOT EXISTS idx_kb_pages ON kb_pages (project, status, deleted_at
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,                 -- 第一階段只有 default
   name TEXT NOT NULL DEFAULT '',       -- 工作區名稱（升級時取群組名稱）
-  create_projects TEXT NOT NULL DEFAULT 'members', -- 誰可以建立專案：members | admins
+  create_projects TEXT NOT NULL DEFAULT 'members', -- 誰可以建立專案：members | approval（成員申請，管理員核准）| admins
   delete_own_messages TEXT NOT NULL DEFAULT 'members', -- 誰可以刪除自己的訊息：members | admins（migrations/014）
   created_at TEXT NOT NULL DEFAULT ''
 );
