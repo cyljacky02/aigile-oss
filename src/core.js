@@ -25,7 +25,7 @@ import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, writeOrdered } from 
 import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS } from './project-identity.js'; // 專案網址英文名與代號（#42）
 import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯（#43）
 import { registerProjectCreationRequests, cancelStmts as pcrCancelStmts, cancelNoticeStmts as pcrCancelNoticeStmts, pendingCountSql as pcrPendingCountSql, requestsTableReady as pcrTableReady, PCR_TABLE, PCR_CANCEL_CODE,
-  restoreStaleCountSql as pcrRestoreStaleCountSql, restoreCheckStmts as pcrRestoreCheckStmts } from './project-creation-requests.js'; // 建立專案申請（#44、#46）
+  restoreStaleCountSql as pcrRestoreStaleCountSql, restoreCheckStmts as pcrRestoreCheckStmts, directCreateAllowedCond, activeMemberCond as pcrActiveMemberCond, reviewerCond as pcrReviewerCond } from './project-creation-requests.js'; // 建立專案申請（#44、#46）
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -2245,7 +2245,8 @@ ${ending}`;
       const evt = { actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'createProjects', from: createBefore, to: body.createProjects } };
       // 讀到 admins 也可能是不認得的值（當作 admins）：那就斷言「不是另外兩種」
       const was = createBefore === CREATE_PROJECTS.ADMINS ? ["NOT (COALESCE(create_projects, '') IN (?, ?))", [CREATE_PROJECTS.MEMBERS, CREATE_PROJECTS.APPROVAL]] : ['create_projects = ?', [createBefore]];
-      stmts.push(ensureStmt(`EXISTS (SELECT 1 FROM workspaces WHERE id = ? AND ${was[0]})`, [DEFAULT_WORKSPACE, ...was[1]]),
+      stmts.push(ensureCond(pcrReviewerCond(me.id, DEFAULT_WORKSPACE)), // 操作者現在仍有工作區管理權（工作區管理員或平台管理員）
+        ensureStmt(`EXISTS (SELECT 1 FROM workspaces WHERE id = ? AND ${was[0]})`, [DEFAULT_WORKSPACE, ...was[1]]),
         ...workspace.setCreateProjectsStmts(body.createProjects), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以建立專案：${CREATE_PROJECTS_LABEL[body.createProjects]}`, at),
         cancel ? cancel.audit(evt) : auditLog.stmt(evt), ...(cancel?.stmts || [])); // 稽核在取消之前：數的是交易內實際待審的
     }
@@ -2255,11 +2256,14 @@ ${ending}`;
       stmts.push(...workspace.setDeleteOwnStmts(body.deleteOwnMessages), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以刪除自己的訊息：${DELETE_OWN_LABEL[body.deleteOwnMessages]}`, at),
         auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'deleteOwnMessages', from: delBefore, to: body.deleteOwnMessages } }));
     }
-    // 第一句工作區列鎖：建立專案政策跟建立專案、建立專案申請的送出與核准排隊（ADR 0005）；沒有要寫的就不送
-    if (stmts.length && !(await writeInWorkspace(stmts))) {
+    // 建立專案政策有改變：第一句工作區列鎖，跟建立專案、建立專案申請的送出與核准排隊（ADR 0005）；同一批的其他設定跟著一起提交。
+    // 其他設定（開放註冊、房間碼、刪除訊息政策）不屬於共享不變量：不加鎖、還原中也照存。沒有要寫的就不送
+    if (changeCreate && !(await writeInWorkspace(stmts))) {
       workspace.invalidate();
+      if (!(await holdsNow(db, pcrReviewerCond(me.id, DEFAULT_WORKSPACE)))) throw new ApiError(403, 'NOT_ADMIN', '你已經沒有工作區管理權，這次沒有存。');
       throw new ApiError(409, 'CONFLICT', '剛好有人同時在改工作區政策，這次沒有存；請重新讀取後再試。');
     }
+    if (!changeCreate && stmts.length) await writeStmts(stmts);
     workspace.invalidate();
     if (name !== null) await saveGroupName(me, name);
     const out = await groupSettings();
@@ -2449,11 +2453,23 @@ ${ending}`;
     if (code !== null && !CODE_RE.test(code)) throw invalid('專案代號需為 2～5 個英文字母');
     return { name, visibility, slug, code, statuses };
   }
+  // 直接建立的交易內斷言沒過：用新鮮資料判斷是不是執行者已經不能直接建立（只用來產生回應）。還能建立回 null（再看名稱與識別碼）
+  async function directCreateDenied(me, allowed) {
+    if (await holdsNow(db, allowed)) return null;
+    workspace.invalidate();
+    const ws = await db.get('SELECT create_projects FROM workspaces WHERE id = ?', DEFAULT_WORKSPACE);
+    if (ws?.create_projects === CREATE_PROJECTS.APPROVAL && await holdsNow(db, pcrActiveMemberCond(me.id, DEFAULT_WORKSPACE)))
+      return new ApiError(403, 'PROJECT_CREATION_REQUIRES_APPROVAL', '工作區政策是「成員申請，管理員核准」：請改送建立專案申請，由工作區管理員核准後建立。這次沒有建立專案，也沒有送出申請。');
+    return new ApiError(403, 'NOT_ADMIN', '你目前不能直接建立專案（工作區政策或你的管理權剛改變），這次沒有建立。');
+  }
   route('POST', '/api/projects', async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'create_project', 'workspace');
     const body = await readJson(req);
     const { name, visibility, slug, code, statuses } = await readCreationSpec(body);
-    const { id } = await creation.create({ actor: me, beneficiary: me, method: CREATION_METHOD.DIRECT, spec: { name, visibility, slug, code, statuses } });
+    // 上面的權限檢查讀的是交易前的資料：寫入那一批再斷言一次執行者現在仍能直接建立（政策或管理權可能剛好被改）
+    const allowed = directCreateAllowedCond(me.id, DEFAULT_WORKSPACE);
+    const { id } = await creation.create({ actor: me, beneficiary: me, method: CREATION_METHOD.DIRECT, spec: { name, visibility, slug, code, statuses },
+      guards: [ensureCond(allowed)], explain: () => directCreateDenied(me, allowed) });
     return { __status: 201, ...(await projectsSeenBy(ctx, me)), id };
   });
   // 建立專案申請（#44；src/project-creation-requests.js）：送出、查看自己的、撤回。核准與拒絕（#45）、取消（#46、#47）接它回傳的介面
@@ -2600,7 +2616,9 @@ ${ending}`;
       if (clash) throw slugTaken(slug, used, discovers(me, clash.id) ? clash.name : null); // 占用者是看不到的私人專案：不說是哪個
       const at = nowIso();
       // 代號還沒存（正規化之後才直接寫進資料庫的專案）：先把現在顯示的代號存下來，改網址英文名不會連帶改代號
-      const pinCode = (await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', 'pcode:' + row.id)) || !projCodes[row.id] ? [] : [["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", ['pcode:' + row.id, projCodes[row.id]]]];
+      // 存下的代號不能跟別的專案的代號或舊代號重複（ADR 0004：新寫入不得新增衝突）：在同一批斷言
+      const pinned = (await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', 'pcode:' + row.id)) || !projCodes[row.id] ? null : codeFreeCond(projCodes[row.id], row.id);
+      const pinCode = pinned ? [ensureCond(pinned), ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", ['pcode:' + row.id, projCodes[row.id]]]] : [];
       // 第一句工作區列鎖；專案還在、新的網址英文名沒被別的專案用掉，才改
       const slugOk = slugFreeCond(slug, row.id);
       const done = await writeIdentity([
@@ -2609,6 +2627,7 @@ ${ending}`;
       invalidateProjects();
       if (done) return projectsSeenBy(ctx, me);
       const why = await identityWriteFailed(row.id);
+      if (why.status !== 404 && pinned && !(await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', 'pcode:' + row.id)) && !(await holdsNow(db, pinned))) throw identityConflict();
       if (why.status === 404 || (await holdsNow(db, slugOk)) || attempt >= IDENTITY_TRIES) throw why;
       if (raw) { await loadProjects(true); throw slugTaken(slug, await usedSlugs(row.id)); } // 指定的值剛好被用掉：409；自動產生的：重算重試
     }
@@ -2977,8 +2996,19 @@ ${ending}`;
     if (projectRows.filter(r => !r.archived).length <= 1) throw new ApiError(409, 'LAST_PROJECT', '至少要保留一個專案');
     const open = (await db.get("SELECT COUNT(*) AS n FROM cards WHERE project = ? AND status IN ('待整理','待處理','進行中','待確認','受阻')", row.id)).n;
     if (open) throw new ApiError(409, 'HAS_OPEN_CARDS', `這個專案還有 ${open} 張未結案的卡片，請先結案或把卡片移到別的專案。`);
-    await writeIdentity([['UPDATE projects SET archived = 1 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 封存專案`, nowIso())]); // 第一句工作區列鎖：跟取消封存、建立、改名排隊
+    // 第一句工作區列鎖：跟取消封存、建立、改名、刪除排隊。交易內確認專案還在、還沒封存，而且封存後至少還有一個別的未封存專案
+    const done = await writeIdentity([
+      ensureStmt('EXISTS (SELECT 1 FROM projects WHERE id = ? AND archived = 0 AND deleted_at IS NULL)', [row.id]),
+      ensureStmt('EXISTS (SELECT 1 FROM projects WHERE id != ? AND archived = 0 AND deleted_at IS NULL)', [row.id]),
+      ['UPDATE projects SET archived = 1 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 封存專案`, nowIso())]);
     invalidateProjects();
+    if (!done) { // 別人剛封存了：結果一樣；剛被刪除或清除：404；剩下它是唯一未封存的：LAST_PROJECT
+      const cur = await db.get('SELECT archived, deleted_at FROM projects WHERE id = ?', row.id);
+      if (!cur || cur.deleted_at) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+      if (Number(cur.archived)) return projectsSeenBy(ctx, me);
+      if (!(await db.get('SELECT 1 AS x FROM projects WHERE id != ? AND archived = 0 AND deleted_at IS NULL', row.id))) throw new ApiError(409, 'LAST_PROJECT', '至少要保留一個專案');
+      throw new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
+    }
     return projectsSeenBy(ctx, me);
   });
   route('POST', '/api/projects/:id/unarchive', async ({ ctx, me, params }) => {
@@ -3049,8 +3079,10 @@ ${ending}`;
     const id = row.id, pj = { id, name: row.name }, code = projCodes[id] || null, counts = await projectFootprint(id);
     const now = Date.now(), at = nowIso(), { days, purgeAt } = await purgeAtFor(now);
     const paused = onlyHere.filter(p => p.status === 'active' || p.status === 'disabled'); // 已停用的也暫停（不然可復原期內所屬人類能自己啟用），復原時回到停用
-    // 刪除、暫停 AI、專案事件、稽核紀錄、管理員通知同一批；別人剛好先刪了就整批不寫
-    const done = await writeTogether([
+    // 第一句工作區列鎖（跟取消封存、復原排隊），在交易內確認專案還是封存、還沒被刪除（交易前讀到的封存狀態不算數）；
+    // 刪除、暫停 AI、專案事件、稽核紀錄、管理員通知同一批；別人剛好先刪了或取消封存了就整批不寫
+    const done = await writeInWorkspace([
+      ensureStmt('EXISTS (SELECT 1 FROM projects WHERE id = ? AND archived = 1 AND deleted_at IS NULL)', [id]),
       ['UPDATE projects SET deleted_at = ?, deleted_by = ?, purge_at = ?, paused_ais = ? WHERE id = ? AND deleted_at IS NULL', [at, me.id, purgeAt, pausedJson(paused), id]],
       ensureStmt('EXISTS (SELECT 1 FROM projects WHERE id = ? AND deleted_at = ? AND deleted_by = ?)', [id, at, me.id]),
       paused.length ? ["UPDATE participants SET status = 'paused', updated_at = ? WHERE id IN (SELECT value FROM json_each(?)) AND status IN ('active', 'disabled')", [at, JSON.stringify(paused.map(p => p.id))]] : null,
@@ -3059,7 +3091,12 @@ ${ending}`;
         detail: { code, counts, recoveryDays: days, purgeAt: iso(purgeAt), aisPaused: paused.map(p => p.name) } }),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_DELETE, detail: { a: me.name, p: row.name } }),
     ]);
-    if (!done) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    if (!done) {
+      invalidateProjects();
+      const cur = await db.get('SELECT archived, deleted_at FROM projects WHERE id = ?', id);
+      if (cur && !cur.deleted_at && !Number(cur.archived)) throw new ApiError(409, 'NOT_ARCHIVED', '要先封存才能刪除');
+      throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    }
     invalidateProjects();
     invalidatePeople();
     await messagesChanged(); // 這個專案的訊息不見了：別份程式、開著的頁面跟著重讀
@@ -3107,9 +3144,11 @@ ${ending}`;
     // 期限一過，排程就可能已經挑中它：這裡跟排程的「清除前確認到期」互斥，只有一邊會成功
     const inWindow = 'id = ? AND deleted_at IS NOT NULL AND purge_at > ?';
     const own = ownIdentityFreeCond(row.id); // 代號與網址英文名沒跟別的專案重複（既有的衝突不因復原變成使用中）
+    // 復原後是封存的就不佔名稱；未封存的（舊的競態留下的）要用現況確認名稱沒被別的未封存專案用掉
+    const nameOk = { cond: 'EXISTS (SELECT 1 FROM projects p WHERE p.id = ? AND (p.archived = 1 OR NOT EXISTS (SELECT 1 FROM projects o WHERE o.name = p.name AND o.id != p.id AND o.archived = 0 AND o.deleted_at IS NULL)))', args: [row.id] };
     const done = await writeIdentity([
       ['UPDATE projects SET name = name WHERE id = ?', [row.id]],
-      ensureStmt(`EXISTS (SELECT 1 FROM projects WHERE ${inWindow})`, [row.id, now]), ensureCond(own),
+      ensureStmt(`EXISTS (SELECT 1 FROM projects WHERE ${inWindow})`, [row.id, now]), ensureCond(own), ensureCond(nameOk),
       [`UPDATE projects SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, paused_ais = NULL WHERE ${inWindow}`, [row.id, now]],
       ...resumeStmts(paused, at), // 原本啟用的恢復啟用、原本停用的回到停用
       projEvent(row.id, me.id, `${me.name} 復原專案（回到封存狀態）`, at),
@@ -3117,9 +3156,10 @@ ${ending}`;
         detail: { code: projCodes[row.id] || null, counts, aisResumed: resumed } }),
       ...await adminNotify.stmts({ ctx, scope: NOTIFY_SCOPE.WORKSPACE, except: me.id, kind: ADMIN_NOTICE.PROJECT_RESTORE, detail: { a: me.name, p: row.name } }),
     ]);
-    if (!done) { // 別人剛復原或剛清除：404；剛好過了期限：RECOVERY_EXPIRED；識別碼跟別的專案重複：IDENTITY_CONFLICT
+    if (!done) { // 別人剛復原或剛清除：404；剛好過了期限：RECOVERY_EXPIRED；識別碼跟別的專案重複：IDENTITY_CONFLICT；名稱被用掉：NAME_TAKEN
       const cur = await db.get('SELECT deleted_at, purge_at FROM projects WHERE id = ?', row.id);
       if (cur?.deleted_at && Number(cur.purge_at) > Date.now() && !(await holdsNow(db, own))) throw identityConflict();
+      if (cur?.deleted_at && Number(cur.purge_at) > Date.now() && !(await holdsNow(db, nameOk))) throw nameTaken();
       if (cur?.deleted_at) throw expired();
       throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
     }
@@ -3211,8 +3251,10 @@ ${ending}`;
       settings.push(['UPDATE invites SET projects = ? WHERE id = ?', [String(inv.projects).split(',').filter(x => x && x !== id).join(','), inv.id]]);
     settings.push(['DELETE FROM projects WHERE id = ?', [id]]);
     const pj = { id, name: row.name }, aisDeleted = onlyHere.map(p => p.name);
-    await writeStmts([...settings, auditLog.stmt({ actor: null, action: AUDIT_ACTION.PROJECT_PURGE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
-      detail: { code, counts, aisDeleted } })]);
+    // 放掉代號與網址英文名的這批：第一句工作區列鎖（跟建立、改識別碼、復原排隊），交易內確認專案還是這次認領時的已刪除狀態
+    settings.unshift(lockWorkspaceStmt(DEFAULT_WORKSPACE), ensureStmt('EXISTS (SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NOT NULL AND purge_at = ?)', [id, Number(row.purge_at) - 1]));
+    if (!(await writeTogether([...settings, auditLog.stmt({ actor: null, action: AUDIT_ACTION.PROJECT_PURGE, scope: AUDIT_SCOPE.PROJECT, workspaceId: row.workspace_id || undefined, project: pj, target: { kind: 'project', ...pj }, at,
+      detail: { code, counts, aisDeleted } })]))) return null;
     titlesAt = 0;
     invalidatePeople(); invalidateProjects();
     await messagesChanged();
@@ -4628,7 +4670,7 @@ ${ending}`;
     identity: { // 示範專案：走共用的建立專案邏輯（執行者＝操作的人、沒有受益人；工作區管理員靠隱含權限看得到），跟直接建立一樣在交易內斷言沒被用掉（識別碼還沒正規化完回 503）
       pick: async () => { await loadProjects(true); const slug = slugFree('demo', await usedSlugs(null)); return { slug, code: autoCode(slug, usedCodes(null), allProjectRows.length) }; },
       stmts: (id, { name, slug, code, at, actor, eventText }) => creation.stmts({ id, at, actor, beneficiary: null, method: CREATION_METHOD.DEMO, eventText, spec: { name, visibility: 'review', slug, code } }),
-      write: writeIdentity },
+      write: writeIdentity, release: writeInWorkspace },
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });
   const cardsApi = registerCards({ route: cardRoute, statuses, searchQuota, cardKey, cardSeqByKey, createMessage, readCardReturn, storeCardReturnFile, checkFiles, filesText: (note, files) => filesText(note, files).slice(0, MAX_TEXT), isolatedFrom, hiddenArchived, canSeeMessage, discovers, visibleProjects, archiveEveryMs: config.archiveEveryMs !== undefined && config.archiveEveryMs !== '' ? Number(config.archiveEveryMs) : 10 * 60_000, projectName: id => nameOf(id), PROJECTS, projectsOf, projectFilter, db, ApiError, invalid, readJson, peopleMap, randId, nowIso, parseLimit, invalidatePeople: invalidateTeam, cardStaleHours: config.cardStaleHours });
   registerStatusRoutes({ route, db, statuses, ApiError, invalid, readJson, nowIso, access, cardKey, projEvent, moveCardStmts: cardsApi.moveCardStmts, invalidatePeople,

@@ -3794,6 +3794,8 @@ window.AIGILE_EN = {
     "state 只能是 pending、approved、rejected、withdrawn、cancelled": "state must be pending, approved, rejected, withdrawn or cancelled",
     "limit 需為 1～{0}": "limit must be 1–{0}",
     "cursor 不對（請用上一頁回傳的 nextCursor）": "Invalid cursor (use the nextCursor returned by the previous page)",
+    "你已經沒有工作區管理權，這次沒有存。": "You no longer have workspace admin rights. Nothing was saved.",
+    "你目前不能直接建立專案（工作區政策或你的管理權剛改變），這次沒有建立。": "You can't create projects directly right now (the workspace policy or your admin rights just changed). Nothing was created.",
     "工作區政策是「成員申請，管理員核准」：請改送建立專案申請，由工作區管理員核准後建立。這次沒有建立專案，也沒有送出申請。": "The workspace policy is \"Members request, admins approve\": submit a project creation request instead, and a workspace admin will create it on approval. No project was created and no request was submitted.",
     "你可以直接建立專案，不用送建立專案申請。": "You can create projects directly; no project creation request needed.",
     "只有工作區成員能申請建立專案。": "Only workspace members can request a new project.",

@@ -61,6 +61,11 @@ export const reviewerCond = (id, workspaceId = DEFAULT_WORKSPACE) => ({
     AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.status != 'active')
     AND ((p.workspace_role = 'admin' AND p.workspace_id = ? AND p.workspace_status = 'active')
       OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.platform_role = 'admin' AND a.status = 'active')))`, args: [id, workspaceId] });
+// 現在能直接建立專案（直接建立在交易內斷言）：審核人（工作區管理員或平台管理員），或政策是「所有成員」時的有效人類成員
+export const directCreateAllowedCond = (id, workspaceId = DEFAULT_WORKSPACE) => {
+  const admin = reviewerCond(id, workspaceId), policy = policyCond(workspaceId, CREATE_PROJECTS.MEMBERS), member = activeMemberCond(id, workspaceId);
+  return { cond: `(${admin.cond} OR (${policy.cond} AND ${member.cond}))`, args: [...admin.args, ...policy.args, ...member.args] };
+};
 // 申請仍待審核
 export const pendingCond = id => ({ cond: `EXISTS (SELECT 1 FROM ${PCR_TABLE} WHERE id = ? AND state = 'pending')`, args: [id] });
 const ensure = ({ cond, args }) => ensureStmt(cond, args);
