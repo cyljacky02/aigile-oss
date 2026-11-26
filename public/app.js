@@ -3811,6 +3811,12 @@
       <div class="sec-main"><span>${esc(text)}</span><span class="small">工作區管理員或平台管理員核准後才會建立專案。</span></div>
       <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
     }
+    if (n.kind === 'project_creation_request_cancelled') { // 政策從「成員申請」切走，申請人的待審申請被取消（#46）：細節是空的，哪幾份到「我的建立專案申請」看
+      const text = `你的建立專案申請已取消：工作區政策已改變，不再收建立專案申請 · ${when}。`;
+      return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🗂️</span>
+      <div class="sec-main"><span>${esc(text)}</span><span class="small">到總覽的「我的建立專案申請」查看；需要新專案請找工作區管理員。</span></div>
+      <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
+    }
     const [text, hint] = n.kind === 'password_login' ? [`有新裝置用你的帳號密碼登入：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它並改密碼。']
       : n.kind === 'rescue_login' ? [`有裝置用主機救援連結登入你的帳號：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並檢查誰有主機部署權限。']
       : n.kind === 'login_code_read' ? [`有裝置讀取了你的登入碼：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並換一組登入碼（舊的會失效）。']
@@ -9295,7 +9301,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (d.counts) out.push(L(`訊息 ${d.counts.messages ?? 0}、卡片 ${d.counts.cards ?? 0}、文件 ${d.counts.docs ?? 0}`, `${d.counts.messages ?? 0} messages, ${d.counts.cards ?? 0} cards, ${d.counts.docs ?? 0} docs`));
     if (d.code) out.push(L(`代號 ${d.code}`, `Code ${d.code}`));
     if (d.aisDeleted?.length) out.push(L(`一起刪除的 AI：${d.aisDeleted.join('、')}`, `AIs deleted with it: ${d.aisDeleted.join(', ')}`));
-    if (e.count != null) out.push(L(`數量 ${e.count}`, `Count ${e.count}`));
+    if (d.counted === 'cancelledProjectCreationRequests') { // 同一批取消了幾份待審的建立專案申請（#46）；沒取消就不寫
+      if (e.count) out.push(L(`取消 ${e.count} 份待審核的建立專案申請`, `Cancelled ${e.count} pending project request(s)`));
+    } else if (e.count != null) out.push(L(`數量 ${e.count}`, `Count ${e.count}`));
     if (d.legacy) out.push(L('（升級前的紀錄）', '(recorded before the upgrade)'));
     return out.join(L('；', '; '));
   }
@@ -9717,8 +9725,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <details class="audit pm-gs-log"${perm.gsLogOpen ? ' open' : ''}><summary>工作區異動紀錄</summary><ul class="pa-log">${log}</ul></details>
       </div>`;
   }
+  // done：存好後的提示；也可以是函式（拿儲存回應組提示，例：實際取消了幾份建立專案申請）
   async function saveGroupSettings(body, done) {
-    try { perm.gs = await api('/api/workspace/settings', { method: 'PUT', body }); toast(done); }
+    try { perm.gs = await api('/api/workspace/settings', { method: 'PUT', body }); toast(typeof done === 'function' ? done(perm.gs) : done); }
     catch (err) { toast(err.message); }
     perm.gsLogOpen = !!$('.pm-gs-log')?.open;
     await loadGroupSettings();
@@ -9735,13 +9744,41 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       ${perm.gs && !perm.gs.error ? wsTtlHtml(perm.gsTtl) : ''}
       ${perm.gs && !perm.gs.error ? wsRecHtml(perm.gsRec) : ''}</div>`;
   }
-  // 誰可以建立專案：所有成員／只有工作區管理員（點了就存）
+  // 誰可以建立專案：所有成員／成員申請，管理員核准／只有工作區管理員（點了就存；從「成員申請」切走先確認，見 createProjectsChange）。
+  // 「成員申請」只在伺服器說能選（createProjectsOptions；暫時的啟用控制，#48 開放）或目前就是它時列出來
   function createProjectsHtml() {
     const gs = perm.gs;
     if (!gs || gs.error || !gs.createProjects) return '';
+    const approvalShown = gs.createProjects === 'approval' || (gs.createProjectsOptions || []).includes('approval');
     const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-cp" value="${v}" data-pp="createprojects"${gs.createProjects === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
     return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
-      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${gs.createProjects === 'approval' ? opt('approval', '成員申請，管理員核准', '一般成員送建立專案申請，工作區管理員或平台管理員核准後建立') : ''}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`; // 「成員申請，管理員核准」還不能在這裡選（#48 開放）：目前的值是它時才列出來
+      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${approvalShown ? opt('approval', '成員申請，管理員核准', '一般成員送建立專案申請，工作區管理員或平台管理員核准後建立') : ''}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+  }
+  // 切換「誰可以建立專案」（#46）：從「成員申請」切走會取消所有待審的建立專案申請——先讀預估數量、跳確認；
+  // 存好後的提示用儲存回應的實際數字（預覽之後可能又有人送出）。取消就不存，單選項回到原本的值
+  async function createProjectsChange(to) {
+    const from = perm.gs?.createProjects;
+    if (!to || to === from) return;
+    const saved = {
+      members: L('已儲存：所有成員都能建立專案', 'Saved: all members can create projects'),
+      approval: L('已儲存：一般成員要送建立專案申請，管理員核准後建立', 'Saved: members request projects and admins approve them'),
+      admins: L('已儲存：只有工作區管理員能建立專案', 'Saved: only workspace admins can create projects'),
+    }[to];
+    if (from !== 'approval') return saveGroupSettings({ createProjects: to }, saved);
+    let n;
+    try { n = Number((await api('/api/workspace/settings/create-projects-preview')).pendingProjectCreationRequests) || 0; } catch (err) { drawPerm(); return toast(err.message); }
+    const ok = await confirmDialog({
+      title: L('不再收建立專案申請？', 'Stop taking project requests?'),
+      message: n ? L(`切換後會取消目前 ${n} 份待審核的建立專案申請，申請人會收到通知；之後切回「成員申請，管理員核准」也不會恢復。這是目前的預估，實際數字以儲存結果為準。`,
+        `Switching cancels the ${n} pending project request(s) right now, and the requesters are notified. Switching back later does not restore them. This is an estimate; the saved result has the actual number.`)
+        : L('目前沒有待審核的建立專案申請。切換後一般成員就不能再送建立專案申請。', 'There are no pending project requests right now. After switching, members can no longer send project requests.'),
+      confirmText: L('切換', 'Switch'),
+    });
+    if (!ok) return drawPerm(); // 單選項回到原本的值
+    return saveGroupSettings({ createProjects: to }, d => {
+      const c = Number(d?.cancelledProjectCreationRequests) || 0;
+      return c ? L(`${saved}；已取消 ${c} 份待審核的建立專案申請`, `${saved}. Cancelled ${c} pending project request(s)`) : L(`${saved}；沒有取消任何申請`, `${saved}. No requests were cancelled`);
+    });
   }
   // 工作區政策「誰可以刪除自己的訊息」：所有成員／只有工作區管理員（點了就存）。工作區管理員刪任何人的不受影響
   function deleteOwnHtml() {
@@ -10658,10 +10695,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       perm.gsLogOpen = !!$('.pm-gs-log')?.open;
       return loadGroupSettings(); // 異動紀錄多一筆
     }
-    if (a === 'createprojects') {
-      if (pp.value === perm.gs?.createProjects) return;
-      return saveGroupSettings({ createProjects: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能建立專案' : '已儲存：只有工作區管理員能建立專案');
-    }
+    if (a === 'createprojects') return createProjectsChange(pp.value);
     if (a === 'deleteown') {
       if (pp.value === perm.gs?.deleteOwnMessages) return;
       return saveGroupSettings({ deleteOwnMessages: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能刪除自己的訊息' : '已儲存：只有工作區管理員能刪除訊息');

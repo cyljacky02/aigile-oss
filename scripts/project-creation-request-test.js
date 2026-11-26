@@ -191,18 +191,6 @@ try {
   assert.equal(await count(db, 'SELECT COUNT(*) AS n FROM project_creation_requests WHERE name = ?', '失敗申請'), 0, '沒有留下申請');
   is(await call(chen.token, '/api/project-creation-requests', 'POST', { requestId: failKey, name: '失敗申請', reason: 'x' }), 201, null, '重試成功');
 
-  // ---------- 6) 送出與政策切換交錯：政策在送出那一批之前被切走 → 交易內斷言擋下 ----------
-  hooks.before = { re: /^INSERT INTO project_creation_requests\b/, run: async () => { await setPolicy('members'); } };
-  is(await submit(chen, { name: '交錯申請' }), 403, 'PROJECT_CREATION_REQUESTS_CLOSED', '政策剛切走');
-  assert.equal(hooks.before, null, '真的有交錯');
-  assert.equal(await count(db, 'SELECT COUNT(*) AS n FROM project_creation_requests WHERE name = ?', '交錯申請'), 0, '沒有留下申請');
-  await setPolicy('approval');
-  // 申請人剛被升為工作區管理員：不能再送（直接建立就好）
-  const gina = await join('吉娜');
-  hooks.before = { re: /^INSERT INTO project_creation_requests\b/, run: async () => { ok(await call(boss.token, `/api/participants/${gina.id}/workspace-role`, 'PUT', { role: 'admin' }), '吉娜剛被升級'); } };
-  is(await submit(gina, { name: '升級中申請' }), 403, 'REQUESTER_NOT_ELIGIBLE', '申請人剛升為管理員');
-  assert.equal(await count(db, 'SELECT COUNT(*) AS n FROM project_creation_requests WHERE name = ?', '升級中申請'), 0);
-
   // ---------- 7) 查看：游標分頁、可見範圍 ----------
   for (const n of ['分頁一', '分頁二', '分頁三']) is(await submit(wang, { name: n }), 201, null, n);
   const p1 = ok(await call(wang.token, '/api/project-creation-requests?scope=mine&limit=2'), '第一頁');
@@ -256,6 +244,18 @@ try {
   is(await call(chen.token, '/api/project-creation-requests', 'POST', { ...body, requestId: rid() }), 201, null, '撤回後可以用同名重送');
   is(await call(chen.token, '/api/project-creation-requests', 'POST', body), 200, null, '舊的 requestId 拿回已撤回的那份');
   assert.equal((await call(chen.token, '/api/project-creation-requests', 'POST', body)).body.state, 'withdrawn', '回傳目前狀態');
+
+  // ---------- 6) 送出與政策切換交錯：政策在送出那一批之前被切走 → 交易內斷言擋下（放在撤回之後：從 approval 切走會取消所有待審申請，#46） ----------
+  hooks.before = { re: /^INSERT INTO project_creation_requests\b/, run: async () => { await setPolicy('members'); } };
+  is(await submit(chen, { name: '交錯申請' }), 403, 'PROJECT_CREATION_REQUESTS_CLOSED', '政策剛切走');
+  assert.equal(hooks.before, null, '真的有交錯');
+  assert.equal(await count(db, 'SELECT COUNT(*) AS n FROM project_creation_requests WHERE name = ?', '交錯申請'), 0, '沒有留下申請');
+  await setPolicy('approval');
+  // 申請人剛被升為工作區管理員：不能再送（直接建立就好）
+  const gina = await join('吉娜');
+  hooks.before = { re: /^INSERT INTO project_creation_requests\b/, run: async () => { ok(await call(boss.token, `/api/participants/${gina.id}/workspace-role`, 'PUT', { role: 'admin' }), '吉娜剛被升級'); } };
+  is(await submit(gina, { name: '升級中申請' }), 403, 'REQUESTER_NOT_ELIGIBLE', '申請人剛升為管理員');
+  assert.equal(await count(db, 'SELECT COUNT(*) AS n FROM project_creation_requests WHERE name = ?', '升級中申請'), 0);
 
   // ---------- 9) 被移出、停用：查不到；審核人照樣看得到 ----------
   const dReq = is(await submit(dan, { name: '丹尼的申請' }), 201, null, '丹尼送出');
