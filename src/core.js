@@ -3664,7 +3664,9 @@ ${ending}`;
     return total;
   }
   async function purgeMessageBatch(ids) {
-    const at = nowIso(), due = 'deleted_at IS NOT NULL AND purged_at IS NULL AND purge_at <= ?'; // 已刪除、還沒清除、已到期（可復原期 0 天的刪除當下就到期）
+    // 已刪除、還沒清除、已到期（可復原期 0 天的刪除當下就到期）。purge_at IS NOT NULL 要明寫：下面的交易內斷言用 NOT (due)，
+    // purge_at 是 NULL 時 due 會是 SQL NULL、NOT (NULL) 也是 NULL，那則就被當成「沒問題」放行
+    const at = nowIso(), due = 'deleted_at IS NOT NULL AND purged_at IS NULL AND purge_at IS NOT NULL AND purge_at <= ?';
     const rows = await db.all(`SELECT id, project, file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND ${due}`, JSON.stringify(ids), at);
     if (!rows.length) return 0;
     const mids = JSON.stringify(rows.map(m => m.id));
