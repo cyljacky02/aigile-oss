@@ -3850,6 +3850,9 @@
       : n.kind === 'admin_account_enable' ? `${a} 恢復了 ${t} 的帳號 · ${when}。`
       : n.kind === 'admin_project_messages_clear' ? `${a} 清空了專案「${p}」的訊息 · ${when}。`
       : n.kind === 'admin_project_messages_restore' ? `${a} 復原了專案「${p}」被清空的訊息 · ${when}。`
+      : n.kind === 'admin_project_template_create' ? `${a} 新增了專案範本「${t}」· ${when}。`
+      : n.kind === 'admin_project_template_edit' ? `${a} 編輯了專案範本「${t}」· ${when}。`
+      : n.kind === 'admin_project_template_retire' ? `${a} 停用了專案範本「${t}」· ${when}。`
       : n.kind === 'admin_project_delete' ? `${a} 刪除了專案「${p}」· ${when}。`
       : n.kind === 'admin_project_restore' ? `${a} 復原了專案「${p}」· ${when}。`
       : `${a} 做了一項管理操作 · ${when}。`;
@@ -4193,7 +4196,7 @@
           ${f('可見度', esc(visName(r.visibility)))}
           ${f('網址英文名', ident(r.slug, pv?.slug, 'slug'))}
           ${f('專案代號', ident(r.code, pv?.code, 'code'))}
-          ${f('看板狀態', r.statuses?.length ? `<span data-nt>${esc(r.statuses.map(s => s.name).join('、'))}</span>` : '預設狀態')}
+          ${f('看板狀態', r.statuses?.length ? pcrStatusesHtml(r.statuses) : '預設狀態')}
         </dl>
         ${pending && cf.size ? '<p class="pcr-warn" role="note">標示「已有專案在用」的欄位目前跟現有專案衝突，現在核准會失敗。可以附理由拒絕，或等申請人撤回重提。</p>' : ''}
         ${st.msg ? `<p class="error small" role="alert" id="pcr-rv-msg">${esc(st.msg)}</p>` : ''}
@@ -9417,6 +9420,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     'workspace_policy.update': ['修改工作區政策', 'Changed workspace policy'], 'recovery_window.update': ['修改可復原期', 'Changed recovery window'],
     'message.delete': ['刪除訊息', 'Deleted message'], 'message.restore': ['復原訊息', 'Restored message'], 'message.purge': ['永久清除訊息', 'Purged messages'],
     'project_messages.clear': ['清空專案訊息', 'Cleared project messages'], 'project_messages.restore': ['復原清空的專案訊息', 'Restored cleared project messages'],
+    'project_template.create': ['新增專案範本', 'Created project template'], 'project_template.edit': ['編輯專案範本', 'Edited project template'], 'project_template.retire': ['停用專案範本', 'Retired project template'],
     'project_creation_request.reject': ['拒絕建立專案申請', 'Rejected project creation request'],
     'project.create': ['建立專案', 'Created project'], 'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
   };
@@ -9872,8 +9876,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   async function loadGroupSettings() {
     perm.gsLoading = true;
     try {
-      const [s, ev, tools, ttl, rec] = await Promise.all([api('/api/workspace/settings'), api('/api/group/events?limit=30').catch(() => ({ items: [] })), api('/api/ai-tools').catch(() => null), api('/api/file-ttl').catch(() => null), api('/api/recovery-window').catch(() => null)]);
-      perm.gs = s; perm.gsEvents = ev.items; perm.aiTools = tools; perm.gsTtl = ttl; perm.gsRec = rec;
+      const [s, ev, tools, ttl, rec, templates] = await Promise.all([api('/api/workspace/settings'), api('/api/group/events?limit=30').catch(() => ({ items: [] })), api('/api/ai-tools').catch(() => null), api('/api/file-ttl').catch(() => null), api('/api/recovery-window').catch(() => null),
+        api(PROJECT_TEMPLATES_API).catch(err => ({ error: err.message }))]);
+      perm.gs = s; perm.gsEvents = ev.items; perm.aiTools = tools; perm.gsTtl = ttl; perm.gsRec = rec; perm.templates = templates;
     } catch (err) { perm.gs = { error: err.message }; }
     perm.gsLoading = false;
     if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'group') drawPerm();
@@ -9905,6 +9910,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     return `<div class="pm-projs">
       <div class="pm-card pm-setrow pm-group-name"><label for="pm-group-name">工作區名稱</label><input id="pm-group-name" maxlength="30" value="${esc(BASE_TITLE)}" aria-describedby="pm-gn-hint"><button type="button" class="btn small primary" data-pp="groupname">儲存</button><span class="muted small" id="pm-gn-hint">顯示在登入頁、左上角、分頁標題與 AI 接入設定。</span></div>
       ${createProjectsHtml()}
+      ${projectTemplatesHtml()}
       ${deleteOwnHtml()}
       ${groupToolsHtml()}
       ${groupJoinHtml()}
@@ -10136,10 +10142,110 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     });
     draw();
   }
-  // 新增專案時的狀態清單（預設＝六欄，可直接增刪改；沒動就不送，伺服器用預設狀態組）
-  function npStatusesHtml(list) {
-    return `<ol class="st-list np-st-list">${list.map((s, i) => `<li class="st-row" data-i="${i}"><span class="st-swatch" data-color="${esc(s.color)}" aria-hidden="true"></span><input class="st-name" value="${esc(s.name)}" maxlength="20" aria-label="狀態名稱"><select class="st-cat" aria-label="狀態類別">${catOpts(s.category)}</select><span class="st-acts"><button type="button" class="btn small" data-np-st-del ${list.length <= 3 ? 'disabled' : ''}>拿掉</button></span></li>`).join('')}</ol>
+  const PROJECT_TEMPLATES_API = '/api/workspace/project-templates';
+  function pcrStatusesHtml(list) {
+    return `<ol class="st-list">${list.map(s => `<li class="st-row"><span class="st-swatch" data-color="${esc(s.color)}" role="img" aria-label="${esc(ST_COLOR_NAME[s.color] || '顏色')}"></span><span data-nt>${esc(s.name)}</span><span class="muted small">${esc(catLabel(s.category))}</span></li>`).join('')}</ol>`;
+  }
+  // 新增專案或編輯範本時直接增刪改狀態。
+  function npStatusesHtml(list, editColor) {
+    return `<ol class="st-list np-st-list">${list.map((s, i) => `<li class="st-row" data-i="${i}"><span class="st-swatch" data-color="${esc(s.color)}" aria-hidden="true"></span><input class="st-name" value="${esc(s.name)}" maxlength="20" aria-label="狀態名稱"><select class="st-cat" aria-label="狀態類別">${catOpts(s.category)}</select>${editColor ? `<select class="st-color" aria-label="顏色">${colorOpts(s.color)}</select>` : ''}<span class="st-acts"><button type="button" class="btn small" data-np-st-del ${list.length <= 3 ? 'disabled' : ''}>拿掉</button></span></li>`).join('')}</ol>
       <button type="button" class="link small" data-np-st-add ${list.length >= 12 ? 'disabled' : ''}>＋ 新增一個狀態</button>`;
+  }
+  function bindInitialStatuses(box, initial = ST_DEFAULT, { editColor = false } = {}) {
+    let list;
+    const draw = () => { box.innerHTML = npStatusesHtml(list, editColor); };
+    const apply = defaults => { list = defaults.map(s => ({ ...s })); draw(); };
+    const row = el => Number(el.closest('.st-row')?.dataset.i);
+    box.addEventListener('input', e => { if (e.target.matches('.st-name')) list[row(e.target)].name = e.target.value; });
+    box.addEventListener('change', e => {
+      const el = e.target;
+      if (el.matches('.st-cat')) { Object.assign(list[row(el)], { category: el.value, color: ST_CAT_COLOR[el.value] }); draw(); }
+      if (el.matches('.st-color')) { list[row(el)].color = el.value; draw(); }
+    });
+    box.addEventListener('click', e => {
+      const del = e.target.closest('[data-np-st-del]'), add = e.target.closest('[data-np-st-add]');
+      if (del && list.length > 3) { list.splice(row(del), 1); draw(); }
+      if (add && list.length < 12) { list.push({ name: '', category: '進行中', color: ST_CAT_COLOR['進行中'] }); draw(); box.querySelector('.st-row:last-child .st-name')?.focus(); }
+    });
+    apply(initial);
+    return { apply, values: () => list.map(({ name, category, color }) => ({ name: name.trim(), category, color })) };
+  }
+  function initialVisibilityHtml(chosen = 'review') {
+    return `<fieldset class="field np-vis"><legend>專案可見度</legend>
+          <div class="vis-list" role="radiogroup" aria-label="專案可見度">${VISIBILITY.map(([v, t, sub]) => `<label class="vis-opt"><input type="radio" name="visibility" value="${v}"${v === chosen ? ' checked' : ''}><span><b>${t}</b><span class="muted small">${sub}</span></span></label>`).join('')}</div>
+        </fieldset>`;
+  }
+  function bindProjectTemplate(form, editor, submit) {
+    const picker = form.elements.template, field = picker.closest('.field'), error = form.querySelector('#np-template-error');
+    const visibilityFields = form.querySelector('.np-vis'), statusFields = form.querySelector('#np-st');
+    let selected = '', loading = false;
+    const showError = msg => { error.textContent = msg; error.hidden = !msg; };
+    api(PROJECT_TEMPLATES_API).then(({ items }) => {
+      for (const t of items) { const opt = new Option(t.name, t.id); opt.dataset.nt = ''; picker.add(opt); }
+      field.hidden = !items.length;
+    }).catch(err => showError(err.message)).finally(() => { picker.disabled = false; });
+    picker.addEventListener('change', async () => {
+      if (submit.disabled) { picker.value = selected; return; }
+      const id = picker.value;
+      showError('');
+      loading = picker.disabled = submit.disabled = visibilityFields.disabled = statusFields.disabled = true;
+      try {
+        const spec = id ? await api(`${PROJECT_TEMPLATES_API}/${encodeURIComponent(id)}`, { timeoutMs: 10000 }) : { visibility: 'review', statuses: ST_DEFAULT };
+        form.elements.visibility.value = spec.visibility;
+        editor.apply(spec.statuses);
+        form.querySelector('.np-st').open = !!id;
+        selected = id;
+      } catch (err) {
+        picker.value = selected;
+        showError(err.message);
+      } finally { loading = picker.disabled = submit.disabled = visibilityFields.disabled = statusFields.disabled = false; }
+    });
+    return { loading: () => loading, selected: () => !!selected };
+  }
+  function projectTemplatesHtml() {
+    if (!perm.gs || perm.gs.error || !perm.templates) return '';
+    const { items, error } = perm.templates;
+    return `<section class="pm-card" aria-labelledby="pm-templates-title">
+      <div class="pm-gs-row"><b id="pm-templates-title">專案範本</b>${error ? '' : '<button type="button" class="btn small" data-pp="template-new">新增範本</button>'}</div>
+      ${error ? `<p class="pm-gs-row error" role="alert">${esc(error)}</p>` : items.map(t => `<div class="pm-gs-row">
+        <div class="pm-gs-t"><b data-nt>${esc(t.name)}</b><span class="pm-sub">${esc(visName(t.visibility))}</span></div>
+        <div class="pm-gs-ctl"><button type="button" class="btn small" data-pp="template-edit" data-id="${esc(t.id)}">編輯</button>
+        <button type="button" class="btn small danger-outline" data-pp="template-retire" data-id="${esc(t.id)}">停用範本</button></div>
+      </div>`).join('') || '<p class="pm-gs-row muted small">沒有可用的專案範本</p>'}
+    </section>`;
+  }
+  function openTemplateEditor(template) {
+    const body = openModal(template ? '編輯專案範本' : '新增範本', `<form id="pt-form" class="stack">
+      <label class="field">範本名稱<input name="name" required maxlength="30" value="${esc(template?.name || '')}"></label>
+      ${initialVisibilityHtml(template?.visibility)}
+      <fieldset class="field"><legend>看板狀態</legend>${ST_HELP}<div id="pt-statuses"></div></fieldset>
+      <p class="error" id="pt-error" role="alert"></p>
+    </form>`, { size: 'form', foot: '<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="pt-form">儲存</button>' });
+    const form = body.querySelector('#pt-form'), save = body.modal.querySelector('[form="pt-form"]');
+    const editor = bindInitialStatuses(body.querySelector('#pt-statuses'), template?.statuses, { editColor: true });
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      if (save.disabled) return;
+      const err = body.querySelector('#pt-error');
+      err.textContent = '';
+      save.disabled = true;
+      const path = template ? `${PROJECT_TEMPLATES_API}/${encodeURIComponent(template.id)}` : PROJECT_TEMPLATES_API;
+      try {
+        await api(path, { method: template ? 'PUT' : 'POST', body: { name: form.name.value, visibility: form.visibility.value, statuses: editor.values(), ...(template ? { expected: template } : {}) } });
+        if (body.isConnected) closeModal();
+        await loadGroupSettings();
+      } catch (e2) {
+        err.textContent = e2.message;
+        if (e2.code === 'TEMPLATE_CHANGED') await loadGroupSettings();
+      }
+      finally { save.disabled = false; }
+    });
+  }
+  async function retireProjectTemplate(template) {
+    if (!(await confirmDialog({ title: '停用範本', message: `<b data-nt>${esc(template.name)}</b><p>已送出的申請與已建立的專案不受影響。</p>`, confirmText: '停用範本', danger: true }))) return;
+    try { await api(`${PROJECT_TEMPLATES_API}/${encodeURIComponent(template.id)}`, { method: 'DELETE', body: { expected: template } }); }
+    catch (err) { toast(err.message); }
+    await loadGroupSettings();
   }
   // 新增專案彈窗：名稱＋可見度（預設審核；建立的同一步就設好，私人專案從一開始就是私人的）＋程式庫＋分支（選填）一次填完；看板狀態（選填）
   // request：申請模式（政策是「成員申請，管理員核准」的一般成員）。同一個表單：多了必填的申請原因、可見度跟名稱放在一起、
@@ -10147,33 +10253,31 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   // requestId 在打開表單時產生一次：送出中停用按鈕、網路中斷後重按都用同一個（伺服器只會有一份申請）；關掉再開＝新的一份申請
   function openNewProject({ request = false } = {}) {
     const requestId = request ? `pcr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` : null;
-    const visHtml = `<fieldset class="field np-vis"><legend>專案可見度</legend>
-          <div class="vis-list" role="radiogroup" aria-label="專案可見度">${VISIBILITY.map(([v, t, sub]) => `<label class="vis-opt"><input type="radio" name="visibility" value="${v}"${v === 'review' ? ' checked' : ''}><span><b>${t}</b><span class="muted small">${sub}</span></span></label>`).join('')}</div>
-        </fieldset>`;
+    const visHtml = initialVisibilityHtml();
     const body = openModal(request ? '申請建立專案' : '新增專案', `<form id="np-form" class="stack">
         <label class="field">專案名稱<input name="name" required maxlength="20" autocomplete="off"></label>
+        <label class="field" hidden>專案範本<select name="template" disabled><option value="">不使用範本</option></select></label>
+        <span id="np-template-error" class="error small" role="status" hidden></span>
         ${request ? `<label class="field">申請原因<textarea name="reason" required maxlength="200" rows="3" placeholder="這個專案要做什麼、為什麼需要（審核人會看到）"></textarea></label>${visHtml}${slugFieldHtml('np-slug', '')}` : `${slugFieldHtml('np-slug', '')}${visHtml}
         <label class="field">程式庫連結（選填）<input name="url" maxlength="300" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://github.com/帳號/專案"></label>
         <label class="field">分支（選填）<input name="branch" maxlength="100" autocomplete="off" spellcheck="false" placeholder="main"></label>`}
-        <details class="np-st"><summary>看板狀態（選填，預設六欄）</summary>${ST_HELP}<div id="np-st"></div></details>
+        <details class="np-st"><summary>看板狀態</summary>${ST_HELP}<fieldset id="np-st" aria-label="看板狀態"></fieldset></details>
         <p class="muted small" id="pm-new-hint">${request ? '送出後由工作區管理員審核；核准時專案才會建立，你會成為這個專案的專案管理員。程式庫等設定在核准後由你自己設定。' : `${esc(newProjText())}，其他成員請到「成員」分頁加入。`}</p>
         <p class="error" id="np-err" role="alert"></p>
       </form>`, { size: 'narrow', foot: `<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="np-form" id="np-submit">${request ? '送出申請' : '新增專案'}</button>` });
     const f = body.querySelector('#np-form');
     const slugF = bindSlugField(body, 'np-slug', f.name, null);
-    const npSts = ST_DEFAULT.map(s => ({ ...s })), npBox = body.querySelector('#np-st');
-    const npDraw = () => { npBox.innerHTML = npStatusesHtml(npSts); };
-    npDraw();
-    npBox.addEventListener('input', e => { const i = Number(e.target.closest('.st-row')?.dataset.i); if (e.target.classList.contains('st-name')) npSts[i].name = e.target.value; });
-    npBox.addEventListener('change', e => { const i = Number(e.target.closest('.st-row')?.dataset.i); if (e.target.classList.contains('st-cat')) { npSts[i].category = e.target.value; npSts[i].color = ST_CAT_COLOR[e.target.value]; npDraw(); } });
-    npBox.addEventListener('click', e => {
-      if (e.target.closest('[data-np-st-del]')) { npSts.splice(Number(e.target.closest('.st-row').dataset.i), 1); npDraw(); }
-      if (e.target.closest('[data-np-st-add]')) { npSts.push({ name: '', category: '進行中', color: ST_CAT_COLOR['進行中'] }); npDraw(); npBox.querySelector('.st-row:last-child .st-name')?.focus(); }
-    });
+    const editor = bindInitialStatuses(body.querySelector('#np-st'));
+    const sendBtn = () => body.modal.querySelector('#np-submit');
+    const template = bindProjectTemplate(f, editor, sendBtn());
+    const creationDefaults = () => {
+      const statuses = editor.values();
+      return { visibility: f.visibility.value || 'review', ...(template.selected() || JSON.stringify(statuses) !== JSON.stringify(ST_DEFAULT) ? { statuses } : {}) };
+    };
     setTimeout(() => f.name.focus(), 30);
-    const sendBtn = () => document.getElementById('np-submit');
     f.addEventListener('submit', async e => {
       e.preventDefault();
+      if (template.loading()) return;
       if (request) return submitRequest();
       const err = body.querySelector('#np-err'), name = f.name.value.trim(), url = f.url.value.trim(), branch = f.branch.value.trim();
       err.textContent = '';
@@ -10183,11 +10287,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const sf = slugF.check();
       if (!sf) return;
       try {
-        const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
         let result;
         try { result = await api('/api/projects', { method: 'POST', body: {
-          name, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review',
-          ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}),
+          name, slug: sf.auto ? '' : sf.slug, ...creationDefaults(),
           ...(url ? { repo: { url, branch } } : {}),
         } }); }
         catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
@@ -10211,10 +10313,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (!reason) { err.textContent = '請寫申請原因'; return f.reason.focus(); }
       const sf = slugF.check();
       if (!sf) return;
-      const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
       if (btn) btn.disabled = true;
       try {
-        try { await api('/api/project-creation-requests', { method: 'POST', body: { requestId, name, reason, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review', ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
+        try { await api('/api/project-creation-requests', { method: 'POST', body: { requestId, name, reason, slug: sf.auto ? '' : sf.slug, ...creationDefaults() } }); }
         catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
         closeModal();
         toast(`已送出「${name}」的建立專案申請，等工作區管理員審核`);
@@ -10869,6 +10970,12 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       return loadGroupSettings(); // 異動紀錄多一筆
     }
     if (a === 'createprojects') return createProjectsChange(pp.value);
+    if (a === 'template-new') return openTemplateEditor();
+    if (a === 'template-edit' || a === 'template-retire') {
+      const template = perm.templates?.items?.find(t => t.id === pp.dataset.id);
+      if (template) return a === 'template-edit' ? openTemplateEditor(template) : retireProjectTemplate(template);
+      return;
+    }
     if (a === 'deleteown') {
       if (pp.value === perm.gs?.deleteOwnMessages) return;
       return saveGroupSettings({ deleteOwnMessages: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能刪除自己的訊息' : '已儲存：只有工作區管理員能刪除訊息');
@@ -11667,9 +11774,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const total = Object.values(T).reduce((n, rows) => n + rows.length, 0) + (b.docs || []).length;
       let done = 0;
       for (const [table, rows] of Object.entries(T)) {
-        for (let i = 0; i < rows.length;) { // 一批最多 500 列、約 3 MB
+        const pageSize = table === 'project_templates' ? 97 : 500;
+        for (let i = 0; i < rows.length;) {
           let j = i, size = 0;
-          while (j < rows.length && j - i < 500 && (size += JSON.stringify(rows[j]).length) < 3_000_000) j++;
+          while (j < rows.length && j - i < pageSize && (size += JSON.stringify(rows[j]).length) < 3_000_000) j++;
           if (j === i) j = i + 1;
           await api('/api/admin/restore/rows', { method: 'POST', body: { table, rows: rows.slice(i, j) } });
           done += j - i; i = j;

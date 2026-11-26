@@ -3,7 +3,7 @@
 //   - 一個 JSON 檔：成員、專案、訊息、卡片、決策、技能、設定…；選填附件（訊息附件、專案文件）
 //   - 不含任何登入用的東西：成員 Token、密碼雜湊、裝置登入、登入碼、邀請與救援連結、AI 接入連結
 //   - 匯出、匯入都分批（每次一小段），不超過 Workers 的時間與 D1 的單次限制；網頁負責組成一個檔、再分批送回
-//   - 匯入只在空站可用（只有你一位人類、沒有 AI、訊息、卡片、技能、文件）；先預覽數量再確認
+//   - 匯入只在空站可用（只有你一位人類、沒有 AI、訊息、卡片、技能、文件或專案範本）；先預覽數量再確認
 //   - 備份裡的平台管理員、工作區管理員原樣帶回來；匯入後你的登入（密碼、這台裝置）改掛到備份裡的平台管理員身上；其他人要你在「邀請」發重設登入連結，AI 要主人重發 Token
 //   - 「還原中」（app_settings 的 restore_state）從開始匯入持續到收尾全部做完：期間會動到共同不變量的寫入在交易內被擋（503 RESTORING，docs/adr/0005）。
 //     收尾中途失敗就維持還原中，再按一次收尾從頭重跑（每一步都要能重跑、不重複產生副作用）
@@ -14,7 +14,8 @@ import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, RESTORE_STATE_KEY } 
 import { IDENTITY_READY_KEY } from './project-identity.js';
 import { CLAIM_TABLES, CLAIM_SCHEMA_QUERY, isMissingClaimTable } from './project-identity-claims.js';
 import { PCR_TABLE, restoreRowProblem } from './project-creation-requests.js';
-import { isConstraintViolation } from './db-errors.js';
+import { TEMPLATE_TABLE, restoreTemplateProblem, templateNotReady } from './project-templates.js';
+import { isConstraintViolation, isMissingTable } from './db-errors.js';
 
 export const BACKUP_FORMAT = 'aigile-backup';
 export const BACKUP_FORMAT_VERSION = 1;
@@ -22,6 +23,7 @@ export const BACKUP_FORMAT_VERSION = 1;
 export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'project_events', 'app_settings', 'accounts', 'participants', 'project_members', 'ai_state', 'messages', 'message_recipients', 'notifications', 'dms',
   'decision_resolutions', 'cards', 'card_log', 'card_msgs', 'suggestions', 'avatars', 'avatar_proposals',
   'skills', 'skill_allows', 'skill_installs', 'skill_syncs', 'join_requests',
+  TEMPLATE_TABLE, // 專案範本（含已停用的）
   'project_creation_requests', // 建立專案申請：所有狀態原樣帶（舊備份沒有這張表＝還原後是空的；收尾時檢查待審的，見 core.js 的 restoreSteps）
   'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages', // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
@@ -39,11 +41,12 @@ const DROP_COLS = { participants: ['token', 'token_expires_at'] }; // 匯入時�
 // IDENTITY_READY_KEY：專案識別碼「已正規化」是這個站自己的狀態，不跟著搬（還原收尾一定重新正規化，舊備份或動過的備份都不會因為帶了標記而跳過）
 const skipSetting = k => k.startsWith('olink:') || k.startsWith('must_change_cred:') || k.startsWith('relogin:') || ['people_ver', 'msg_ver', 'restore_state', 'update_check', IDENTITY_READY_KEY].includes(k);
 // 每頁幾列：一般 500；大欄位的表少一點（技能一列最多 1 MB、file_chunks 一列 512 KB、頭像是圖片）
-const PAGES = { file_chunks: 1, skills: 4, avatar_proposals: 5, avatars: 20, kb_pages: 50 }; // 知識頁一頁最多 2 萬字
+const TEMPLATE_RESTORE_PAGE = 97; // 留三句給還原階段的鎖與斷言。
+const PAGES = { file_chunks: 1, skills: 4, avatar_proposals: 5, avatars: 20, kb_pages: 50, [TEMPLATE_TABLE]: TEMPLATE_RESTORE_PAGE }; // 知識頁一頁最多 2 萬字
 const pageOf = t => PAGES[t] || 500;
 // 匯入前逐列檢查的表（跟資料表的 CHECK、NOT NULL 一致）：不合法的列整批不寫，回明確的格式錯誤（不修改資料、不繞過資料庫約束）。
 // 檢查回問題說明（合法回 null）。這些表寫入時撞到資料庫約束（例：同一申請人兩份同名的待審申請）也回同一個格式錯誤
-const ROW_CHECKS = { [PCR_TABLE]: restoreRowProblem };
+const ROW_CHECKS = { [PCR_TABLE]: restoreRowProblem, [TEMPLATE_TABLE]: restoreTemplateProblem };
 // 格式錯誤說明的固定句型（英文字典整句比對）
 const ROW_INVALID_MSG = { constraint: '違反資料表的約束（重複或欄位不合法）', which: '（資料列 id {0}）' };
 
@@ -72,8 +75,15 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   // 匯入到一半工作區列可能還不在（鎖不到任何東西），restore_state 這列的鎖一定在：跟收尾每一段的寫入排隊
   const samePhaseStmts = raw => [lockWorkspaceStmt(DEFAULT_WORKSPACE), ['UPDATE app_settings SET value = value WHERE key = ?', [RESTORE_STATE_KEY]],
     ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, raw])];
-  // 空站（跟 isEmpty 同一個定義）：開始匯入在交易內斷言
-  const emptyCond = `NOT EXISTS (SELECT 1 FROM participants WHERE id != ?) AND ${['messages', 'dms', 'cards', 'skills', 'docs'].map(t => `NOT EXISTS (SELECT 1 FROM ${t})`).join(' AND ')}`;
+  // 程式可以先於範本表部署；只把這張表不存在的查詢錯誤視為尚未升級。
+  const templatesReady = async () => {
+    try { await db.get(`SELECT 1 AS x FROM ${TEMPLATE_TABLE} LIMIT 1`); return true; }
+    catch (err) { if (isMissingTable(err)) return false; throw err; }
+  };
+  const templateTablePresent = "EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)";
+  const contentTables = withTemplates => ['messages', 'dms', 'cards', 'skills', 'docs', ...(withTemplates ? [TEMPLATE_TABLE] : [])];
+  const emptyCond = withTemplates => `NOT EXISTS (SELECT 1 FROM participants WHERE id != ?) AND ${contentTables(withTemplates).map(t => `NOT EXISTS (SELECT 1 FROM ${t})`).join(' AND ')}`;
+  const notEmpty = () => new ApiError(409, 'NOT_EMPTY', '只有空站能匯入：這個站已經有其他成員、訊息、卡片、技能、文件或專案範本。請在新架的站匯入。');
   const finishingError = () => new ApiError(409, 'RESTORE_FINISHING', '備份的資料已經匯入，只差收尾：請再按一次「完成匯入」（restore/finish）。');
   // restore_state 這一列：raw 是存的原字串（收尾比對「沒被別的收尾改過」用）
   const readState = async () => {
@@ -81,12 +91,10 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     try { return raw ? { raw, st: JSON.parse(raw) } : null; } catch { return null; }
   };
   const restoring = async () => (await readState().catch(() => null))?.st || null;
-  // 空站：只有你一位人類、沒有 AI、訊息、私訊、卡片、技能、文件（新站自動建的預設專案與設定不算）
-  // 只看「有沒有」（每張表讀 1 列），不數全部（D1 照讀到的列數計費）
-  async function isEmpty(me) {
-    const any = async (t, extra = '', ...a) => !!(await db.get(`SELECT 1 AS x FROM ${t}${extra} LIMIT 1`, ...a));
-    const hits = await Promise.all([any('participants', ' WHERE id != ?', me.id), any('messages'), any('dms'), any('cards'), any('skills'), any('docs')]);
-    return !hits.some(Boolean);
+  // 預設專案與預設設定不算資料；不論是否停用，已儲存的範本都算。只查有沒有，不數全部。
+  async function isEmpty(me, withTemplates) {
+    if (withTemplates === undefined) withTemplates = await templatesReady();
+    return !!(await db.get(`SELECT 1 AS x WHERE ${emptyCond(withTemplates)}`, me.id));
   }
   const fileFilter = (t, withFiles) => (t === 'file_chunks' && !withFiles ? " WHERE file_id LIKE 'skillpack\\_%' ESCAPE '\\'" : ''); // 不含附件時，技能包還是要帶
   const settingOk = r => !skipSetting(r.key);
@@ -102,27 +110,28 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   // 先拿清單（每張表幾列、要不要帶附件），網頁再一張一張分頁拿
   route('GET', '/api/admin/backup', async ({ ctx, me, url }) => {
     await adminOnly(ctx, me);
-    const withFiles = url.searchParams.get('files') === '1';
+    const withFiles = url.searchParams.get('files') === '1', withTemplates = await templatesReady();
     const tables = [];
     for (const t of EXPORT_TABLES) {
-      if (!withFiles && FILE_TABLES.includes(t)) continue;
+      if ((!withFiles && FILE_TABLES.includes(t)) || (t === TEMPLATE_TABLE && !withTemplates)) continue;
       try {
         const n = (await db.get(`SELECT COUNT(*) AS n FROM ${t}${fileFilter(t, withFiles)}`))?.n || 0;
         tables.push({ name: t, count: n });
       } catch (e) {
         if (!CLAIM_TABLES.includes(t) || !isMissingClaimTable(e)) throw e;
-        // 程式先部署時保留表還不存在：舊格式不列出這張表，而不是寫成空表。
+        // 程式先部署時，備份略過尚未建立的識別碼保留表。
       }
     }
     const docs = withFiles && docStorage ? (await db.all('SELECT id FROM docs WHERE deleted_at IS NULL')).map(r => r.id) : [];
     return { format: BACKUP_FORMAT, formatVersion: BACKUP_FORMAT_VERSION, appVersion: APP_VERSION, exportedAt: nowIso(), includeFiles: withFiles, tables, docs,
-      empty: await isEmpty(me), restoring: !!(await restoring()) };
+      empty: await isEmpty(me, withTemplates), restoring: !!(await restoring()) };
   });
   // 一張表的一頁：照 rowid 順序；BLOB 欄位轉 { $b64 }；登入用欄位不帶
   route('GET', '/api/admin/backup/rows', async ({ ctx, me, url }) => {
     await adminOnly(ctx, me);
     const q = url.searchParams, t = q.get('table'), withFiles = q.get('files') === '1';
     if (!EXPORT_TABLES.includes(t) || (!withFiles && FILE_TABLES.includes(t))) throw invalid('table 不在可匯出的清單');
+    if (t === TEMPLATE_TABLE && !(await templatesReady())) return { table: t, rows: [], next: null };
     const after = Math.max(0, Number.parseInt(q.get('after') || '0', 10) || 0), limit = pageOf(t);
     const f = fileFilter(t, withFiles);
     const rows = await db.all(`SELECT rowid AS __rowid, * FROM ${t}${f ? f + ' AND' : ' WHERE'} rowid > ? ORDER BY rowid LIMIT ?`, after, limit + 1).catch(e => {
@@ -163,16 +172,17 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     if (body.format !== BACKUP_FORMAT || Number(body.formatVersion) !== BACKUP_FORMAT_VERSION) throw invalid('不是這個平台的備份檔（format／formatVersion 不對）');
     if (cmpVersion(body.appVersion, APP_VERSION) > 0) throw new ApiError(400, 'BACKUP_TOO_NEW', `備份是 ${body.appVersion} 版，比這個站（${APP_VERSION}）新；請先把這個站升級到 ${body.appVersion} 以上再匯入`);
     if (String(body.appVersion).split('.')[0] !== APP_VERSION.split('.')[0]) throw new ApiError(400, 'BACKUP_MAJOR', `備份是 ${body.appVersion} 版，跟這個站（${APP_VERSION}）的主版本不同，不能直接匯入`);
-    if (!state && !(await isEmpty(me))) throw new ApiError(409, 'NOT_EMPTY', '只有空站能匯入：這個站已經有其他成員、訊息、卡片、技能或文件。請在新架的站匯入。');
+    const withTemplates = await templatesReady();
+    if (!state && !(await isEmpty(me, withTemplates))) throw notEmpty();
     if (state && holder(state) !== me.id) throw new ApiError(409, 'RESTORE_BY_OTHER', '別的管理員正在匯入');
-    // 第一句鎖工作區這列：跟建立專案、改名、政策更新排隊，清空時不會漏掉剛好同時寫入的（之後它們看得到 restore_state，回 503）。
-    // 交易內再確認可以開始：第一次要是空站、沒有別的匯入；重來要是剛剛讀到的那個匯入（交易前的檢查只用來給明確的錯誤）
+    // 與範本寫入以同一列鎖排隊；範本表若剛好在部署時建好，重試前不得清掉任何資料。
     const stmts = [lockWorkspaceStmt(DEFAULT_WORKSPACE),
+      ensureStmt(withTemplates ? templateTablePresent : `NOT (${templateTablePresent})`, [TEMPLATE_TABLE]),
       cur ? ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, cur.raw])
-        : ensureStmt(`NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?) AND ${emptyCond}`, [RESTORE_STATE_KEY, me.id]),
+        : ensureStmt(`NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?) AND ${emptyCond(withTemplates)}`, [RESTORE_STATE_KEY, me.id]),
       // 先清掉識別碼來源，再清保留值。收尾只採用這次匯入的爭議來源。
       ...[...CLAIM_TABLES.toReversed(),
-        ...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES, ...CLAIM_TABLES].includes(t)),
+        ...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES, ...CLAIM_TABLES].includes(t) && (t !== TEMPLATE_TABLE || withTemplates)),
         'legacy_members'].map(t => [`DELETE FROM ${t}`, []])];
     stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
@@ -185,7 +195,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       // 用新鮮資料判斷原因（只用來產生回應）
       const now = await restoring();
       if (now && holder(now) !== me.id) throw new ApiError(409, 'RESTORE_BY_OTHER', '別的管理員正在匯入');
-      if (!now && !(await isEmpty(me))) throw new ApiError(409, 'NOT_EMPTY', '只有空站能匯入：這個站已經有其他成員、訊息、卡片、技能或文件。請在新架的站匯入。');
+      if (!now && !(await isEmpty(me))) throw notEmpty();
       throw new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
     }
     if (docStorage) for (const d of await db.all('SELECT id FROM docs')) await docStorage.delete(`docs/${d.id}`).catch(() => {}); // 上面已清表；這裡保險
@@ -201,8 +211,14 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     const t = body.table;
     if (!EXPORT_TABLES.includes(t)) throw invalid('table 不在可匯入的清單');
     if (!Array.isArray(body.rows) || body.rows.length > 1000) throw invalid('rows 要是陣列，一次最多 1000 列');
+    if (t === TEMPLATE_TABLE && !(await templatesReady())) {
+      if (body.rows.length) throw templateNotReady(ApiError);
+      return { table: t, inserted: 0 };
+    }
+    // 範本頁在一批內寫入。唯一鍵衝突時，整頁一起回滾。
+    if (t === TEMPLATE_TABLE && body.rows.length > TEMPLATE_RESTORE_PAGE) throw invalid('專案範本每批最多 97 列');
     const claimTable = CLAIM_TABLES.includes(t);
-    // PRAGMA 對不存在的表回空清單；不能把備份中的爭議來源當成未知欄位丟掉。
+    // PRAGMA 對不存在的表回空清單。先確認可以匯入識別碼爭議來源。
     if (claimTable) await db.get(CLAIM_SCHEMA_QUERY).catch(e => { if (isMissingClaimTable(e)) throw claimsNotReady(); throw e; });
     const have = new Set(await columnsOf(t)), drop = [...(DROP_COLS[t] || []), ...(t === 'audit_log' ? ['seq'] : [])], blobs = BLOB_COLS[t] || [];
     const stmts = [];
@@ -231,7 +247,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       // 稽核紀錄跟這個站原本的合併：流水號重新編（不跟原本的撞），已經有的 id 略過（中途重來不重複）
       stmts.push([`INSERT${t === 'audit_log' ? ' OR IGNORE' : ''} INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})${t === 'app_settings' ? ' ON CONFLICT(key) DO UPDATE SET value = excluded.value' : ''}`, cols.map(c => row[c])]);
     }
-    // 每一批在交易內確認還在匯入（restore_state 還是這次讀到的）：收尾開始後才到的資料列不寫（收尾的修整與檢查看不到它們）
+    // 每一批在交易內確認還在匯入（restore_state 還是這次讀到的）。收尾開始後才到的資料列不寫。
     for (let i = 0; i < stmts.length; i += 100) {
       try { await db.batch([...samePhaseStmts(raw), ...stmts.slice(i, i + 100)]); } catch (e) {
         if (isAssertionFailure(e)) throw (await restoring())?.you ? finishingError() : notRestoring();

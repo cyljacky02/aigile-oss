@@ -18,6 +18,7 @@ export const ADMIN_NOTICE = Object.freeze({
   WORKSPACE_GRANT: 'admin_workspace_grant', WORKSPACE_REVOKE: 'admin_workspace_revoke',
   ACCOUNT_DISABLE: 'admin_account_disable', ACCOUNT_ENABLE: 'admin_account_enable',
   PROJECT_MESSAGES_CLEAR: 'admin_project_messages_clear', PROJECT_MESSAGES_RESTORE: 'admin_project_messages_restore',
+  PROJECT_TEMPLATE_CREATE: 'admin_project_template_create', PROJECT_TEMPLATE_EDIT: 'admin_project_template_edit', PROJECT_TEMPLATE_RETIRE: 'admin_project_template_retire',
   PROJECT_DELETE: 'admin_project_delete', PROJECT_RESTORE: 'admin_project_restore',
 });
 export const NOTIFY_SCOPE = Object.freeze({ PLATFORM: 'platform', WORKSPACE: 'workspace' });
@@ -44,5 +45,13 @@ export function createAdminNotify({ db, randId, peopleMap, access }) {
     const detail = encode(n.detail), at = Date.now();
     return [...ids].map(pid => ['INSERT INTO account_notices (id, participant_id, kind, detail, created_at) VALUES (?,?,?,?,?)', [randId('ntc'), pid, n.kind, detail, at]]);
   }
-  return { stmts };
+  // 適用於批次已鎖該工作區、且操作本身不改管理權的情況。收件人以交易內的成員資格為準。
+  const workspaceStmt = ({ workspaceId, except, kind, detail, at = Date.now() }) => [
+    `INSERT INTO account_notices (id, participant_id, kind, detail, created_at)
+      SELECT ? || p.id, p.id, ?, ?, ? FROM participants p
+      WHERE p.workspace_id = ? AND p.workspace_status = 'active' AND p.workspace_role = 'admin' AND p.kind = 'human' AND p.status = 'active' AND p.id != ?
+        AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.status != 'active')`,
+    [`${randId('ntc')}_`, kind, encode(detail), at, workspaceId, except],
+  ];
+  return { stmts, workspaceStmt };
 }

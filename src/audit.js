@@ -15,7 +15,7 @@
 //   scope      AUDIT_SCOPE：platform／workspace／project
 //   workspaceId  非平台層的事件所屬工作區；不給＝預設工作區
 //   project    { id, name }：專案層的事件
-//   target     對象 { kind, id, name }，kind：participant／project／message／workspace；名字在寫入時快照
+//   target     對象 { kind, id, name }，kind：participant／project／message／workspace／project_template；名字在寫入時快照
 //   count      摘要數字（例：清除了幾則訊息）
 //   countOf    [sql, args]：數字在同一批裡用這句 SELECT 算（例：這次清空了幾則），取代 count
 //   detail     細節物件（存成 JSON）；不放訊息原文
@@ -37,6 +37,7 @@ export const AUDIT_ACTION = Object.freeze({
   MESSAGE_DELETE: 'message.delete', MESSAGE_RESTORE: 'message.restore', MESSAGE_PURGE: 'message.purge',
   PROJECT_MESSAGES_CLEAR: 'project_messages.clear', PROJECT_MESSAGES_RESTORE: 'project_messages.restore',
   PROJECT_CREATE: 'project.create', // detail { method: direct｜approved_request｜first_run｜demo, requestId?, requester?, code, slug, visibility }（src/project-create.js）
+  PROJECT_TEMPLATE_CREATE: 'project_template.create', PROJECT_TEMPLATE_EDIT: 'project_template.edit', PROJECT_TEMPLATE_RETIRE: 'project_template.retire',
   PROJECT_CREATION_REQUEST_REJECT: 'project_creation_request.reject', // 拒絕建立專案申請；target＝申請人，detail { requestId, requester }（不複製申請內容）
   PROJECT_DELETE: 'project.delete', PROJECT_RESTORE: 'project.restore', PROJECT_PURGE: 'project.purge', // 舊的專案刪除紀錄轉成 project.purge，detail.legacy＝true
 });

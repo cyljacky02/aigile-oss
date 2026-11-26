@@ -685,6 +685,75 @@ try {
     note(`${total} 個專案全部寫入保留表`);
   });
 
+  await check('D1-13', '專案範本：選取本機預設值、停用後仍可依送出的內容核准', async () => {
+    // 使用獨立的 Worker 程序，避免前面壓力測試累積的請求次數影響範本測試。
+    const worker = await A.dev({ vars: VARS });
+    running.push(worker);
+    const templateSite = site(worker.base, TOKEN);
+    const base = '/api/workspace/project-templates';
+    const draft = { name: '交付流程', visibility: 'private', statuses: THREE };
+    const t = ok(within('新增範本', await templateSite.call(boss.token, base, 'POST', draft)), '新增範本');
+    const selected = ok(within('選取範本', await templateSite.call(chen.token, `${base}/${t.id}`)), '選取範本');
+    assert.equal(selected.visibility, 'private');
+    const q = ok(await templateSite.call(chen.token, '/api/project-creation-requests', 'POST', {
+      requestId: 'd1-template-snapshot', name: 'D1 範本申請', reason: '驗證選取範本', visibility: selected.visibility, statuses: selected.statuses,
+    }), '送出範本申請');
+    const edited = ok(within('修改範本', await templateSite.call(boss.token, `${base}/${t.id}`, 'PUT', { ...draft, visibility: 'open', expected: t })), '修改範本');
+    ok(within('停用範本', await templateSite.call(boss.token, `${base}/${t.id}`, 'DELETE', { expected: edited })), '停用範本');
+    assert.equal((await templateSite.call(chen.token, `${base}/${t.id}`)).status, 404, '不能再選取');
+    const resolved = ok(await templateSite.call(boss.token, `/api/project-creation-requests/${q.id}/approve`, 'POST', {}), '核准');
+    const projects = ok(await templateSite.call(chen.token, '/api/projects'), '查看建立結果');
+    const p = projects.items.find(p => p.id === resolved.project.id);
+    assert.equal(p.visibility, 'private');
+    assert.deepEqual(p.statuses.map(s => s.name), THREE.map(s => s.name));
+  });
+
+  await check('D1-14', '升級範本表前可匯出及匯入舊備份，升級後可匯出及匯入範本', async () => {
+    const siteOld = localD1({ wrangler, tmpRoot, repoRoot, name: 'site-before-templates', main });
+    migrate(siteOld, '匯入相容性測試');
+    const templateMigration = files.find(f => /_project_templates\.sql$/.test(f.name)).name;
+    siteOld.exec(`DROP TABLE project_templates; DELETE FROM schema_migrations WHERE name = '${templateMigration}'`, { label: '模擬舊 D1' });
+    const worker = await siteOld.dev({ vars: VARS });
+    running.push(worker);
+    const old = site(worker.base, TOKEN);
+    const admin = await defaultAdmin(old, 'd1oldtemplate');
+    const backup = ok(await old.call(admin.token, '/api/admin/backup'), '舊 D1 仍可匯出');
+    assert.equal(backup.empty, true);
+    assert.ok(!backup.tables.some(t => t.name === 'project_templates'));
+    const { format, formatVersion, appVersion } = backup, header = { format, formatVersion, appVersion };
+    const destinationRows = {};
+    for (const table of ['workspaces', 'accounts', 'participants']) {
+      destinationRows[table] = ok(await old.call(admin.token, `/api/admin/backup/rows?table=${table}`), `匯出 ${table}`).rows;
+    }
+    is(await old.call(admin.token, '/api/admin/restore/begin', 'POST', header), 200, null, '舊 D1 能開始匯入');
+    is(await old.call(admin.token, '/api/admin/restore/rows', 'POST', { table: 'project_templates', rows: [{ id: 'saved' }] }), 503, 'PROJECT_TEMPLATES_NOT_READY', '尚不能匯入範本列');
+    const legacyWorkspaces = destinationRows.workspaces.map(row => ({ ...row, name: '舊備份的工作區' }));
+    ok(await old.call(admin.token, '/api/admin/restore/rows', 'POST', { table: 'workspaces', rows: legacyWorkspaces }), '舊備份可匯入工作區');
+    ok(await old.call(admin.token, '/api/admin/restore/finish', 'POST', {}), '未升級也能完成舊備份匯入');
+    assert.deepEqual(await old.one('SELECT name FROM workspaces WHERE id = ?', legacyWorkspaces[0].id), { name: '舊備份的工作區' });
+    await worker.stop();
+    assert.deepEqual(migrate(siteOld, '升級範本表').plan.apply.map(f => f.name), [templateMigration]);
+    const upgraded = await siteOld.dev({ vars: VARS });
+    running.push(upgraded);
+    const dest = site(upgraded.base, TOKEN);
+    const templateWorker = await A.dev({ vars: VARS });
+    running.push(templateWorker);
+    const sourceSite = site(templateWorker.base, TOKEN);
+    const base = '/api/workspace/project-templates';
+    const template = ok(await sourceSite.call(boss.token, base, 'POST', { name: '備份範本', visibility: 'private', statuses: THREE }), '來源工作區新增範本');
+    const source = ok(await sourceSite.call(boss.token, '/api/admin/backup/rows?table=project_templates'), '來源工作區匯出範本');
+    const saved = source.rows.find(r => r.id === template.id);
+    ok(await dest.call(admin.token, '/api/admin/restore/begin', 'POST', header), '升級後可重新開始匯入');
+    for (const [table, rows] of Object.entries({ ...destinationRows, project_templates: [saved] })) {
+      ok(await dest.call(admin.token, '/api/admin/restore/rows', 'POST', { table, rows }), `匯入 ${table}`);
+    }
+    ok(await dest.call(admin.token, '/api/admin/restore/finish', 'POST', {}), '升級後完成匯入');
+    const after = ok(await dest.call(admin.token, '/api/admin/backup'), '升級後可匯出');
+    assert.ok(after.tables.some(t => t.name === 'project_templates' && Number(t.count) === 1));
+    assert.deepEqual(ok(await dest.call(admin.token, `${base}/${template.id}`), '可選取還原後的範本'), template);
+    is(await dest.call(admin.token, '/api/admin/restore/begin', 'POST', header), 409, 'NOT_EMPTY', '舊備份不能清除剛還原的範本');
+  });
+
   if (usage.length) {
     console.log('\nD1 用量（每個請求＝一次 Worker 執行；查詢數裡 db.batch 整批算一次）：');
     const worst = [...usage].sort((x, y) => y.calls - x.calls);

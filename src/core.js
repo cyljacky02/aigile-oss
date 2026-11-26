@@ -26,6 +26,7 @@ import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCo
 import { previewProjectIdentity } from './project-identity-preview.js';
 import { isMissingClaimTable, readDisputed, routeToken } from './project-identity-claims.js';
 import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯
+import { registerProjectTemplates } from './project-templates.js';
 import { registerProjectCreationRequests, cancelStmts as pcrCancelStmts, cancelNoticeStmts as pcrCancelNoticeStmts, pendingCountSql as pcrPendingCountSql, requestsTableReady as pcrTableReady, PCR_TABLE, PCR_CANCEL_CODE,
   restoreStaleCountSql as pcrRestoreStaleCountSql, restoreCheckStmts as pcrRestoreCheckStmts, directCreateAllowedCond, activeMemberCond as pcrActiveMemberCond, reviewerCond as pcrReviewerCond } from './project-creation-requests.js'; // 建立專案申請
 import { optionWarnings } from './questions.js';
@@ -2378,6 +2379,7 @@ ${ending}`;
     if (await pcrTableReady(db)) { const [sql, args] = pcrPendingCountSql({}); pending = Number((await db.get(sql.replace('COUNT(*)', 'COUNT(*) AS n'), ...args))?.n ?? 0); }
     return { createProjects: ws.createProjects, pendingProjectCreationRequests: pending };
   });
+  registerProjectTemplates({ route, db, ApiError, invalid, readJson, requireHuman, access, randId, nowIso, writeInWorkspace, auditLog, adminNotify });
   route('GET', '/api/group/events', async ({ ctx, me, url }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看工作區異動紀錄' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);
