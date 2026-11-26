@@ -156,6 +156,10 @@ try {
   assert.equal((await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'messages', rows: [] })).body.error?.code, 'NOT_RESTORING', '沒開始不能送資料');
   // 中途失敗：送一半就停，再從頭來一次
   assert.equal((await B.call(dev, '/api/admin/restore/begin', 'POST', backup)).status, 200);
+  assert.equal((await B.call(dev, '/api/me')).status, 200, '還原中仍可讀我的資料');
+  const settingsDuringRestore = await B.call(dev, '/api/admin/backup/rows?table=app_settings');
+  assert.equal(settingsDuringRestore.status, 200);
+  assert.ok(!settingsDuringRestore.body.rows.some(r => r.key === 'project_roles'), '還原期間不初始化職稱設定');
   assert.equal((await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'participants', rows: backup.tables.participants })).status, 200);
   assert.equal((await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'devices', rows: [{}] })).status, 400, '不收登入用的表');
   const fin = await importAll(B, dev, backup);

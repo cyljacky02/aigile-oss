@@ -15,10 +15,17 @@ import { addToProject, listProjectMembers, makeProjectAdmin } from './test-membe
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-wsinvite-'));
 const dbs = [];
+let contendForTitle;
 const mk = async (name, config = {}) => {
   const db = await openTestDb(path.join(dataDir, name, 'switch.db'));
   dbs.push(db);
-  const app = createApp({ db, storage: dbStorage(db), docText: '', config: { rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000', ...config } });
+  const appDb = { ...db, async batch(stmts) {
+    if (contendForTitle && stmts.some(([sql]) => sql.startsWith("INSERT INTO app_settings (key, value) VALUES ('project_roles', ?) ON CONFLICT(key) DO UPDATE"))) {
+      await contendForTitle(db);
+    }
+    return db.batch(stmts);
+  } };
+  const app = createApp({ db: appDb, storage: dbStorage(db), docText: '', config: { rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000', ...config } });
   const call = async (token, p, method = 'GET', body) => {
     const r = await app(new Request('http://localhost' + encodeURI(p), { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
     return { status: r.status, body: await r.json().catch(() => ({})) };
@@ -41,9 +48,20 @@ try {
   assert.equal(r.status, 201, JSON.stringify(r.body));
   assert.deepEqual(r.body.invite.presets, [{ project: A, role: 'admin', title: 'PO' }, { project: B, role: 'viewer', title: '' }], '邀請帶預設的專案、專案角色與職稱');
   assert.deepEqual(r.body.invite.projects, [A, B], '舊欄位 projects 照舊');
-  const acc = await call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url), username: 'li.new', password: 'longpassword1', passwordAgain: 'longpassword1' });
+  const accept = () => call(null, '/api/auth/invite', 'POST', { token: tokenOf(r.body.url), username: 'li.new', password: 'longpassword1', passwordAgain: 'longpassword1' });
+  let contention = 0;
+  contendForTitle = db => {
+    contention++;
+    return db.run("UPDATE app_settings SET value = value || ' ' WHERE key = 'project_roles'");
+  };
+  await me(boss.token); // 確保職稱設定已初始化
+  try { assert.deepEqual([(await accept()).status, contention], [409, 4]); } finally { contendForTitle = undefined; }
+  assert.ok(!(await call(boss.token, '/api/participants')).body.items.some(p => p.name === '李新人'), '失敗後未建立成員');
+  const acc = await accept();
   assert.equal(acc.status, 200, '接受邀請：' + JSON.stringify(acc.body));
   const li = acc.body, Li = li.participant.participantId;
+  assert.equal(li.participant.projectRoles[A], 'PO', '登入回應含剛寫入的職稱');
+  assert.equal((await call(null, '/api/auth/password', 'POST', { username: 'li.new', password: 'longpassword1' })).status, 200);
   const liMe = await me(li.token);
   assert.deepEqual([liMe.workspaceRole, liMe.platformRole, !!liMe.isAdmin], ['member', 'none', false], '接受邀請＝工作區成員（不是管理員）：' + JSON.stringify(liMe).slice(0, 300));
   assert.deepEqual(liMe.projects, [A, B], '依預設加入專案');

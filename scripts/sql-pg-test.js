@@ -69,7 +69,7 @@ const schema = fs.readFileSync(path.join(root, 'src', 'schema.sql'), 'utf8');
 // 4. 實機（只准本機）：兩邊實際的表與欄位、舊站升級
 const PG_URL = process.env.AIGILE_TEST_PG_URL;
 if (PG_URL) {
-  const { openPgDb, assertTestPgUrl, testSchemaFor } = await import('../src/db-pg.js');
+  const { openPgDb, assertTestPgUrl, setPgSearchPath, testSchemaFor } = await import('../src/db-pg.js');
   const { default: pg } = await import('pg');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-sqlpg-'));
   const lite = openNodeDb(path.join(tmp, 'a.db'), { legacyProjects: false });
@@ -101,10 +101,12 @@ if (PG_URL) {
   } finally { await db.close(); await lite.close(); }
 
   // 舊站：拿掉 002 的三個欄位與紀錄，重開要補套 002
-  const c = new pg.Client({ connectionString: PG_URL, options: `-c search_path=${sch}` });
+  const c = new pg.Client({ connectionString: PG_URL });
   await c.connect();
-  await c.query("ALTER TABLE participants DROP COLUMN wake_day, DROP COLUMN wake_count, DROP COLUMN wake_at; DELETE FROM schema_migrations WHERE name = '002_wake_counts.sql'");
-  await c.end();
+  try {
+    await setPgSearchPath(c, sch);
+    await c.query("ALTER TABLE participants DROP COLUMN wake_day, DROP COLUMN wake_count, DROP COLUMN wake_at; DELETE FROM schema_migrations WHERE name = '002_wake_counts.sql'");
+  } finally { await c.end(); }
   const logs = [], log = console.log;
   console.log = (...a) => logs.push(a.join(' '));
   const again = await openPgDb(PG_URL, { legacyProjects: false, schema: sch, max: 1 }).finally(() => { console.log = log; });
@@ -113,8 +115,12 @@ if (PG_URL) {
     assert.equal((await again.get("SELECT wake_count FROM participants WHERE id = 'p1'")).wake_count, 0, '補回欄位、預設值');
   } finally { await again.close(); }
   // 資料庫比程式新（有程式不認得的升級）：拒絕啟動
-  const c2 = new pg.Client({ connectionString: PG_URL, options: `-c search_path=${sch}` });
-  await c2.connect(); await c2.query("INSERT INTO schema_migrations (name, applied_at) VALUES ('999_future.sql', 't')"); await c2.end();
+  const c2 = new pg.Client({ connectionString: PG_URL });
+  await c2.connect();
+  try {
+    await setPgSearchPath(c2, sch);
+    await c2.query("INSERT INTO schema_migrations (name, applied_at) VALUES ('999_future.sql', 't')");
+  } finally { await c2.end(); }
   await assert.rejects(openPgDb(PG_URL, { legacyProjects: false, schema: sch, max: 1 }), e => e.name === 'MigrationError' && e.message.includes('999_future.sql'));
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('sql-pg-test：全部通過（含 Postgres 實機比對）');

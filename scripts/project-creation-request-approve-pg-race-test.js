@@ -241,6 +241,7 @@ try {
     const x = await row(q.id);
     assert.deepEqual([x.state, x.project_id], ['approved', r1.body.project.id]);
     assert.equal(await projectsNamed(q.name), 1, '專案照樣存在');
+    assert.equal(await count('SELECT COUNT(*) AS n FROM project_members WHERE project_id = ? AND participant_id = ?', x.project_id, p.id), 0, '移出時一併結束剛取得的專案成員資格');
     console.log('✓ Postgres：核准先完成、移出申請人後到：申請已核准、移出取消 0 份');
   }
   console.log('project-creation-request-approve-pg-race-test：全部通過');
