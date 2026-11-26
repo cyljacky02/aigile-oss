@@ -164,6 +164,12 @@ try {
     console.log('✓ 既有衝突原樣保留；只有平台管理員看得到診斷；照樣能建立專案（一定存代號）');
   }
 
+  const repair = async proposal => {
+    const endpoint = '/api/admin/project-identity';
+    const plan = ok(await A.call(boss.token, `${endpoint}/preview`, 'POST', proposal), '預覽修復');
+    ok(await A.call(boss.token, `${endpoint}/confirm`, 'POST', { ...proposal, state: plan.state, resolutionState: plan.resolutionState, acknowledged: true }), '確認修復');
+  };
+
   // ---------- B. 新寫入不得新增、擴大或轉移衝突 ----------
   {
     const create = body => A.call(boss.token, '/api/projects', 'POST', body);
@@ -181,7 +187,8 @@ try {
     assert.equal((await db.get("SELECT value FROM app_settings WHERE key = 'pcodeold:ALPHA'"))?.value, 'p_alpha2', '舊代號留作別名');
     assert.equal(ok(await A.call(boss.token, '/api/cards/ALPHA-1'), '舊代號連結').cardId, 'ALF-1', '舊卡號照樣查得到，現在顯示新代號');
     // 重複代號的其中一個改掉：舊代號同時是別的專案的代號，不寫成別名（不把重複代號轉成「代號與他案舊代號相同」）
-    ok(await A.call(boss.token, '/api/projects/p_dup1/code', 'PUT', { code: 'DUPA' }), '重複代號的一方改代號');
+    is(await A.call(boss.token, '/api/projects/p_dup1/code', 'PUT', { code: 'DUPA' }), 409, 'IDENTITY_REPAIR_REQUIRED', '重複代號必須確認修復');
+    await repair({ projectId: 'p_dup1', field: 'code', replacement: 'DUPA' });
     assert.equal(await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'pcodeold:DUP'"), null, '沒有寫 DUP 的別名');
     // 重複的代號改成別人的舊代號：409，不會把別人的舊代號搬走
     is(await A.call(boss.token, '/api/projects/p_dup2/code', 'PUT', { code: 'OLDO' }), 409, 'CODE_TAKEN', '不能拿別人的舊代號');
@@ -195,7 +202,8 @@ try {
     ok(await A.call(boss.token, '/api/projects/p_dup2/archive', 'POST'), '封存 p_dup2');
     is(await A.call(boss.token, '/api/projects/p_dup2/unarchive', 'POST'), 409, 'IDENTITY_CONFLICT', '取消封存：網址英文名跟別的專案重複');
     assert.equal(Number((await db.get("SELECT archived FROM projects WHERE id = 'p_dup2'")).archived), 1, '維持封存');
-    ok(await A.call(boss.token, '/api/projects/p_dup2/slug', 'PUT', { slug: 'twin-2' }), '封存中改網址英文名');
+    is(await A.call(boss.token, '/api/projects/p_dup2/slug', 'PUT', { slug: 'twin-2' }), 409, 'IDENTITY_REPAIR_REQUIRED', '重複網址英文名必須確認修復');
+    await repair({ projectId: 'p_dup2', field: 'slug', replacement: 'twin-2' });
     ok(await A.call(boss.token, '/api/projects/p_dup2/unarchive', 'POST'), '改掉後可以取消封存');
     // 復原：可復原期內的專案的網址英文名被舊資料重複用了（直接改資料庫模擬升級前就有的衝突）
     await db.run("UPDATE app_settings SET value = 'gone' WHERE key = 'slug:p_same1'");

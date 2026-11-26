@@ -23,8 +23,23 @@ export async function readDisputed(db) {
   try { return await db.all(`SELECT namespace, value FROM project_identity_claimants GROUP BY namespace, value ${DISPUTED}`); }
   catch (error) { if (isMissingClaimTable(error)) return []; throw error; }
 }
+export const readDisputedClaimants = (db, namespace) => db.all(`SELECT value, project_id, source, raw_value FROM project_identity_claimants
+  WHERE namespace = ? AND value IN (SELECT value FROM project_identity_claimants WHERE namespace = ? GROUP BY value ${DISPUTED})
+  ORDER BY value, project_id, source, raw_value`, namespace, namespace);
 
-function claimants(rows, shown) {
+// Rebuild only values changed by an acknowledged repair. Unrelated restored disputes remain reserved.
+export function reconcileClaimTokenStmts(namespace, value, sourcePages) {
+  const pages = Array.from(sourcePages, ([json]) => json);
+  return [
+    ['DELETE FROM project_identity_claimants WHERE namespace = ? AND value = ?', [namespace, value]],
+    pages.length ? ['INSERT INTO project_identity_claims (namespace, value) VALUES (?, ?) ON CONFLICT DO NOTHING', [namespace, value]]
+      : ['DELETE FROM project_identity_claims WHERE namespace = ? AND value = ?', [namespace, value]],
+    ...pages.map(json => [`INSERT INTO project_identity_claimants (namespace, value, project_id, source, raw_value)
+      SELECT ?, ?, json_extract(value, '$.projectId'), json_extract(value, '$.source'), json_extract(value, '$.rawValue') FROM json_each(?)`, [namespace, value, json]]),
+  ];
+}
+
+export function identityClaimants(rows, shown) {
   const slug = (projectId, source, rawValue) => ({ namespace: 'slug', value: routeToken(rawValue), projectId, source, rawValue });
   const code = (projectId, source, rawValue) => ({ namespace: 'code', value: codeToken(rawValue), projectId, source, rawValue });
   return [
@@ -70,7 +85,7 @@ export async function diagnoseClaims(db, { rows, shown, marker, restoring }) {
       ORDER BY c.namespace, c.value, s.project_id, s.source, s.raw_value`);
   } catch (error) { if (isMissingClaimTable(error)) return { status: 'pending', disputes: [] }; throw error; }
   const key = (namespace, value, id, source, raw) => JSON.stringify([namespace, value, id, source, raw]);
-  const expected = new Set(claimants(rows, shown).map(c => key(c.namespace, c.value, c.projectId, c.source, c.rawValue)));
+  const expected = new Set(identityClaimants(rows, shown).map(c => key(c.namespace, c.value, c.projectId, c.source, c.rawValue)));
   const expectedCount = expected.size, groups = new Map();
   for (const r of stored) {
     expected.delete(key(r.namespace, r.value, r.project_id, r.source, r.raw_value));

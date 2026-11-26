@@ -144,11 +144,11 @@ try {
   await db.run('DELETE FROM app_settings WHERE key = ?', 'pcode:' + derived);
   assert.equal((await projects()).find(p => p.id === derived).code, 'RCVRA');
   const derivedPlan = ok(await preview(recoverable, 'code', 'REV'));
-  assert.deepEqual(derivedPlan.codeChanges.map(c => [c.projectId, c.before, c.after]), [[recoverable, 'RCVR', 'REV'], [derived, 'RCVRA', 'RCVR']]);
-  assert.equal(derivedPlan.cardReferences.find(r => r.code === 'RCVR').after.projectId, derived);
-  assert.equal(derivedPlan.cardReferences.find(r => r.code === 'RCVRA').after, null);
+  assert.deepEqual(derivedPlan.codeChanges.map(c => [c.projectId, c.before, c.after]), [[recoverable, 'RCVR', 'REV']]);
+  assert.deepEqual(derivedPlan.pinnedCodes, [{ projectId: derived, code: 'RCVRA' }]);
+  assert.deepEqual(derivedPlan.cardReferences.find(r => r.code === 'RCVR').after, { projectId: a, source: 'historical', available: true });
   assert.equal((await projects()).find(p => p.id === derived).code, 'RCVRA');
-  console.log('✓ 試算使用變更後的設定重新推導代號');
+  console.log('✓ 試算保留沒有衝突的推導代號');
   await setting('slug:' + archived, 'inactive-route');
   await setting('slug:' + recoverable, 'inactive-route');
   const inactiveRoute = ok(await preview(archived, 'slug', 'archived-new')).routes[0];

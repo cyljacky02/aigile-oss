@@ -99,7 +99,9 @@ try {
   assert.match(winners.find(r => r.status === 'rejected').reason.message, /unique|duplicate/i);
   await db.run("DELETE FROM project_identity_claims WHERE namespace = 'code' AND value = 'RACE'");
   assert.equal(ok(await call(admin, '/api/deleted-projects')).items.find(p => p.projectId === 'tomb')?.code, 'DEAD');
-  ok(await call(admin, '/api/projects/a/code', 'PUT', { code: 'ANEW' }));
+  const historicalEdit = await call(admin, '/api/projects/a/code', 'PUT', { code: 'ANEW' });
+  assert.deepEqual([historicalEdit.status, historicalEdit.body.error?.code], [409, 'IDENTITY_REPAIR_REQUIRED']);
+  await db.run("UPDATE app_settings SET value = 'ANEW' WHERE key = 'pcode:a'"); // Older server, before confirmed repair existed.
   const restarted = site(db);
   const afterWrite = ok(await restarted(admin, diagnostic));
   assert.equal(afterWrite.claims.status, 'stale', '舊寫入後不能把快照當成現況');

@@ -63,7 +63,10 @@ function site(base, token) {
       const r = await fetch(base + p, { method, headers: { 'content-type': 'application/json', ...(tok ? { authorization: `Bearer ${tok}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await r.text();
       let json = null; try { json = JSON.parse(text); } catch {}
-      if (r.status === 429 && attempt < 3) { await sleep(((Number(json?.error?.retryAfter) || 5) * 1000) + 250); continue; } // 每人每分鐘 120 次的頻率限制
+      if (r.status === 429 && json?.error?.code === 'RATE_LIMITED' && attempt < 3) {
+        await sleep((Number(r.headers.get('Retry-After')) || 5) * 1000 + 250);
+        continue;
+      }
       return { status: r.status, body: json, text, stats: JSON.parse(r.headers.get('x-d1-verify-stats') || 'null') };
     }
   };
@@ -460,7 +463,7 @@ try {
   });
 
   // ===== D1-08 識別碼衝突與正規化 =====
-  await check('D1-08', '識別碼：名稱、網址英文名、代號衝突（直接建立與核准）；舊資料的識別碼正規化（存進資料庫、既有衝突原樣保留並列出）', async note => {
+  await check('D1-08', '識別碼：避免新衝突、保留舊衝突，預覽與確認修復；過期整批回復', async note => {
     await reauth(a, boss);
     ok(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 已有', slug: 'd1-taken', code: 'DTKN' }), '直接建立');
     is(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 已有' }), 409, 'NAME_TAKEN', '同名');
@@ -531,7 +534,36 @@ try {
     assert.deepEqual(keep.retiredAlias, { code: oldCode, projectId: 'p_legacy_b' });
     assert.deepEqual(keep.cardReferences[0].examples.map(r => [r.outcome, r.after?.legacyId]), [['same_card', alphaCard.legacyId]]);
     assert.ok(keep.resolutionState);
-    note(`舊專案代號：${stored['pcode:p_legacy_a']}、${stored['pcode:p_legacy_b']}；既有衝突 ${diag.conflicts.length} 處`);
+    const confirm = (token, field, replacement, proposal) => a.call(token, '/api/admin/project-identity/confirm', 'POST', {
+      projectId: 'p_legacy_a', field, replacement, state: proposal.state, resolutionState: proposal.resolutionState, acknowledged: true,
+    });
+    // Give the repair scenario its own admin so the other scenarios don't share its request budget.
+    const repairer = await join(a, '識別碼修復管理員');
+    ok(await a.call(boss.token, `/api/participants/${repairer.id}/platform-role`, 'PUT', { role: 'admin' }), '升為平台管理員');
+    const t = repairer.token;
+    const auditCount = async () => ok(await a.call(t, '/api/audit-log?scope=platform&action=project_identity.repair'), '修復稽核').items.length;
+    is(await confirm(dan.token, 'code', 'LEGZ', codePlan), 403, 'NOT_ADMIN', '只有平台管理員能確認');
+    // Change an alias shadowed by the current card after the tokens have been read. The final assertion must roll the audit back too.
+    await a.fault({ re: 'INSERT INTO audit_log', mode: 'before', sql: 'INSERT INTO app_settings (key, value) VALUES (?, ?)',
+      args: ['cardmoved:p_legacy_a:1', String(Number(betaCard.legacyId.slice(2)) - 100)] });
+    is(within('過期的代號修復確認', await confirm(t, 'code', 'LEGZ', codePlan)), 409, 'IDENTITY_PREVIEW_STALE', '移卡別名變更使確認過期');
+    assert.equal((await a.faultStatus()).hits, 1);
+    await a.fault({ re: null });
+    assert.equal(await auditCount(), 0);
+    assert.equal(ok(await a.call(t, `/api/cards/${oldCode}-1`), '過期後查卡').legacyId, alphaCard.legacyId);
+    const fresh = ok(await preview(t, 'code', 'LEGZ'), '更新預覽');
+    ok(within('代號修復確認', await confirm(t, 'code', 'LEGZ', fresh)), '提交代號修復');
+    assert.equal(ok(await a.call(t, '/api/cards/LEGZ-1'), '新代號查卡').legacyId, alphaCard.legacyId);
+    assert.equal(ok(await a.call(t, `/api/cards/${oldCode}-1`), '舊代號查卡').legacyId, betaCard.legacyId);
+    assert.equal(await auditCount(), 1);
+    const freshSlug = ok(await preview(t, 'slug', 'legacy-alpha'), '更新網址預覽');
+    ok(within('網址修復確認', await confirm(t, 'slug', 'legacy-alpha', freshSlug)), '提交網址修復');
+    const repaired = ok(await a.call(t, '/api/admin/project-identity'), '修復後診斷');
+    assert.equal(repaired.conflicts.length, 0);
+    assert.equal(repaired.claims.disputes.length, 0);
+    assert.equal(await auditCount(), 2);
+    ok(await a.call(boss.token, `/api/participants/${repairer.id}/platform-role`, 'PUT', { role: 'none' }), '還原審核人數');
+    note(`舊專案代號：${stored['pcode:p_legacy_a']}、${stored['pcode:p_legacy_b']}；確認修復兩處，過期確認整批回復`);
   });
 
   // ===== D1-09 大量取消、通知、稽核在 D1 限制內 =====
@@ -609,6 +641,8 @@ try {
     // 舊版的識別碼：拿掉一個專案存的代號、拿掉「已正規化」標記（收尾一定重新正規化）
     const strip = T.app_settings.find(s => s.key === 'pcode:p_legacy_a');
     T.app_settings = T.app_settings.filter(s => s !== strip);
+    // This scenario needs an unresolved legacy conflict, independent of the earlier confirmed repair.
+    T.app_settings.find(s => s.key === 'slug:p_legacy_a').value = 'legacy-site';
     const projectsInBackup = T.projects.length;
     const expected = { [keep.id]: ['pending', null], [dis.id]: ['cancelled', 'account_disabled'], [rem.id]: ['cancelled', 'workspace_member_removed'], pcr_ghost: ['cancelled', 'restore_invalid'] };
     const terminalBefore = T.project_creation_requests.filter(r => r.state !== 'pending').length;
