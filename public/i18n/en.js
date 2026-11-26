@@ -3825,5 +3825,17 @@ window.AIGILE_EN = {
     "已送出「{0}」的建立專案申請，等工作區管理員審核": "Request for \"{0}\" submitted; waiting for a workspace admin to review it",
     "這份申請剛才已經送出（內容不同）：請關掉表單，在「我的建立專案申請」查看；要改內容請撤回後重送。": "This request was already submitted (with different content). Close the form and check \"My project requests\"; to change it, withdraw it and submit again.",
     "連線中斷，不確定有沒有送到；再按一次「送出申請」不會重複送出。": "Connection lost; it may or may not have been sent. Pressing \"Submit request\" again won't send a duplicate.",
+    // 政策或成員資格改變時取消待審申請（#46）
+    "你的建立專案申請已取消：工作區政策已改變，不再收建立專案申請 · {0}。": "Your project request was cancelled: the workspace policy changed and no longer accepts project requests · {0}.",
+    "到總覽的「我的建立專案申請」查看；需要新專案請找工作區管理員。": "See \"My project requests\" on the overview. If you need a new project, ask a workspace admin.",
+    "取消 {0} 份待審核的建立專案申請": "Cancelled {0} pending project request(s)",
+    "已儲存：一般成員要送建立專案申請，管理員核准後建立": "Saved: members request projects and admins approve them",
+    "不再收建立專案申請？": "Stop taking project requests?",
+    "切換後會取消目前 {0} 份待審核的建立專案申請，申請人會收到通知；之後切回「成員申請，管理員核准」也不會恢復。這是目前的預估，實際數字以儲存結果為準。": "Switching cancels the {0} pending project request(s) right now, and the requesters are notified. Switching back later does not restore them. This is an estimate; the saved result has the actual number.",
+    "目前沒有待審核的建立專案申請。切換後一般成員就不能再送建立專案申請。": "There are no pending project requests right now. After switching, members can no longer send project requests.",
+    "切換": "Switch",
+    "{0}；已取消 {1} 份待審核的建立專案申請": "{0}. Cancelled {1} pending project request(s)",
+    "{0}；沒有取消任何申請": "{0}. No requests were cancelled",
+    "剛好有人同時在改工作區政策，這次沒有存；請重新讀取後再試。": "Someone changed the workspace policy at the same time, so this wasn't saved. Reload and try again.",
   },
 };

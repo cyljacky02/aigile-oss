@@ -2194,7 +2194,8 @@ ${ending}`;
   }
   const groupSettings = async () => {
     const js = await joinSettings(), ws = await workspace.load(true);
-    return { name: await groupName(), openJoin: js.openJoin, roomCodeSet: js.roomCodeSet, source: js.source, createProjects: ws.createProjects, deleteOwnMessages: ws.deleteOwnMessages };
+    // createProjectsOptions：現在能設的值（暫時的啟用控制沒開時沒有 approval；畫面照這個列單選項）
+    return { name: await groupName(), openJoin: js.openJoin, roomCodeSet: js.roomCodeSet, source: js.source, createProjects: ws.createProjects, createProjectsOptions: selectableCreateProjects(), deleteOwnMessages: ws.deleteOwnMessages };
   };
   // 工作區設定（工作區管理員）：開放自行註冊、房間碼、工作區名稱、誰可以建立專案、誰可以刪除自己的訊息；存資料庫立刻生效。房間碼只回「有沒有設」
   // /api/workspace/settings 是新名字；/api/group/settings 留著給舊的網頁與整合（同一份）
@@ -2205,7 +2206,7 @@ ${ending}`;
   const CREATE_PROJECTS_LABEL = { [CREATE_PROJECTS.MEMBERS]: '所有成員', [CREATE_PROJECTS.APPROVAL]: '成員申請，管理員核准', [CREATE_PROJECTS.ADMINS]: '只有工作區管理員' };
   // 暫時的啟用控制（#44 加、#48 移除；不是功能旗標框架）：「成員申請，管理員核准」（approval）要等申請、審核、取消、還原處理都完成後才開放給正式環境選。
   // 在那之前只有設了 config.unreleasedProjectCreationRequests（本機環境變數 AIGILE_UNRELEASED_PROJECT_CREATION_REQUESTS=1；測試用）才能透過 API 設成 approval；
-  // 工作區設定的畫面不提供這個選項。已經存成 approval 的值照常生效（可以切回其他兩種）
+  // 工作區設定的畫面照 createProjectsOptions 列選項（沒開就沒有這個選項）。已經存成 approval 的值照常生效（可以切回其他兩種）
   const APPROVAL_SELECTABLE = config.unreleasedProjectCreationRequests === true || config.unreleasedProjectCreationRequests === '1';
   const selectableCreateProjects = () => Object.values(CREATE_PROJECTS).filter(x => x !== CREATE_PROJECTS.APPROVAL || APPROVAL_SELECTABLE);
   const DELETE_OWN_LABEL = { [DELETE_OWN_MESSAGES.MEMBERS]: '所有成員', [DELETE_OWN_MESSAGES.ADMINS]: '只有工作區管理員' };
