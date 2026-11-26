@@ -126,6 +126,7 @@ try {
   assert.ok(backup.tables.messages.length > 620);
   for (const t of ['participants', 'projects', 'messages', 'cards', 'skills', 'app_settings', 'docs', 'files', 'kb_chunks', 'kb_pages']) assert.ok(backup.tables[t]?.length, '有 ' + t);
   for (const t of SKIP_TABLES) assert.equal(backup.tables[t], undefined, '不帶 ' + t);
+  for (const t of ['project_identity_claims', 'project_identity_claimants']) assert.ok(backup.tables[t], '備份保留爭議來源 ' + t);
   const text = JSON.stringify(backup);
   for (const tok of [liu.token, chen.token, aiTok]) assert.ok(!text.includes(tok), '不含 Token');
   assert.ok(!/pbkdf2/.test(text), '不含密碼雜湊');

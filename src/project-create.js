@@ -19,6 +19,7 @@
 //   creation.preview({ name, slug|null, code|null }) → { slug, code, slugEstimated, codeEstimated, conflicts }：審核畫面的預估值與衝突欄位
 import { ensureStmt } from './write-order.js';
 import { slugFreeCond, codeFreeCond, ensureCond, holdsNow } from './project-identity.js';
+import { notDisputed, routeToken } from './project-identity-claims.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 import { PROJECT_VISIBILITIES } from './access.js';
@@ -60,6 +61,7 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
     const nf = nameFreeCond(name, id);
     return [
       ensureStmt(nf.cond, nf.args), ensureCond(slugFreeCond(slug, id)), ensureCond(codeFreeCond(code, id)),
+      ensureStmt(notDisputed('slug'), [routeToken(id)]), // 舊網址也可以用專案 ID 開啟
       ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at, visibility) VALUES (?,?,0,?,?,?,?)', [id, name, workspaceId, actor?.id ?? 'system', at, visibility]],
       projEvent(id, actor?.id ?? 'system', eventText ?? `${actor?.name ?? '系統'} 建立專案`, at),
       // 看板狀態跟專案同一批：沒指定就寫預設狀態組。每個狀態一句單列 INSERT（D1 一個複合 SELECT 最多 5 段，不用 UNION ALL）

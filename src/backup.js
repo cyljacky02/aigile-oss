@@ -12,6 +12,7 @@ import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, RESTORE_STATE_KEY } from './write-order.js';
 import { IDENTITY_READY_KEY } from './project-identity.js';
+import { CLAIM_TABLES, CLAIM_SCHEMA_QUERY, isMissingClaimTable } from './project-identity-claims.js';
 import { PCR_TABLE, restoreRowProblem } from './project-creation-requests.js';
 import { TEMPLATE_TABLE, restoreTemplateProblem, templateNotReady } from './project-templates.js';
 import { isConstraintViolation, isMissingTable } from './db-errors.js';
@@ -26,10 +27,12 @@ export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'pro
   'project_creation_requests', // 建立專案申請：所有狀態原樣帶（舊備份沒有這張表＝還原後是空的；收尾時檢查待審的，見 core.js 的 restoreSteps）
   'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages', // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
+  ...CLAIM_TABLES, // 先匯入保留值，再匯入來源
   'audit_log']; // 稽核紀錄：還原時不清掉這個站原本的，備份裡的合併進來（同一筆 id 不重複），結束匯入時再加一筆 backup.restore
 const KEEP_TABLES = ['audit_log']; // 開始匯入時不清的表（稽核紀錄只能新增）
 // 不匯出：登入用的（Token、密碼雜湊、裝置、登入碼、邀請、救援連結、登入通知、失敗次數）
 // schema_migrations：每個站自己套過哪些資料庫升級，不跟著備份搬；legacy_members：升級用的暫存，轉完就是空的
+// 保留表由還原收尾從 projects 與 app_settings 重建，沿用舊備份格式。
 export const SKIP_TABLES = ['devices', 'invites', 'pair_codes', 'credentials', 'login_fails', 'rescue_links', 'account_notices', 'schema_migrations', 'legacy_members'];
 const FILE_TABLES = ['docs', 'files', 'kb_chunks']; // 不含附件時整張不帶（kb_chunks 是文件內容，沒文件就不帶）
 const BLOB_COLS = { avatars: ['data'], avatar_proposals: ['data'], file_chunks: ['data'] };
@@ -55,6 +58,7 @@ const toU8 = v => (v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new 
 export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, adminOf, storage, docStorage, auditLog, membership, clearCaches, restoreSteps = [] }) {
   const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '備份與匯入' }); };
   const columnsOf = async t => (await db.all(`PRAGMA table_info(${t})`)).map(c => c.name);
+  const claimsNotReady = () => new ApiError(503, 'IDENTITY_NOT_READY', '專案的網址英文名與代號還在整理，這次沒有存；請稍後再試。', { retryAfter: 5 });
   // 匯入中只認開始匯入的那位（備份的成員寫進來後，最早的人類會變成管理員，不能再用權限模組的管理員判斷）。
   // 收尾已經把登入轉到備份裡的管理員（restore_state.you）：認那位，而且只剩收尾能做（finishing）
   const holder = st => st.you || st.by;
@@ -110,8 +114,13 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     const tables = [];
     for (const t of EXPORT_TABLES) {
       if ((!withFiles && FILE_TABLES.includes(t)) || (t === TEMPLATE_TABLE && !withTemplates)) continue;
-      const n = (await db.get(`SELECT COUNT(*) AS n FROM ${t}${fileFilter(t, withFiles)}`))?.n || 0;
-      tables.push({ name: t, count: n });
+      try {
+        const n = (await db.get(`SELECT COUNT(*) AS n FROM ${t}${fileFilter(t, withFiles)}`))?.n || 0;
+        tables.push({ name: t, count: n });
+      } catch (e) {
+        if (!CLAIM_TABLES.includes(t) || !isMissingClaimTable(e)) throw e;
+        // 程式先部署時，備份略過尚未建立的識別碼保留表。
+      }
     }
     const docs = withFiles && docStorage ? (await db.all('SELECT id FROM docs WHERE deleted_at IS NULL')).map(r => r.id) : [];
     return { format: BACKUP_FORMAT, formatVersion: BACKUP_FORMAT_VERSION, appVersion: APP_VERSION, exportedAt: nowIso(), includeFiles: withFiles, tables, docs,
@@ -125,7 +134,10 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     if (t === TEMPLATE_TABLE && !(await templatesReady())) return { table: t, rows: [], next: null };
     const after = Math.max(0, Number.parseInt(q.get('after') || '0', 10) || 0), limit = pageOf(t);
     const f = fileFilter(t, withFiles);
-    const rows = await db.all(`SELECT rowid AS __rowid, * FROM ${t}${f ? f + ' AND' : ' WHERE'} rowid > ? ORDER BY rowid LIMIT ?`, after, limit + 1);
+    const rows = await db.all(`SELECT rowid AS __rowid, * FROM ${t}${f ? f + ' AND' : ' WHERE'} rowid > ? ORDER BY rowid LIMIT ?`, after, limit + 1).catch(e => {
+      if (CLAIM_TABLES.includes(t) && isMissingClaimTable(e)) throw claimsNotReady();
+      throw e;
+    });
     const more = rows.length > limit, page = rows.slice(0, limit);
     const drop = DROP_COLS[t] || [], blobs = BLOB_COLS[t] || [];
     const out = page.filter(r => t !== 'app_settings' || settingOk(r)).map(r => {
@@ -168,13 +180,17 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       ensureStmt(withTemplates ? templateTablePresent : `NOT (${templateTablePresent})`, [TEMPLATE_TABLE]),
       cur ? ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, cur.raw])
         : ensureStmt(`NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?) AND ${emptyCond(withTemplates)}`, [RESTORE_STATE_KEY, me.id]),
-      ...[...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES].includes(t) && (t !== TEMPLATE_TABLE || withTemplates)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []])];
+      // 先清掉識別碼來源，再清保留值。收尾只採用這次匯入的爭議來源。
+      ...[...CLAIM_TABLES.toReversed(),
+        ...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES, ...CLAIM_TABLES].includes(t) && (t !== TEMPLATE_TABLE || withTemplates)),
+        'legacy_members'].map(t => [`DELETE FROM ${t}`, []])];
     stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
     const orig = state ? { name: state.name, code: state.code } : { name: me.name, code: me.code }; // 重來時你已經是暫時的名字：用第一次記下的
     stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${orig.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
-    stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: orig.name, code: orig.code, appVersion: body.appVersion })]]);
+    stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: orig.name, code: orig.code, appVersion: body.appVersion, clearedIdentityClaims: true })]]);
     try { await db.batch(stmts); } catch (e) {
+      if (isMissingClaimTable(e)) throw claimsNotReady(); // 整批已回復，沒有清任何資料。
       if (!isAssertionFailure(e)) throw e;
       // 用新鮮資料判斷原因（只用來產生回應）
       const now = await restoring();
@@ -201,6 +217,9 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     }
     // 範本頁在一批內寫入。唯一鍵衝突時，整頁一起回滾。
     if (t === TEMPLATE_TABLE && body.rows.length > TEMPLATE_RESTORE_PAGE) throw invalid('專案範本每批最多 97 列');
+    const claimTable = CLAIM_TABLES.includes(t);
+    // PRAGMA 對不存在的表回空清單。先確認可以匯入識別碼爭議來源。
+    if (claimTable) await db.get(CLAIM_SCHEMA_QUERY).catch(e => { if (isMissingClaimTable(e)) throw claimsNotReady(); throw e; });
     const have = new Set(await columnsOf(t)), drop = [...(DROP_COLS[t] || []), ...(t === 'audit_log' ? ['seq'] : [])], blobs = BLOB_COLS[t] || [];
     const stmts = [];
     let inserted = 0;
@@ -232,7 +251,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     for (let i = 0; i < stmts.length; i += 100) {
       try { await db.batch([...samePhaseStmts(raw), ...stmts.slice(i, i + 100)]); } catch (e) {
         if (isAssertionFailure(e)) throw (await restoring())?.you ? finishingError() : notRestoring();
-        if (ROW_CHECKS[t] && isConstraintViolation(e)) throw rowInvalid(t, null, ROW_INVALID_MSG.constraint);
+        if (claimTable && isMissingClaimTable(e)) throw claimsNotReady();
+        if ((ROW_CHECKS[t] || claimTable) && isConstraintViolation(e)) throw rowInvalid(t, null, ROW_INVALID_MSG.constraint);
         throw e;
       }
     }
@@ -259,7 +279,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   // 收尾的固定順序（每一步都要能重跑；任何一步失敗都維持「還原中」、回 503 RESTORE_UNFINISHED，再按一次從第 1 步重跑）：
   //   1. 成員與帳號轉換：登入改掛、其他人要重設登入，跟「已轉移」的記號同一批（重跑時已轉移就略過）；Postgres 接續流水號
   //   2. 收尾修整步驟 restoreSteps（依序；這時還在還原中，其他會動到共同不變量的寫入都被擋下）。
-  //      每一步拿到 { state, keepStmts }：state 是目前的 restore_state（前一次收尾記下的結果也在）；keepStmts(patch) 回把 patch 記進 restore_state 的語句，
+  //      每一步拿到 { state, raw, keepStmts }：state 是目前的 restore_state（前一次收尾記下的結果也在）；keepStmts(patch) 回把 patch 記進 restore_state 的語句，
   //      放進那一步自己的那一批（跟那一步的修改一起提交或一起不做）。重試時不能從現況重算的結果（例：這次還原取消了幾份申請）就這樣跨次保留
   //   3. 寫入 backup.restore 稽核（含檢查待審申請時因還原而取消的數量），跟解除「還原中」同一批（稽核只會有一筆）
   //   4. 清快取
@@ -275,7 +295,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
         // 斷言 restore_state 沒被別的收尾改過，再寫入新的值（同時按兩次收尾：後提交的那批整批不做）
         const keepStmts = patch => [ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, cur.raw]),
           ['UPDATE app_settings SET value = ? WHERE key = ?', [JSON.stringify({ ...cur.st, ...patch }), RESTORE_STATE_KEY]]];
-        if ((await step.run({ state: cur.st, keepStmts })) === false) throw new Error(`還原收尾的「${step.name}」沒有做完`);
+        if ((await step.run({ state: cur.st, raw: cur.raw, keepStmts })) === false) throw new Error(`還原收尾的「${step.name}」沒有做完`);
       }
       state = (await readState())?.st || state;
       // 檢查待審申請時因還原而取消的數量：記在 restore_state（第一次收尾已取消、之後重試的不會被數成零）
