@@ -99,5 +99,17 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
       if (!(slugLost || codeLost) || attempt >= IDENTITY_TRIES) throw why;
     }
   }
-  return { create, stmts };
+  // 審核畫面用的預估（#45）：沒指定的網址英文名與代號現在會產生什麼（只是預估，建立時重算）、哪些欄位現在有衝突。
+  // conflicts 只列欄位（name、slug、code），不說被哪個專案占用；自動產生的值會避開已用的，不算衝突
+  async function preview({ name, slug = null, code = null }) {
+    await names.refresh();
+    const used = await names.usedSlugs();
+    const conflicts = [];
+    if (names.nameInUse(name)) conflicts.push('name');
+    if (slug && used.has(slug)) conflicts.push('slug');
+    if (code) { try { names.checkCode(code, null); } catch (e) { if (e?.code !== 'CODE_TAKEN') throw e; conflicts.push('code'); } }
+    const s = slug || names.autoSlug(name, used);
+    return { slug: s, code: code || names.autoCode(s), slugEstimated: !slug, codeEstimated: !code, conflicts };
+  }
+  return { create, stmts, preview };
 }

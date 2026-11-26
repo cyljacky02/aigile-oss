@@ -3782,7 +3782,7 @@ window.AIGILE_EN = {
     "你已經有一份「{0}」的建立專案申請在等審核；要改內容請先撤回再重送。": "You already have a pending project creation request for \"{0}\". To change it, withdraw it and submit again.",
     "工作區政策目前不是「成員申請，管理員核准」，不收建立專案申請。": "The workspace policy isn't \"Members request, admins approve\", so project creation requests aren't accepted.",
     "你目前不能送建立專案申請（可能已經可以直接建立專案，或已不是有效的工作區成員）。": "You can't submit a project creation request right now (you may already be able to create projects directly, or you're no longer an active workspace member).",
-    "scope 只能是 mine": "scope must be mine",
+    "scope 只能是 mine 或 review": "scope must be mine or review",
     "state 只能是 pending、approved、rejected、withdrawn、cancelled": "state must be pending, approved, rejected, withdrawn or cancelled",
     "limit 需為 1～{0}": "limit must be 1–{0}",
     "cursor 不對（請用上一頁回傳的 nextCursor）": "Invalid cursor (use the nextCursor returned by the previous page)",
@@ -3825,5 +3825,14 @@ window.AIGILE_EN = {
     "已送出「{0}」的建立專案申請，等工作區管理員審核": "Request for \"{0}\" submitted; waiting for a workspace admin to review it",
     "這份申請剛才已經送出（內容不同）：請關掉表單，在「我的建立專案申請」查看；要改內容請撤回後重送。": "This request was already submitted (with different content). Close the form and check \"My project requests\"; to change it, withdraw it and submit again.",
     "連線中斷，不確定有沒有送到；再按一次「送出申請」不會重複送出。": "Connection lost; it may or may not have been sent. Pressing \"Submit request\" again won't send a duplicate.",
+    // 建立專案申請：核准與拒絕（#45）
+    "只有工作區管理員或平台管理員能審核建立專案申請。": "Only workspace admins or platform admins can review project creation requests.",
+    "工作區政策已經不是「成員申請，管理員核准」，不能核准這份申請。": "The workspace policy is no longer \"Members request, admins approve\", so this request can't be approved.",
+    "申請人已經不是有效的工作區成員（可能已被移出或帳號已停用），不能核准。": "The requester is no longer an active workspace member (they may have been removed or their account disabled), so this can't be approved.",
+    "稽核紀錄還沒準備好（資料庫還沒升級），這次沒有處理；請稍後再試。": "The audit log isn't ready yet (the database hasn't been upgraded), so nothing was done. Please try again shortly.",
+    "拒絕理由為必填，最多 {0} 字": "A reason for rejection is required, up to {0} characters",
+    "已有同名的專案，這份申請暫時不能核准；可以附理由拒絕，或等申請人撤回重提。": "A project with this name already exists, so this request can't be approved for now. You can reject it with a reason, or wait for the requester to withdraw and resubmit.",
+    "申請指定的網址英文名已經有專案在用，這份申請暫時不能核准；可以附理由拒絕，或等申請人撤回重提。": "The URL name in the request is already used by a project, so this request can't be approved for now. You can reject it with a reason, or wait for the requester to withdraw and resubmit.",
+    "申請指定的專案代號已經有專案在用（或是舊代號），這份申請暫時不能核准；可以附理由拒絕，或等申請人撤回重提。": "The project code in the request is already used by a project (or is an old code), so this request can't be approved for now. You can reject it with a reason, or wait for the requester to withdraw and resubmit.",
   },
 };
