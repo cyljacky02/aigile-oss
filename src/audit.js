@@ -114,9 +114,9 @@ export function createAudit({ db, randId, nowIso }) {
   }
 
   // 舊的專案刪除紀錄（pdel:）轉進稽核紀錄後移除：一筆一批（新增＋刪鍵），id 由鍵決定，重跑、多份程式同時跑都不會重複
-  // 回 false＝這次沒做完（匯入備份中、還沒有資料表），下個請求再試
-  async function migrateLegacy() {
-    if (await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
+  // 回 false＝這次沒做完（匯入備份中、還沒有資料表），下個請求再試。還原收尾（finishingRestore）時還在還原中，照樣做
+  async function migrateLegacy({ finishingRestore = false } = {}) {
+    if (!finishingRestore && await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
     // 只有「沒有這張表」才當還沒升級；其他錯誤（連線中斷…）照寫，不能因為一次讀不到就不記
     try { await db.get('SELECT seq FROM audit_log LIMIT 1'); ready = true; } catch (e) { if (!isMissingTable(e)) throw e; ready = false; return false; }
     const rows = await db.all('SELECT key, value FROM app_settings WHERE key >= ? AND key < ?', LEGACY_FROM, LEGACY_TO);
