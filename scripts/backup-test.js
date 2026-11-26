@@ -98,6 +98,13 @@ try {
   assert.equal(kbPage.status, 201, '知識頁：' + JSON.stringify(kbPage.body));
   const att = await A.call(liu.token, `/api/files?name=note.txt&declared=true&project=${pj}`, 'POST', null, enc('附件內容'));
   assert.equal(att.status, 201, JSON.stringify(att.body));
+  const templates = '/api/workspace/project-templates';
+  const defaults = { visibility: 'private', statuses: [{ name: '排隊', category: '待處理' }, { name: '執行', category: '進行中' }, { name: '交件', category: '已完成' }] };
+  const activeTemplate = await A.call(liu.token, templates, 'POST', { name: '進行中的範本', ...defaults });
+  const retiredTemplate = await A.call(liu.token, templates, 'POST', { name: '要停用的範本', ...defaults });
+  assert.equal(activeTemplate.status, 201, JSON.stringify(activeTemplate.body));
+  assert.equal(retiredTemplate.status, 201, JSON.stringify(retiredTemplate.body));
+  assert.equal((await A.call(liu.token, `${templates}/${retiredTemplate.body.id}`, 'DELETE')).status, 200);
   await A.db.run("INSERT INTO app_settings (key, value) VALUES ('olink:p_x', '{\"h\":\"secret\"}')");
   // 建立專案申請：待審與已撤回各一份，原樣跟著備份走。政策是 approval、申請人是有效成員：還原後的待審檢查保留待審核
   await A.db.run("UPDATE workspaces SET create_projects = 'approval' WHERE id = 'default'");
@@ -154,6 +161,9 @@ try {
   const fin = await importAll(B, dev, backup);
   assert.equal(fin.status, 200, JSON.stringify(fin.body));
   assert.equal(fin.body.admin.name, '王小明', '管理員是備份裡的');
+  assert.equal(backup.tables.project_templates.length, 2, '備份含可用及已停用的範本');
+  assert.deepEqual((await B.call(dev, templates)).body.items, [activeTemplate.body], '只列出還原後仍可用的範本');
+  assert.equal((await B.call(dev, `${templates}/${retiredTemplate.body.id}`)).status, 404, '停用的範本還原後也不能選取');
 
   // 5. 資料一樣
   for (const t of ['participants', 'messages', 'cards', 'card_log', 'skills', 'docs', 'files', 'projects', 'kb_chunks', 'kb_pages', 'project_creation_requests']) {

@@ -13,6 +13,7 @@ import { DEFAULT_WORKSPACE } from './membership.js';
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, RESTORE_STATE_KEY } from './write-order.js';
 import { IDENTITY_READY_KEY } from './project-identity.js';
 import { PCR_TABLE, restoreRowProblem } from './project-creation-requests.js';
+import { TEMPLATE_TABLE, restoreTemplateProblem } from './project-templates.js';
 import { isConstraintViolation } from './db-errors.js';
 
 export const BACKUP_FORMAT = 'aigile-backup';
@@ -21,6 +22,7 @@ export const BACKUP_FORMAT_VERSION = 1;
 export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'project_events', 'app_settings', 'accounts', 'participants', 'project_members', 'ai_state', 'messages', 'message_recipients', 'notifications', 'dms',
   'decision_resolutions', 'cards', 'card_log', 'card_msgs', 'suggestions', 'avatars', 'avatar_proposals',
   'skills', 'skill_allows', 'skill_installs', 'skill_syncs', 'join_requests',
+  TEMPLATE_TABLE, // 專案範本（含已停用的）
   'project_creation_requests', // 建立專案申請：所有狀態原樣帶（舊備份沒有這張表＝還原後是空的；收尾時檢查待審的，見 core.js 的 restoreSteps）
   'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages', // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
@@ -40,7 +42,7 @@ const PAGES = { file_chunks: 1, skills: 4, avatar_proposals: 5, avatars: 20, kb_
 const pageOf = t => PAGES[t] || 500;
 // 匯入前逐列檢查的表（跟資料表的 CHECK、NOT NULL 一致）：不合法的列整批不寫，回明確的格式錯誤（不修改資料、不繞過資料庫約束）。
 // 檢查回問題說明（合法回 null）。這些表寫入時撞到資料庫約束（例：同一申請人兩份同名的待審申請）也回同一個格式錯誤
-const ROW_CHECKS = { [PCR_TABLE]: restoreRowProblem };
+const ROW_CHECKS = { [PCR_TABLE]: restoreRowProblem, [TEMPLATE_TABLE]: restoreTemplateProblem };
 // 格式錯誤說明的固定句型（英文字典整句比對）
 const ROW_INVALID_MSG = { constraint: '違反資料表的約束（重複或欄位不合法）', which: '（資料列 id {0}）' };
 

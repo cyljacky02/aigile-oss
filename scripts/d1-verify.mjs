@@ -576,6 +576,23 @@ try {
     note(`備份：${Object.values(T).reduce((x, r) => x + r.length, 0)} 列；收尾取消 3 份`);
   });
 
+  await check('D1-11', '專案範本：選取本機預設值、停用後仍可依送出的內容核准', async () => {
+    const base = '/api/workspace/project-templates';
+    const draft = { name: '交付流程', visibility: 'private', statuses: THREE };
+    const t = ok(within('新增範本', await a.call(boss.token, base, 'POST', draft)), '新增範本');
+    const selected = ok(within('選取範本', await a.call(chen.token, `${base}/${t.id}`)), '選取範本');
+    assert.equal(selected.visibility, 'private');
+    const q = await submit(chen, { name: 'D1 範本申請', visibility: selected.visibility, statuses: selected.statuses });
+    ok(within('修改範本', await a.call(boss.token, `${base}/${t.id}`, 'PUT', { ...draft, visibility: 'open' })), '修改範本');
+    ok(within('停用範本', await a.call(boss.token, `${base}/${t.id}`, 'DELETE')), '停用範本');
+    assert.equal((await a.call(chen.token, `${base}/${t.id}`)).status, 404, '不能再選取');
+    const resolved = ok(await approve(q), '核准');
+    const projects = ok(await a.call(chen.token, '/api/projects'), '查看建立結果');
+    const p = projects.items.find(p => p.id === resolved.project.id);
+    assert.equal(p.visibility, 'private');
+    assert.deepEqual(p.statuses.map(s => s.name), THREE.map(s => s.name));
+  });
+
   if (usage.length) {
     console.log('\nD1 用量（每個請求＝一次 Worker 執行；查詢數裡 db.batch 整批算一次）：');
     const worst = [...usage].sort((x, y) => y.calls - x.calls);

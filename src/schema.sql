@@ -401,6 +401,17 @@ CREATE TABLE IF NOT EXISTS join_requests (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_join_pending ON join_requests (project, participant_id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_join_status ON join_requests (status, project);
 CREATE INDEX IF NOT EXISTS idx_join_person ON join_requests (participant_id, created_at);
+-- 專案範本是工作區的本機預設值，不是專案或建立專案申請的依賴。
+CREATE TABLE IF NOT EXISTS project_templates (
+  workspace_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 30),
+  visibility TEXT NOT NULL CHECK (visibility IN ('open', 'review', 'private')),
+  statuses_json TEXT NOT NULL,
+  retired_at TEXT,
+  PRIMARY KEY (workspace_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_templates_active ON project_templates (workspace_id, name, id) WHERE retired_at IS NULL;
 -- 建立專案申請（docs/adr/0004；migrations/015）：一般成員在 approval 政策下送出，審核人核准後才建立專案。申請不是專案，內容送出後不可修改；
 -- 只有 pending 可以轉換，四種終止狀態不可逆（src/project-creation-requests.js 的 transitionStmts）。沒有外鍵：專案清除、成員移出都不連帶刪除申請歷史
 CREATE TABLE IF NOT EXISTS project_creation_requests (
