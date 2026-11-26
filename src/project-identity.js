@@ -49,6 +49,21 @@ export function autoCode(slug, used, index) {
   return code;
 }
 
+// 卡號前綴先找現行代號，再找使用中的舊代號；即使第一個專案的卡找不到，也不往下一個專案找。
+export function projectForCardCode(code, codes, olds, active) {
+  const id = Object.keys(codes).find(k => codes[k] === code);
+  if (id) return { projectId: id, source: 'current' };
+  if (active(olds[code])) return { projectId: olds[code], source: 'historical' };
+  return null;
+}
+
+export async function cardSeqInProject(db, projectId, no) {
+  const hit = (await db.get('SELECT seq FROM cards WHERE project = ? AND proj_no = ?', projectId, no))?.seq;
+  if (hit) return hit;
+  const moved = await db.get('SELECT value FROM app_settings WHERE key = ?', `cardmoved:${projectId}:${no}`).catch(() => null);
+  return moved ? Number(moved.value) : null;
+}
+
 // ---------- 交易內斷言（條件都是 EXISTS／NOT EXISTS，不會是 SQL NULL） ----------
 // 已正規化：識別碼都存進資料庫了，下面的唯一性斷言才有意義
 export const identityReadyStmt = () => ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ?)', [IDENTITY_READY_KEY]);
@@ -94,12 +109,18 @@ export function identityConflicts(rows, shown) {
 // ---------- 讀取與正規化 ----------
 export function createProjectIdentity({ db, nowIso, waits }) {
   // 讀取一律不吞錯：讀不到就丟，不會被當成「沒有資料」
-  const readRows = () => db.all('SELECT id, name, archived, deleted_at, created_at FROM projects ORDER BY created_at, id');
-  const readSettings = () => db.all(`SELECT key, value FROM app_settings WHERE ${SETTINGS_RANGE}`);
   const isNormalized = async () => !!(await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', IDENTITY_READY_KEY));
   const markers = async () => new Map((await db.all('SELECT key, value FROM app_settings WHERE key IN (?, ?)', IDENTITY_READY_KEY, RESTORE_STATE_KEY)).map(r => [r.key, r.value]));
   async function snapshot() {
-    const rows = await readRows(), settings = await readSettings();
+    // 一句查詢取同一時間的專案與設定，避免把並行調整前後的資料混成一份快照。
+    const data = await db.all(`SELECT id, name, archived, deleted_at, created_at, NULL AS key, NULL AS value FROM projects
+      UNION ALL SELECT NULL, NULL, NULL, NULL, NULL, key, value FROM app_settings WHERE ${SETTINGS_RANGE}
+      ORDER BY created_at, id`);
+    const rows = [], settings = [];
+    for (const { key, value, ...row } of data) {
+      if (key === null) rows.push(row);
+      else settings.push({ key, value });
+    }
     return { rows, settings, shown: displayedIdentity(rows, splitIdentitySettings(settings)) };
   }
   // restoreRaw：還原收尾時確定仍是同一次還原，且不看正規化標記（一定重新算）。啟動時若還原中，先回 false。

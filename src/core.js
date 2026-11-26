@@ -22,7 +22,8 @@ import { createWorkspaceSettings, CREATE_PROJECTS, DELETE_OWN_MESSAGES } from '.
 import { createAudit, AUDIT_ACTION, AUDIT_ACTIONS, AUDIT_SCOPE } from './audit.js'; // 稽核紀錄（管理操作）
 import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js'; // 管理員異動通知
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, notRestoringStmt, writeOrdered } from './write-order.js'; // 工作區寫入排序與交易內斷言（ADR 0005）
-import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS } from './project-identity.js'; // 專案網址英文名與代號
+import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS, projectForCardCode, cardSeqInProject } from './project-identity.js'; // 專案網址英文名與代號
+import { previewProjectIdentity } from './project-identity-preview.js';
 import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯
 import { registerProjectCreationRequests, cancelStmts as pcrCancelStmts, cancelNoticeStmts as pcrCancelNoticeStmts, pendingCountSql as pcrPendingCountSql, requestsTableReady as pcrTableReady, PCR_TABLE, PCR_CANCEL_CODE,
   restoreStaleCountSql as pcrRestoreStaleCountSql, restoreCheckStmts as pcrRestoreCheckStmts, directCreateAllowedCond, activeMemberCond as pcrActiveMemberCond, reviewerCond as pcrReviewerCond } from './project-creation-requests.js'; // 建立專案申請
@@ -383,12 +384,9 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     if (!m || /^C$/i.test(m[1])) return null;
     await loadProjects();
     const code = m[1].toUpperCase(), no = Number(m[2]);
-    const pj = Object.keys(projCodes).find(k => projCodes[k] === code) || (PROJECTS.includes(oldCodes[code]) ? oldCodes[code] : null);
-    if (!pj || !discovers(me, pj)) return null;
-    const hit = (await db.get('SELECT seq FROM cards WHERE project = ? AND proj_no = ?', pj, no))?.seq;
-    if (hit) return hit;
-    const moved = await db.get('SELECT value FROM app_settings WHERE key = ?', `cardmoved:${pj}:${no}`).catch(() => null);
-    return moved ? Number(moved.value) : null;
+    const target = projectForCardCode(code, projCodes, oldCodes, id => PROJECTS.includes(id));
+    if (!target || !discovers(me, target.projectId)) return null;
+    return cardSeqInProject(db, target.projectId, no);
   }
   // 卡號（MAIN-12 或舊的 C-xxx）→ seq；找不到回 null
   const seqOfCardId = async id => { const m = /^C-(\d+)$/i.exec(String(id || '').trim()); return m ? Number(m[1]) - 100 : cardSeqByKey(id); };
@@ -2459,6 +2457,29 @@ ${ending}`;
     const byId = new Map(rows.map(r => [r.id, r]));
     const info = id => { const r = byId.get(id); return { id, name: r?.name ?? null, code: shown.codes[id] ?? null, slug: shown.slugs[id] ?? null, archived: !!Number(r?.archived), deleted: !!r?.deleted_at }; };
     return { normalized, kinds: CONFLICT_KINDS, conflicts: conflicts.map(c => ({ kind: c.kind, value: c.value, projects: c.projects.map(info) })), claims };
+  });
+  route('POST', '/api/admin/project-identity/preview', async ({ ctx, me, req }) => {
+    await access.check(ctx, me, 'manage_platform', 'platform', { what: '預覽專案識別碼修復' });
+    const body = await readJson(req);
+    if (typeof body?.projectId !== 'string' || !body.projectId || !['code', 'slug', 'name'].includes(body.field) || typeof body.replacement !== 'string')
+      throw invalid('請提供 projectId、field 和 replacement');
+    let replacement;
+    if (body.field === 'name') replacement = readProjectName(body.replacement);
+    else if (body.field === 'slug') replacement = checkSlug(body.replacement, '', new Set());
+    else {
+      replacement = body.replacement.trim().toUpperCase();
+      if (!CODE_RE.test(replacement)) throw invalid('專案代號需為 2～5 個英文字母');
+    }
+    const { retireAlias = false } = body;
+    if (typeof retireAlias !== 'boolean' || (retireAlias && body.field !== 'code')) throw invalid('retireAlias 只適用於專案代號');
+    let reference;
+    if (body.reference !== undefined) {
+      const ref = typeof body.reference === 'string' && /^([A-Z]{2,5})-(\d+)$/i.exec(body.reference.trim());
+      const number = ref && Number(ref[2]);
+      if (body.field !== 'code' || !number || number > 2147483647) throw invalid('reference 需為有效的專案卡號');
+      reference = `${ref[1].toUpperCase()}-${number}`;
+    }
+    return previewProjectIdentity({ db, projectIdentity, ApiError, sha256 }, { projectId: body.projectId, field: body.field, replacement, reference, retireAlias });
   });
   route('PUT', '/api/platform/settings', async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'manage_platform', 'platform', { what: '改平台設定' });
@@ -5030,7 +5051,7 @@ ${ending}`;
         e = new ApiError(500, 'INTERNAL', '伺服器錯誤');
       }
       const headers = e.extra.retryAfter ? { 'Retry-After': String(e.extra.retryAfter) } : {};
-      return json(e.status, { error: { code: e.code, message: e.message, ...(e.extra.captchaRequired ? { captchaRequired: true } : {}), ...(e.extra.suggestion ? { suggestion: e.extra.suggestion } : {}), ...(e.extra.field ? { field: e.extra.field } : {}), ...(e.extra.state ? { state: e.extra.state } : {}), ...(e.extra.cancelCode ? { cancelCode: e.extra.cancelCode } : {}), ...(e.extra.cards ? { cards: e.extra.cards } : {}) } }, headers);
+      return json(e.status, { error: { code: e.code, message: e.message, ...(e.extra.captchaRequired ? { captchaRequired: true } : {}), ...(e.extra.suggestion ? { suggestion: e.extra.suggestion } : {}), ...(e.extra.field ? { field: e.extra.field } : {}), ...(e.extra.state ? { state: e.extra.state } : {}), ...(e.extra.cancelCode ? { cancelCode: e.extra.cancelCode } : {}), ...(e.extra.cards ? { cards: e.extra.cards } : {}), ...(e.extra.projects ? { projects: e.extra.projects } : {}) } }, headers);
     }
   }
 }
