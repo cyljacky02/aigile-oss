@@ -90,19 +90,23 @@ export function createStatuses({ db, invalid }) {
     await db.batch(stmts);
   }
   // 每個請求讀一次（ctx 快取）；改過狀態設定後 ctx.statusBook = null 重讀
+  async function readBook(sql, args = []) {
+    let rows = await db.all(sql, ...args);
+    const missing = [...new Set(rows.filter(r => r.id === null || r.id === undefined).map(r => r.pj))];
+    if (missing.length) { await ensureDefaults(missing); rows = await db.all(sql, ...args); }
+    return makeBook(rows.filter(r => r.id !== null && r.id !== undefined), invalid);
+  }
   async function load(ctx = null) {
     if (ctx?.statusBook) return ctx.statusBook;
-    let rows = await db.all(ROWS_SQL);
-    const missing = [...new Set(rows.filter(r => r.id === null || r.id === undefined).map(r => r.pj))];
-    if (missing.length) { await ensureDefaults(missing); rows = await db.all(ROWS_SQL); }
-    const book = makeBook(rows.filter(r => r.id !== null && r.id !== undefined), invalid);
+    const book = await readBook(ROWS_SQL);
     if (ctx) ctx.statusBook = book;
     return book;
   }
+  const loadWorkspace = id => readBook(ROWS_SQL + ' WHERE p.workspace_id = ? AND p.deleted_at IS NULL', [id]);
   // 把專案裡「status_id 空的或對不上」的卡補成實際所在的狀態（改設定前先做，之後只看 status_id）
   const normalize = pj => db.run(`UPDATE cards SET status_id = ${firstStatusOf('cards.project', 'cards.status')}
     WHERE project = ? AND status != '${ARCHIVED}' AND (status_id IS NULL OR status_id NOT IN (SELECT ps2.id FROM project_statuses ps2 WHERE ps2.project = cards.project AND ps2.category = cards.status))`, pj);
-  return { load, normalize, ensureDefaults };
+  return { load, loadWorkspace, normalize, ensureDefaults };
 }
 
 // 狀態名稱：1～20 字、不可換行；不能取成「別的」類別的名稱（免得「進行中」到底是哪一欄說不清）

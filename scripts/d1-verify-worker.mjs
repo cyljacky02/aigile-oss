@@ -10,6 +10,7 @@
 //                                                          before＝這批送出前先另外提交 sql（模擬別人剛好先改）。作用 times 次；{ re:null } 解除
 //     POST /__d1verify/fault-status                   → { hits, left }
 import worker from '../worker.js';
+import { createApp } from '../src/core.js';
 import { wrapD1 } from '../src/db-d1.js';
 import { isNotNullViolation, isConstraintViolation } from '../src/db-errors.js';
 
@@ -64,6 +65,7 @@ function metered(d1) {
 }
 
 let meteredDb = null; // worker.js 只在第一次建立 app 時讀 env.DB：一定要給同一個物件
+let workspaceReadApp; // One warm app for all requests in the workspace-read check.
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 // 錯誤分類只是方便閱讀；驗證腳本拿 error 原文用 src/db-errors.js 的同一套判斷再核對一次
 const kindOf = e => (isNotNullViolation(e, 'app_settings') ? 'assertion' : !isConstraintViolation(e) ? 'other'
@@ -92,6 +94,11 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/__d1verify/')) return control(request, env, url.pathname.slice('/__d1verify/'.length));
+    if (env.D1_VERIFY_TOKEN && request.headers.get('x-d1-verify-token') === env.D1_VERIFY_TOKEN) {
+      workspaceReadApp ??= createApp({ db: wrapD1(env.DB), docText: '',
+        selectWorkspace: ({ request: req }) => req.headers.get('x-d1-verify-workspace') });
+      return workspaceReadApp(request, url.origin, ctx);
+    }
     meteredDb ??= metered(env.DB);
     const stats = { calls: 0, batches: 0, maxBatch: 0, maxParams: 0, maxSqlBytes: 0 };
     current = stats;

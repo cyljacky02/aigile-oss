@@ -815,6 +815,54 @@ try {
     is(await dest.call(admin.token, '/api/admin/restore/begin', 'POST', header), 409, 'NOT_EMPTY', '舊備份不能清除剛還原的範本');
   });
 
+  await check('D1-15', 'Workspace-projected reads on a warm Worker', async () => {
+    const who = await join(a, 'WsFixture');
+    const platformAdmin = await join(a, 'WsPlatAdmin');
+    const at = new Date().toISOString(), other = 'fixture-workspace', otherProject = 'fixture-project';
+    const accountId = (await a.one('SELECT account_id FROM participants WHERE id = ?', who.id)).account_id;
+    const legacy = ok(await a.call(platformAdmin.token, '/api/projects')).items;
+    assert.deepEqual(await a.batch([
+      ["UPDATE accounts SET platform_role = 'admin' WHERE id = (SELECT account_id FROM participants WHERE id = ?)", [platformAdmin.id]],
+      ['INSERT INTO workspaces (id, create_projects) VALUES (?, ?)', [other, 'admins']],
+      ["INSERT INTO participants (id, kind, name, code, token, created_at, updated_at, workspace_id, account_id, workspace_role) VALUES ('fixture-member', 'human', 'Other Membership', 'FXWS', 'h:fixture', ?, ?, ?, ?, 'admin')", [at, at, other, accountId]],
+      ["INSERT INTO projects (id, name, workspace_id, visibility, created_at) VALUES (?, 'Other Project', ?, 'private', ?)", [otherProject, other, at]],
+      ["INSERT INTO project_events (project_id, at, text) VALUES (?, ?, 'Other event')", [otherProject, at]],
+    ]), { ok: true });
+    const call = async (token, p, workspace, injected = true) => {
+      const r = await fetch(a.base + p, { headers: { authorization: `Bearer ${token}`, 'x-d1-verify-workspace': workspace,
+        ...(injected ? { 'x-d1-verify-token': TOKEN } : {}) } });
+      assert.equal(r.headers.get('cache-control'), 'no-store');
+      const text = await r.text();
+      return { status: r.status, body: JSON.parse(text), text };
+    };
+    const path = `/api/projects/${otherProject}/events`;
+    const baseline = ok(await call(who.token, '/api/projects', 'default'));
+    for (let i = 0; i < 3; i++) {
+      const [switched, unchanged, selectedEvent, hiddenEvent, platform, stock] = await Promise.all([
+        call(who.token, '/api/projects', other), call(who.token, '/api/projects', 'default'),
+        call(who.token, path, other), call(who.token, path, 'default'),
+        call(platformAdmin.token, path, other), call(platformAdmin.token, path, other, false),
+      ]);
+      const list = ok(switched);
+      assert.deepEqual(list.items.map(p => p.id), [otherProject]);
+      assert.equal(list.adminId, 'fixture-member');
+      assert.equal(list.canCreateProject, true);
+      assert.deepEqual(ok(unchanged), baseline);
+      assert.deepEqual(ok(selectedEvent).items.map(e => e.text), ['Other event']);
+      assert.deepEqual(ok(platform), ok(selectedEvent));
+      is(hiddenEvent, 404, 'NOT_FOUND', 'default workspace');
+      is(stock, 404, 'NOT_FOUND', 'stock ignores test selection');
+      assert.deepEqual(stock.body, hiddenEvent.body);
+    }
+    const stockList = ok(await call(platformAdmin.token, '/api/projects', other, false)).items;
+    assert.ok(stockList.length > legacy.length && stockList.every(p => p.id !== otherProject));
+    await a.batch([["UPDATE participants SET workspace_status = 'removed' WHERE id = 'fixture-member'", []]]);
+    is(await call(who.token, path, other), 404, 'NOT_FOUND', 'removed membership');
+    assert.deepEqual(ok(await call(who.token, '/api/projects', 'default')), baseline);
+    await a.batch([["UPDATE accounts SET status = 'disabled' WHERE id = ?", [accountId]]]);
+    is(await call(who.token, '/api/projects', 'default'), 401, 'INVALID_TOKEN', 'disabled account');
+  });
+
   if (usage.length) {
     console.log('\nD1 用量（每個請求＝一次 Worker 執行；查詢數裡 db.batch 整批算一次）：');
     const worst = [...usage].sort((x, y) => y.calls - x.calls);

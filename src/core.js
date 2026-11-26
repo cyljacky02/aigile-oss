@@ -18,6 +18,8 @@ import { registerUpdateCheck } from './update.js'; // 管理頁「有新版本�
 import { registerDemo } from './demo.js'; // 示範資料
 import { registerRoster } from './roster.js'; // 成員名冊
 import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, inWorkspace, effectiveProjects, PROJECT_VISIBILITIES } from './access.js'; // 權限模組
+import { resolveWorkspaceContext } from './workspace-context.js';
+import { loadWorkspaceProjects } from './workspace-projects.js';
 import { createWorkspaceSettings, CREATE_PROJECTS, DELETE_OWN_MESSAGES } from './workspace-settings.js'; // 工作區設定（誰可以建立專案、誰可以刪除自己的訊息）
 import { createAudit, AUDIT_ACTION, AUDIT_ACTIONS, AUDIT_SCOPE } from './audit.js'; // 稽核紀錄（管理操作）
 import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js'; // 管理員異動通知
@@ -101,8 +103,8 @@ const AVATAR_UPSERT = 'INSERT INTO avatars (participant_id, mime, data, updated_
 
 // ---------- 應用程式 ----------
 // storage（選用，上傳文件用）：put(key, Uint8Array)、get(key) → Uint8Array|null、delete(key)
-// resolveReviewWorkspace：只供建立專案申請審核的測試注入；正式 app 未設定，沒有工作區切換。
-export function createApp({ db, docText, apiRefText = '', flowsText = '', releases = null, config = {}, storage = null, docStorage = null, scriptHashes = {}, live = null, resolveReviewWorkspace = null }) {
+// selectWorkspace and resolveReviewWorkspace are test injection only; neither is wired into production.
+export function createApp({ db, docText, apiRefText = '', flowsText = '', releases = null, config = {}, storage = null, docStorage = null, scriptHashes = {}, live = null, resolveReviewWorkspace = null, selectWorkspace = null }) {
   const ROOM_CODE = config.roomCode || '';
   // 人類可以自己註冊（OPEN_JOIN 沒設＝開）；設 OPEN_JOIN=0 就只有第一位（建立者）能自己加入，其他人要邀請連結
   const OPEN_JOIN = !(config.openJoin === false || config.openJoin === '0');
@@ -641,7 +643,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   }
 
   // ---------- 驗證與限流 ----------
-  async function authenticate(req, url) {
+  async function authenticate(req, url, { workspaceRead = false } = {}) {
     const h = req.headers.get('authorization') || '';
     const token = h.startsWith('Bearer ') ? h.slice(7).trim() : ''; // 不收網址 ?token=（會留在瀏覽器歷史、代理日誌）
     if (!token) throw new ApiError(401, 'INVALID_TOKEN', '缺少 Authorization: Bearer <token>');
@@ -649,8 +651,8 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const { p, dev } = await login.resolve(token);
     if (!p || p.status !== 'active') throw new ApiError(401, 'INVALID_TOKEN', 'Token 不存在、已重設或已撤銷');
     await membership.refreshOne(p.id); // 發請求的人：專案與角色看最新的（以前存在他那列，每次驗證都重讀）
-    // 已移出工作區：進不來（平台管理員除外，他對工作區有隱含權）；AI 的所屬人類被移出也一樣
-    if (access.shutOut(p)) throw new ApiError(401, 'INVALID_TOKEN', '你已不是這個工作區的成員');
+    // These reads resolve workspace access from the account separately from the membership tied to its legacy credential.
+    if (!(workspaceRead && p.kind === 'human') && access.shutOut(p)) throw new ApiError(401, 'INVALID_TOKEN', '你已不是這個工作區的成員');
     delete p.owner_ws_status;
     p.authKind = dev ? 'device' : 'code';
     p.deviceId = dev?.id || null;
@@ -1542,10 +1544,10 @@ ${ending}`;
   }
 
   const routes = [];
-  const route = (method, pattern, handler, { open = false } = {}) => {
+  const route = (method, pattern, handler, { open = false, workspaceRead = false } = {}) => {
     const keys = [];
     const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
-    routes.push({ method, re, keys, handler, open, pattern });
+    routes.push({ method, re, keys, handler, open, workspaceRead, pattern });
   };
 
   // 只有未啟用預設管理員的空群組才會顯示「建立群組」。
@@ -1939,34 +1941,51 @@ ${ending}`;
   const wakeDay = ms => new Date(ms + 8 * 3600_000).toISOString().slice(0, 10); // 叫醒次數的「今天」（台灣日期，跟本季底同一個時區）
   const twDate = isoStr => new Date(Date.parse(isoStr) + 8 * 3600_000).toISOString().slice(0, 10).replace(/-/g, '/');
 
-  async function projectViews(ctx) {
-    await loadProjects(true);
-    const people = await peopleMap(ctx);
-    const counts = new Map((await db.all("SELECT project, COUNT(*) AS n FROM cards WHERE status IN ('待整理','待處理','進行中','待確認','受阻') GROUP BY project")).map(r => [r.project, r.n]));
-    const repos = await reposMap(), dms = await dmMap(), rdefs = await roleDefsMap(), slugs = await slugMap();
-    await loadProjectRoles();
-    const book = await statuses.load(ctx);
-    const v = access.view({ people });
-    const inUse = (pj, d) => [...people.values()].filter(p => p.status === 'active' && listOf(p).includes(pj) && (p.kind === 'ai' ? p.role_key === d.key : titles[p.id]?.[pj] === d.role)).length;
-    return projectRows.map(r => ({ id: r.id, name: r.name, slug: slugs[r.id], code: projCodes[r.id] || null, archived: !!r.archived, createdAt: r.created_at, repo: repos[r.id] || null, // ；C-xxx 網址英文名
-      visibility: access.visibilityOf(r.id), // 專案可見度：open｜review｜private
-      roles: (rdefs[r.id] || []).map(d => ({ ...d, createdByName: people.get(d.createdBy)?.name || null, inUse: inUse(r.id, d) })), // 本專案角色
-      dm: dms[r.id] ? { ...dms[r.id], byName: people.get(dms[r.id].by)?.name || null } : { on: false, by: null, at: null, byName: null },
-      memberCount: [...people.values()].filter(p => p.status === 'active' && p.kind !== 'system' && (listOf(p).includes(r.id) || projectsOf(p).includes(r.id)) && !v.implicitOnlyIn(p.id, r.id)).length, // 工作區管理員：明確加入才算（只有職稱不算）
+  async function projectViews(ctx, scope = null) {
+    if (!scope) await loadProjects(true);
+    const people = scope?.people ?? await peopleMap(ctx);
+    const rows = scope?.rows ?? projectRows;
+    const list = scope?.listOf ?? listOf, effective = scope?.projectsOf ?? projectsOf;
+    const counts = new Map((await db.all(`SELECT project, COUNT(*) AS n FROM cards WHERE status IN ('待整理','待處理','進行中','待確認','受阻')${scope ? ' AND project IN (SELECT value FROM json_each(?))' : ''} GROUP BY project`,
+      ...(scope ? [JSON.stringify(rows.map(r => r.id))] : []))).map(r => [r.project, r.n]));
+    const repos = await reposMap(), dms = await dmMap(), rdefs = await roleDefsMap();
+    const identity = scope ? await projectReadIdentity() : { slugs: await slugMap(), codes: projCodes };
+    const book = scope ? await statuses.loadWorkspace(scope.workspaceId) : await statuses.load(ctx);
+    const v = scope?.v ?? access.view({ people });
+    const titleMap = scope && scope.workspaceId !== DEFAULT_WORKSPACE ? (await getJson('project_roles')) || {} : await loadProjectRoles();
+    const members = scope?.members ?? people;
+    const inUse = (pj, d) => [...members.values()].filter(p => p.status === 'active' && list(p).includes(pj) && (p.kind === 'ai' ? p.role_key === d.key : titleMap[p.id]?.[pj] === d.role)).length;
+    return rows.map(r => ({ id: r.id, name: r.name, slug: identity.slugs[r.id], code: identity.codes[r.id] || null, archived: !!r.archived, createdAt: r.created_at, repo: repos[r.id] || null, // ；C-xxx 網址英文名
+      visibility: v.visibilityOf(r.id), // 專案可見度：open｜review｜private
+      roles: (rdefs[r.id] || []).map(d => ({ ...d, ...(scope && !people.has(d.createdBy) ? { createdBy: null } : {}), createdByName: people.get(d.createdBy)?.name || null, inUse: inUse(r.id, d) })), // 本專案角色
+      dm: dms[r.id] ? { ...dms[r.id], by: scope && !people.has(dms[r.id].by) ? null : dms[r.id].by, byName: people.get(dms[r.id].by)?.name || null } : { on: false, by: null, at: null, byName: null },
+      memberCount: [...members.values()].filter(p => p.status === 'active' && p.kind !== 'system' && (list(p).includes(r.id) || effective(p).includes(r.id)) && !v.implicitOnlyIn(p.id, r.id)).length, // 工作區管理員：明確加入才算（只有職稱不算）
       openCards: counts.get(r.id) || 0, statuses: book.list(r.id) })); // 看板狀態（順序＝看板欄順序）
   }
-  async function projectsResponse(ctx, extra = {}) {
-    await loadProjectAdmins();
-    const people = await peopleMap(ctx);
-    const admin = adminOf(people);
-    const leaders = Object.fromEntries(PROJECTS.map(pj => [pj, projectAdminsOf(pj).filter(id => people.get(id)?.status === 'active')]));
-    await loadReadOnly();
-    const readOnly = Object.fromEntries(PROJECTS.map(pj => [pj, readOnlyOf(pj).filter(id => people.get(id)?.status === 'active')]));
+  // Display fallback and historical reservations still use the global identifier namespace.
+  async function projectReadIdentity() {
+    const [rows, settings] = await Promise.all([
+      db.all('SELECT id FROM projects ORDER BY created_at, id'),
+      db.all("SELECT key, value FROM app_settings WHERE (key >= 'pcode:' AND key < 'pcode;') OR (key >= 'slug:' AND key < 'slug;')"),
+    ]);
+    return displayedIdentity(rows, splitIdentitySettings(settings));
+  }
+  async function projectsResponse(ctx, extra = {}, scope = null) {
+    if (!scope) await loadProjectAdmins();
+    const people = scope?.people ?? await peopleMap(ctx);
+    const admin = adminOf(scope?.members ?? people);
+    const active = scope?.active ?? PROJECTS;
+    const adminsOf = scope?.projectAdminsOf ?? projectAdminsOf;
+    const leaders = Object.fromEntries(active.map(pj => [pj, adminsOf(pj).filter(id => people.get(id)?.status === 'active')]));
+    if (!scope) await loadReadOnly();
+    const readersOf = scope?.readOnlyOf ?? readOnlyOf;
+    const readOnly = Object.fromEntries(active.map(pj => [pj, readersOf(pj).filter(id => people.get(id)?.status === 'active')]));
     // 開放申請設定與待審數（一列設定＋只讀待審的列）
-    const js = await joinApi.joinSettings(), pend = await db.all("SELECT project, COUNT(*) AS n FROM join_requests WHERE status = 'pending' GROUP BY project").catch(() => []);
-    const join = Object.fromEntries(PROJECTS.map(pj => [pj, { open: joinOpen(js, pj), note: js[pj]?.note || '', pending: pend.find(x => x.project === pj)?.n || 0 }]));
-    const items = await projectViews(ctx);
-    const archivedLeaders = Object.fromEntries(items.filter(p => p.archived).map(p => [p.id, projectAdminsOf(p.id).filter(id => people.get(id)?.status === 'active')])); // 專案管理員要能還原自己封存的專案
+    const js = await joinApi.joinSettings(), pend = await db.all(`SELECT project, COUNT(*) AS n FROM join_requests WHERE status = 'pending'${scope ? ' AND project IN (SELECT value FROM json_each(?))' : ''} GROUP BY project`,
+      ...(scope ? [JSON.stringify(active)] : [])).catch(() => []);
+    const join = Object.fromEntries(active.map(pj => [pj, { open: joinOpen(js, pj), note: js[pj]?.note || '', pending: pend.find(x => x.project === pj)?.n || 0 }]));
+    const items = await projectViews(ctx, scope);
+    const archivedLeaders = Object.fromEntries(items.filter(p => p.archived).map(p => [p.id, adminsOf(p.id).filter(id => people.get(id)?.status === 'active')])); // 專案管理員要能還原自己封存的專案
     // 專案管理員 projectAdmins／archivedProjectAdmins、唯讀成員 viewers；leaders／archivedLeaders／readOnly 是舊名（同內容，保留一版）
     return { items, adminId: admin?.id || null, adminName: admin?.name || null, projectAdmins: leaders, archivedProjectAdmins: archivedLeaders, viewers: readOnly, leaders, archivedLeaders, readOnly, join, ...extra };
   }
@@ -1977,17 +1996,17 @@ ${ending}`;
   // AI：自己的專案成員資格 ∩ 所屬人類看得到的專案（留著的舊成員資格不會露出所屬人類看不到的專案）
   // 以專案為鍵的清單都只留自己的專案（新名 projectAdmins／archivedProjectAdmins／viewers 與保留一版的舊名 leaders／archivedLeaders／readOnly）
   const PROJECT_MAPS = ['projectAdmins', 'archivedProjectAdmins', 'viewers', 'leaders', 'archivedLeaders', 'readOnly', 'join'];
-  function scopeProjects(r, me) {
+  function scopeProjects(r, me, reach = { listOf, projectsOf, isolatedFrom, hiddenArchived, ownerOf }) {
     let mine;
     if (me?.kind === 'ai') {
-      const seen = new Set(scopeProjects(r, ownerOf(me)).items.map(p => p.id));
-      mine = listOf(me).filter(pj => seen.has(pj));
+      const seen = new Set(scopeProjects(r, reach.ownerOf(me), reach).items.map(p => p.id));
+      mine = reach.listOf(me).filter(pj => seen.has(pj));
     } else {
-      if (!isolatedFrom(me)) { // 不受隔離＝看得到所有專案，只除了看不到的封存私人專案
-        const h = hiddenArchived(me);
+      if (!reach.isolatedFrom(me)) { // 不受隔離＝看得到所有專案，只除了看不到的封存私人專案
+        const h = reach.hiddenArchived(me);
         if (!h.length) return r;
         mine = r.items.map(p => p.id).filter(id => !h.includes(id));
-      } else mine = [...new Set([...projectsOf(me), ...listOf(me)])];
+      } else mine = [...new Set([...reach.projectsOf(me), ...reach.listOf(me)])];
     }
     const out = { ...r, items: r.items.filter(p => mine.includes(p.id)) };
     for (const k of PROJECT_MAPS) out[k] = Object.fromEntries(Object.entries(r[k] || {}).filter(([pj]) => mine.includes(pj)));
@@ -2267,13 +2286,18 @@ ${ending}`;
   const goneMembers = () => { throw new ApiError(410, 'GONE', '這個端點已移除：專案成員請改用 GET／POST /api/projects/:id/members（列出、加入）與 PUT／DELETE /api/projects/:id/members/:participantId（設定專案角色、移出）；要讓人在每個專案，請把他加進各專案。'); };
   route('PUT', '/api/members/matrix', goneMembers);
   route('PUT', '/api/projects/:id/members', goneMembers);
-  // 工作區政策允不允許他刪自己的訊息（人類；工作區管理員永遠可以）。在哪個專案是唯讀成員由網頁另外看
-  const canDeleteOwnMessages = async (ctx, me) => me.kind === 'human' && ((await workspace.load()).deleteOwnMessages === DELETE_OWN_MESSAGES.MEMBERS || (await access.can(ctx, me, 'delete_message', 'workspace')));
-  route('GET', '/api/projects', async ({ ctx, me }) => ({ ...(await projectsSeenBy(ctx, me)), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace'),
-    // 建立專案申請：能不能送申請、能不能審核。canCreateProject 仍只代表能直接建立；三個都是給介面用的快照，寫入時重新檢查
-    canRequestProjectCreation: await access.can(ctx, me, 'request_project_creation', 'workspace'),
-    canReviewProjectCreationRequests: await access.can(ctx, me, 'review_project_creation_requests', 'workspace'),
-    ...(ctx.viewerKind === 'human' ? { canDeleteOwnMessages: await canDeleteOwnMessages(ctx, me) } : {}) })); // canCreateProject：網頁要不要顯示「新增專案」；canDeleteOwnMessages：工作區政策允不允許他刪自己的訊息（唯讀另看專案；只給人類，給 AI 的形狀不變）
+  const hiddenProject = () => new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+  async function projectReadScope(ctx, principal) {
+    const scope = await loadWorkspaceProjects({ db, scope: ctx.workspaceContext, principal, ApiError });
+    if (!scope.me) throw hiddenProject();
+    return scope;
+  }
+  route('GET', '/api/projects', async ({ ctx, me }) => {
+    const scope = await projectReadScope(ctx, me);
+    // Legacy card lookups depend on this refresh. The scoped response does not use the shared snapshot for authorization.
+    if (scope.workspaceId === DEFAULT_WORKSPACE) await loadProjects(true);
+    return { ...scopeProjects(await projectsResponse(ctx, {}, scope), scope.me, scope), ...scope.projectFlags(scope.me) };
+  }, { workspaceRead: true });
   // 群組名稱（登入頁也要顯示，所以讀取不用登入）；只有管理員能改
   route('GET', '/api/group', async () => ({ name: await groupName() }), { open: true });
   // 第一次設定引導做完或全部略過：之後不再出現（群組名稱、專案、邀請、AI 都在管理頁改得到）
@@ -2565,12 +2589,15 @@ ${ending}`;
     return platformOut();
   });
   route('GET', '/api/projects/:id/events', async ({ ctx, me, params, url }) => {
+    const scope = await projectReadScope(ctx, me);
+    if (!scope.rows.some(p => p.id === params.id) || !scope.v.discovers(scope.me, params.id)) throw hiddenProject();
     // 只有該專案成員或管理員看得到（含程式庫網址、成員異動）
-    await access.check(ctx, me, 'see_project_events', { project: params.id }, { what: '查看其他專案的異動紀錄' });
+    await scope.check(ctx, scope.me, 'see_project_events', { project: params.id }, { what: '查看其他專案的異動紀錄' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);
-    const rows = await db.all('SELECT * FROM project_events WHERE project_id = ? ORDER BY id DESC LIMIT ?', params.id, limit);
+    const rows = await db.all(`SELECT e.* FROM project_events e JOIN projects p ON p.id = e.project_id
+      WHERE p.workspace_id = ? AND p.id = ? AND p.deleted_at IS NULL ORDER BY e.id DESC LIMIT ?`, scope.workspaceId, params.id, limit);
     return { items: rows.map(r => ({ at: r.at, actorId: r.actor_id, text: r.text })) };
-  });
+  }, { workspaceRead: true });
   const readProjectName = raw => {
     const name = String(raw ?? '').trim();
     if (!name || name.length > 20 || /[,\n]/.test(name)) throw invalid('name 需為 1～20 字，不可含逗號或換行');
@@ -5101,9 +5128,9 @@ ${ending}`;
           throw new ApiError(503, 'ADMIN_SETUP_FAILED', '無法初始化預設管理員');
         }));
         await membership.loadMembers(); // 成員資格快照（10 秒快取；本份程式改過就重讀）
-        const me = r.open ? null : await authenticate(req, url);
+        const me = r.open ? null : await authenticate(req, url, r);
         if (me) ctx.viewerKind = me.kind; // 回應給誰看（被刪訊息的佔位：AI 只多 deleted）
-        if (me?.kind === 'ai') await peopleMap(ctx); // AI 能進的專案要看所屬人類（成員快取）
+        if (me?.kind === 'ai' && !r.workspaceRead) await peopleMap(ctx);
         const routeKey = `${r.method} ${r.pattern}`;
         if (me?.kind === 'human' && DEFAULT_ADMIN && !credOk.has(me.id)) {
           if (!(await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', MUST_KEY(me.id)))) credOk.add(me.id);
@@ -5117,6 +5144,7 @@ ${ending}`;
             }
           }
         }
+        if (r.workspaceRead) ctx.workspaceContext = await resolveWorkspaceContext({ db, principal: me, request: req, selectWorkspace, ApiError });
         let out;
         try { out = await r.handler({ req, url, params, me, ctx, base }); } finally { if (peopleDirty) await bumpPeopleVer(); }
         if (me?.mustChangeCredentials && routeKey === 'PUT /api/me/password') { await db.run('DELETE FROM app_settings WHERE key = ?', MUST_KEY(me.id)); credOk.add(me.id); } // 帳號與密碼都改了
@@ -5124,7 +5152,7 @@ ${ending}`;
         if (out instanceof Response) return out;
         const status = out.__status || 200;
         delete out.__status;
-        if (me && isolatedFrom(viewerOf(me))) out = scrubProjects(out, me, viewerOf(me));
+        if (me && !r.workspaceRead && isolatedFrom(viewerOf(me))) out = scrubProjects(out, me, viewerOf(me));
         if (me?.kind === 'ai' && req.method === 'GET' && !TRUSTED_GET.has(r.pattern) && !Array.isArray(out)) out = markUntrusted(out);
         return json(status, out);
       }
