@@ -11,6 +11,7 @@
     "start": "node server.js",
     "smoke": "node scripts/smoke.js",
     "test": "node scripts/run-all.js",
+    "verify:d1": "node scripts/d1-verify.mjs",
     "cf:dev": "npx wrangler@4 dev",
     "cf:db:init": "node scripts/migrate.js",
     "cf:db:migrate": "node scripts/migrate.js",
