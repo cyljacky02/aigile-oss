@@ -3,7 +3,7 @@
 // 呼叫端自己的前提（例：申請仍待審核、審核人仍有管理權）以 guards 放進同一批，在交易內斷言。
 //
 // 一批的內容（第一句工作區列鎖、不在還原中、識別碼已正規化由 write 加；見 src/write-order.js）：
-//   呼叫端的 guards → 名稱、網址英文名、代號沒被用掉的斷言 → 專案（含可見度）→ 專案異動紀錄 → 看板狀態（有指定才寫；沒指定＝預設狀態組，第一次讀時補）
+//   呼叫端的 guards → 名稱、網址英文名、代號沒被用掉的斷言 → 專案（含可見度）→ 專案異動紀錄 → 看板狀態（沒指定＝預設狀態組）
 //   → 網址英文名與代號 → 受益人的專案管理員成員資格（只新增這一筆，不覆寫他其他專案的成員資格）→ project.create 稽核 → 呼叫端的 extra 寫入
 //
 // 介面（core.js 建一個，傳給需要的地方）：
@@ -22,6 +22,7 @@ import { slugFreeCond, codeFreeCond, ensureCond, holdsNow } from './project-iden
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 import { PROJECT_VISIBILITIES } from './access.js';
+import { DEFAULT_STATUSES } from './statuses.js';
 
 // 建立方式（記在 project.create 稽核的 detail.method）
 export const CREATION_METHOD = Object.freeze({
@@ -61,7 +62,8 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
       ensureStmt(nf.cond, nf.args), ensureCond(slugFreeCond(slug, id)), ensureCond(codeFreeCond(code, id)),
       ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at, visibility) VALUES (?,?,0,?,?,?,?)', [id, name, workspaceId, actor?.id ?? 'system', at, visibility]],
       projEvent(id, actor?.id ?? 'system', eventText ?? `${actor?.name ?? '系統'} 建立專案`, at),
-      ...(statuses || []).map((st, i) => ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [id, st.name, st.category, i, st.color]]),
+      // 看板狀態跟專案同一批：沒指定就寫預設狀態組。每個狀態一句單列 INSERT（D1 一個複合 SELECT 最多 5 段，不用 UNION ALL）
+      ...(statuses || DEFAULT_STATUSES).map((st, i) => ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [id, st.name, st.category, i, st.color]]),
       ['INSERT INTO app_settings (key, value) VALUES (?, ?)', ['slug:' + id, slug]],
       ['INSERT INTO app_settings (key, value) VALUES (?, ?)', ['pcode:' + id, code]],
       // 受益人成為唯一的初始專案管理員：只新增新專案這一筆（新專案還沒有任何成員資格），不碰他其他專案的成員資格

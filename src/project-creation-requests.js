@@ -291,7 +291,10 @@ export function registerProjectCreationRequests(d) {
       throw e;
     }
     if (!done) {
-      // 斷言沒過：用新鮮資料判斷原因（只用來產生回應）
+      // 斷言沒過：用新鮮資料判斷原因（只用來產生回應）。先看同一 requestId 的申請是不是剛好寫成了：
+      // 是的話這次是重送，回原本的申請（不要求他現在仍符合送出新申請的條件）
+      const again = await byRequestId(me.id, c.requestId);
+      if (again) return replay(await access.load(ctx), me, again, c);
       const ws = await db.get('SELECT create_projects FROM workspaces WHERE id = ?', workspaceId);
       if (ws?.create_projects !== CREATE_PROJECTS.APPROVAL) throw new ApiError(403, 'PROJECT_CREATION_REQUESTS_CLOSED', '工作區政策目前不是「成員申請，管理員核准」，不收建立專案申請。');
       const eligible = (await db.get(`SELECT 1 AS x WHERE ${activeMemberCond(me.id, workspaceId).cond}`, me.id, workspaceId)) && !(await db.get(`SELECT 1 AS x WHERE ${directCreateCond(me.id).cond}`, me.id));
@@ -427,7 +430,12 @@ export function registerProjectCreationRequests(d) {
         explain: () => approvalBlocked(me, row.id) });
     } catch (e) {
       if (e instanceof ApprovedMeanwhile) return approvedResult(ctx, me, e.row, true); // 另一位審核人同時核准、先完成
-      if (e instanceof ApiError && TAKEN[e.code]) throw taken(e);
+      if (e instanceof ApiError && TAKEN[e.code]) {
+        // 名稱或識別碼被占用，可能就是另一位審核人剛核准這份申請建的專案：申請已核准就回原本的結果，不算衝突
+        const now = await byId(row.id);
+        if (now?.state === PCR_STATE.APPROVED) return approvedResult(ctx, me, now, true);
+        throw taken(e);
+      }
       throw e;
     }
     pokeLater(row.requester_id);

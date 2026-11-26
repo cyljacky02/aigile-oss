@@ -205,7 +205,8 @@ try {
   for (const action of ['review_project_creation_requests', 'approve_project_creation_request', 'reject_project_creation_request']) { // 查看待審、核准、拒絕（#45）
     for (const p of [admin, admin2, plat]) assert.ok(av.can(p, action, 'workspace'), `${p.id} 能 ${action}`);
     for (const p of [lead, member]) assert.ok(!av.can(p, action, 'workspace'), `${p.id}（專案管理員也一樣）不能 ${action}`);
-    assert.equal(await code(appr.check(ctx, member, action, 'workspace')), 'NOT_REVIEWER', `成員 ${action} 的錯誤代碼`);
+    // 查看審核清單：無權查看一律 404；核准、拒絕：看得到申請但沒有審核權 403
+    assert.equal(await code(appr.check(ctx, member, action, 'workspace')), action === 'review_project_creation_requests' ? 'NOT_FOUND' : 'NOT_REVIEWER', `成員 ${action} 的錯誤代碼`);
   }
   for (const action of ['request_project_creation', 'see_own_project_creation_requests', 'withdraw_project_creation_request', 'review_project_creation_requests', 'approve_project_creation_request', 'reject_project_creation_request']) {
     for (const ai of [bot, { ...bot, owner_id: 'admin' }]) {

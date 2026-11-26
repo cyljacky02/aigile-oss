@@ -75,7 +75,7 @@ function makeBook(rows, invalid) {
 
 export function createStatuses({ db, invalid }) {
   const ROWS_SQL = 'SELECT p.id AS pj, s.id, s.project, s.name, s.category, s.position, s.color FROM projects p LEFT JOIN project_statuses s ON s.project = p.id';
-  // 還沒有狀態的專案（剛升級、剛建立）補上預設狀態組，並把卡片的 status_id 補齊。
+  // 還沒有狀態的專案（升級前建立的、舊備份還原的；新建的專案在建立那一批就寫了）補上預設狀態組，並把卡片的 status_id 補齊。
   // 整組用一句插入、而且只在專案還沒有任何狀態時插：兩個請求同時補，或先補好、使用者接著改過，慢的那個什麼都不做
   // 預設的幾列用多列 VALUES（不用 UNION ALL：D1 一個複合 SELECT 最多 5 段，預設有 6 個狀態，超過就整句失敗；見 src/db-d1.js 的 D1_SQLITE_LIMITS）。
   // VALUES 的欄位在 SQLite 與 Postgres 都叫 column1、column2…
