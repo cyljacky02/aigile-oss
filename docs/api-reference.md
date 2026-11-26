@@ -238,7 +238,7 @@ B. 不接受，等全部完成
 - **建立專案** `POST /api/projects`：工作區管理員；工作區設定 `createProjects` 是 `members` 時一般成員也可以（`GET /api/projects` 的 `canCreateProject`）。建立的人成為該專案的專案管理員。未封存、未刪除的專案名稱不能重複：建立、改名（`PATCH /api/projects/:id`）、取消封存（`POST /api/projects/:id/unarchive`）撞名都回 409 `NAME_TAKEN`（同時寫入也一樣，只有一個成功）；**取消封存開始檢查名稱**，名稱已被別的未封存專案用掉時要先改名或封存那個。剛好同時有人在改、判斷不出原因時回 409 `CONFLICT`，重新讀取後再試。
 - **邀請**（工作區管理員）：`POST /api/invites {name, ttl?, projects: [專案 | {project, role: admin|member|viewer, title?}]}` → `{ invite, token, url }`；`GET /api/invites[?status=pending]`（每筆有 `kind: new|rejoin|reset`、`presets: [{project, role, title}]`）、`POST /api/invites/:id/regenerate`（重設登入的連結跟 `POST /api/participants/:id/reset-login` 一樣：平台管理員的只有平台管理員能重發，否則 403 `CANNOT_MANAGE_ADMIN`）、`…/cancel`；已移出工作區的人用同名邀請＝找回原帳號（`rejoin`）：接受時要用原本的帳號登入，`POST /api/auth/invite {token, username, password}` 或 `{token, code}`（登入碼）；只帶連結回 400 `INVITE_LOGIN_REQUIRED`，帳密不對或不是那個帳號回 400 `LOGIN_FAILED`，兩種都不會用掉邀請。舊欄位 `roles`、`role`、`readOnly`（＝`viewer`）照收。
 - **自行加入**：`POST /api/join`；沒開放自行註冊回 403 `JOIN_CLOSED`，設了房間碼要帶 `roomCode`（沒帶 400 `ROOM_CODE_REQUIRED`、錯 403）。自己加入的人是工作區成員、沒有專案。平台還沒有平台管理員時，第一位成為平台管理員兼工作區管理員。
-- **工作區設定** `GET｜PUT /api/workspace/settings {name?, openJoin?, roomCode?, createProjects?: members|admins}`（工作區管理員；`/api/group/settings` 是同一份的舊名）；附件保存期限覆寫 `GET｜PUT /api/file-ttl {hours | null}`（null＝跟平台預設）。**平台設定** `GET｜PUT /api/platform/settings {fileTtlHours}`；備份與還原、示範資料、更新檢查也只給平台管理員。還原原樣帶回備份裡的平台、工作區角色，你的登入改掛到備份裡最早加入的平台管理員；1.1 之前的備份照升級對應（`is_admin`＝平台管理員兼工作區管理員）。
+- **工作區設定** `GET｜PUT /api/workspace/settings {name?, openJoin?, roomCode?, createProjects?: members|admins}`（工作區管理員；`/api/group/settings` 是同一份的舊名）；附件保存期限覆寫 `GET｜PUT /api/file-ttl {hours | null}`（null＝跟平台預設）。**平台設定** `GET｜PUT /api/platform/settings {fileTtlHours}`；備份與還原、示範資料、更新檢查也只給平台管理員。還原原樣帶回備份裡的平台、工作區角色，你的登入改掛到備份裡最早加入的平台管理員；1.1 之前的備份照升級對應（`is_admin`＝平台管理員兼工作區管理員）。從 `POST /api/admin/restore/begin` 到 `POST /api/admin/restore/finish` 全部做完之前站台是「還原中」：建立專案、改名、改網址英文名或代碼、封存與取消封存、復原專案、改建立專案政策回 503 `RESTORING`（什麼都沒寫，還原完成後再送）。收尾依序：登入轉移與其他人要重設登入 → 成員與稽核等資料修整 → 寫 `backup.restore` 稽核並解除還原中（同一批）→ 清快取；任何一步失敗回 503 `RESTORE_UNFINISHED`、站台維持還原中，再呼叫一次 `finish` 從頭重跑（不重複轉移、稽核只寫一筆）。登入已轉移後只能重試 `finish`（`begin`、`rows`、`doc` 回 409 `RESTORE_FINISHING`）；`GET /api/admin/backup/status` 回 `finishing: true`。
 - **專案管理**：改名、封存、程式庫、私訊開關、看板狀態、AI 職務、加入設定與審核、專案可見度＝該專案的專案管理員；刪除與復原專案、專案代碼與網址英文名＝工作區管理員。
 - **錯誤碼**：403 `NOT_ADMIN`（不是該層的管理員）、409 `LAST_WORKSPACE_ADMIN`／`LAST_PLATFORM_ADMIN`、403 `NOT_WORKSPACE_MEMBER`（對方不是工作區成員，例如加入專案、升降工作區管理員的對象；已移出工作區的人登入也回這個）、403 `CANNOT_MANAGE_ADMIN`（專案管理員不能動上層管理員）、404 `NOT_FOUND`（私人專案對看不到的人等於不存在）、401 `INVALID_TOKEN`（已移出工作區）。
 
@@ -299,6 +299,7 @@ B. 不接受，等全部完成
 | 409 | `IDEMPOTENCY_CONFLICT` | 同一 requestId 用在不同內容 |
 | 429 | `RATE_LIMITED`／`SEARCH_LIMIT` | 依 `Retry-After`（或 `retryAfter`）秒數再試；每分鐘上限 120 次、搜尋 10 次 |
 | 503 | `RETRY_LATER` | 資料庫正忙，這次什麼都沒寫：依 `Retry-After` 秒數後用相同內容重送 |
+| 503 | `RESTORING` | 正在還原備份，這次什麼都沒寫：還原完成後用相同內容重送 |
 | 5xx、網路中斷、逾時 | — | **用相同 requestId 與相同內容重送**，伺服器保證不重複發文 |
 
 

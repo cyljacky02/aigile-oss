@@ -1682,10 +1682,12 @@ ${ending}`;
   async function writeTogether(list) {
     try { await writeStmts(list); return true; } catch (e) { if (isAssertionFailure(e)) return false; throw e; }
   }
-  // 共同不變量的寫入（ADR 0005）：第一句一定是工作區列鎖；交易內斷言不成立回 false（什麼都沒寫）。
+  // 共同不變量的寫入（ADR 0005）：第一句一定是工作區列鎖、接著斷言不在還原備份中（還原中回 503 RESTORING）；交易內斷言不成立回 false（什麼都沒寫）。
   // SQLite 忙碌、PostgreSQL 可重試的交易錯誤：整批重試幾次，還是不行回 503 RETRY_LATER（整批已回復，沒有部分寫入）
   const busyError = () => new ApiError(503, 'RETRY_LATER', '資料庫正忙，這次沒有存；請稍後再試。', { retryAfter: 1 });
-  const writeInWorkspace = list => writeOrdered(db, [lockWorkspaceStmt(DEFAULT_WORKSPACE), ...list], { busy: busyError });
+  // 還原備份還沒收尾完（鎖之後的「不在還原中」斷言失敗）：什麼都沒寫，還原完成後再送一次
+  const restoringError = () => new ApiError(503, 'RESTORING', '正在還原備份，這次沒有存；還原完成後再試。', { retryAfter: 5 });
+  const writeInWorkspace = list => writeOrdered(db, [lockWorkspaceStmt(DEFAULT_WORKSPACE), ...list], { busy: busyError, restoring: restoringError });
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
   const assertWritable = (me, pj) => access.check({}, me, 'write', { project: pj || null });
@@ -4451,8 +4453,15 @@ ${ending}`;
     maxFileBytes: (Number(config.docMaxFileMb) || 0) * 1048576 || undefined,
     maxTotalBytes: (Number(config.docMaxTotalMb) || 0) * 1048576 || DOC_MAX_TOTAL_BYTES });
   const skillsApi = registerSkills({ route, db, ApiError, invalid, readJson, randId, nowIso, sha256, peopleMap, projectsOf, PROJECTS, nameOf, access, assertNoSecret, writeDm, myAi, requireHuman, setupSha: SETUP_SHA256, roleDefsMap, storage }); // 技能包放分塊儲存 // C-xxx；C-xxx 唯讀；MAIN-240 同步工具版本；MAIN-249 專案自訂角色
-  registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, peopleMap, adminOf, storage, docStorage, auditLog,
-    membership, afterRestore: async () => { invalidatePeople(); await bumpPeopleVer(); membersReady = undefined; await migrateMembers(); auditReady = undefined; await migrateAuditLog(); await Promise.all([loadProjects(true), membership.loadMembers(true), loadProjectRoles(true)]); } }); // 舊版備份：成員資料匯入後再轉一次
+  registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, adminOf, storage, docStorage, auditLog, membership,
+    // 只清快取（開始匯入清空資料後、收尾做完後）；不做任何資料修整
+    clearCaches: async () => { invalidatePeople(); await bumpPeopleVer(); membersReady = undefined; auditReady = undefined; await Promise.all([loadProjects(true), membership.loadMembers(true), loadProjectRoles(true)]); },
+    // 還原收尾的修整步驟：在登入轉移之後、寫稽核與解除「還原中」之前依序執行。每一步都要能從頭重跑（中途失敗再按一次收尾會全部重做），
+    // 失敗就丟錯（回 false 也算沒做完），站台維持還原中。新的步驟照依賴順序接在後面（例：識別碼正規化、檢查待審的建立專案申請）
+    restoreSteps: [
+      { name: '成員資料轉換', run: () => membership.migrateLegacy({ finishingRestore: true }) }, // 舊版備份：成員資料匯入後轉到新的成員資料表
+      { name: '稽核紀錄轉換', run: () => auditLog.migrateLegacy({ finishingRestore: true }) }, // 舊的專案刪除紀錄轉進稽核紀錄
+    ] });
   registerUpdateCheck({ route, db, access, requireHuman, config });
   registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership,
     afterChange: async () => { invalidatePeople(); await bumpPeopleVer(); await loadProjects(true); } });

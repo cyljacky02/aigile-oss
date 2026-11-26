@@ -11187,6 +11187,8 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!bk.status) { api('/api/admin/backup/status').then(s => { bk.status = s; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(err => toast(err.message)); }
     const st = bk.status;
     const imp = !st ? '<p class="muted small">載入中…</p>'
+      : st.finishing ? `<p class="small"><b>備份的資料已經匯入，只差收尾</b>：收尾沒有做完，站台還在還原中。按「完成匯入」再試一次。</p>
+        <button type="button" class="btn primary" data-bk="finish"${bk.busy ? ' disabled' : ''}>完成匯入</button>` // 收尾中途失敗：登入已轉移，只能重試收尾
       : st.empty ? `<p class="small">${st.restoring ? '<b>上次匯入沒有做完</b>，可以再選一次備份檔從頭匯入。' : '這是空站，可以匯入備份。'}</p>
         <label class="btn${bk.busy ? ' disabled' : ''}">選擇備份檔…<input type="file" accept=".json,application/json" data-bk-file hidden${bk.busy ? ' disabled' : ''}></label>`
       : '<p class="small">這個站已經有資料，不能匯入；要搬家請在新架的空站匯入</p>';
@@ -11247,6 +11249,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <p>匯入後，你會變成備份裡的工作區管理員（名字：<b>${esc(admin?.name || '你自己')}</b>），你現在的密碼與這台裝置照舊。其他人的登入與 AI 的 Token 都不在備份裡：請在「成員」按「重設登入」、請主人重發 Token。</p>` });
     if (!ok) return;
     bk.busy = true; bk.where = 'import'; bk.msg = '開始匯入…'; drawPerm();
+    let stage = 'rows';
     try {
       bkSay('開始匯入…');
       await api('/api/admin/restore/begin', { method: 'POST', body: { format: b.format, formatVersion: b.formatVersion, appVersion: b.appVersion } });
@@ -11263,13 +11266,22 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         }
       }
       for (const d of b.docs || []) { await bkRaw(`/api/admin/restore/doc?id=${encodeURIComponent(d.id)}`, 'POST', bkUnB64(d.b64)); bkSay(`匯入中… ${++done} / ${total}`); }
-      const fin = await api('/api/admin/restore/finish', { method: 'POST', body: {} });
-      bkSay(`匯入完成：${fin.humans} 位人類、${fin.ais} 隻 AI。即將重新整理…`);
-      toast(`匯入完成，你現在是「${fin.admin.name}」`);
-      setTimeout(() => location.reload(), 1500);
-    } catch (err) { bkSay('匯入失敗：' + err.message + '（可以再選一次檔案從頭匯入）'); toast('匯入失敗：' + err.message); bk.status = null; bk.busy = false; drawPerm(); }
+      stage = 'finish';
+      bkDone(await api('/api/admin/restore/finish', { method: 'POST', body: {} }));
+    } catch (err) { bkSay('匯入失敗：' + err.message + (stage === 'finish' ? '（可以再試一次）' : '（可以再選一次檔案從頭匯入）')); toast('匯入失敗：' + err.message); bk.status = null; bk.busy = false; drawPerm(); }
   }
-  document.addEventListener('click', e => { if (e.target.closest?.('[data-bk="export"]') && !bk.busy) bkExport(); });
+  function bkDone(fin) {
+    bkSay(`匯入完成：${fin.humans} 位人類、${fin.ais} 隻 AI。即將重新整理…`);
+    toast(`匯入完成，你現在是「${fin.admin.name}」`);
+    setTimeout(() => location.reload(), 1500);
+  }
+  // 收尾中途失敗後重試（資料已匯入、登入已轉移）：只再呼叫一次收尾，伺服器從頭重跑收尾步驟
+  async function bkFinish() {
+    bk.busy = true; bk.where = 'import'; bk.msg = '完成匯入中…'; drawPerm();
+    try { bkSay('完成匯入中…'); bkDone(await api('/api/admin/restore/finish', { method: 'POST', body: {} })); }
+    catch (err) { bkSay('匯入失敗：' + err.message + '（可以再試一次）'); toast('匯入失敗：' + err.message); bk.status = null; bk.busy = false; drawPerm(); }
+  }
+  document.addEventListener('click', e => { if (e.target.closest?.('[data-bk="export"]') && !bk.busy) bkExport(); if (e.target.closest?.('[data-bk="finish"]') && !bk.busy) bkFinish(); });
   document.addEventListener('change', e => { const inp = e.target.closest?.('[data-bk-file]'); if (inp?.files?.[0] && !bk.busy) { const f = inp.files[0]; inp.value = ''; bkImport(f); } });
   function permInvitesHtml() {
     if (!perm.invites) { loadInvites(); return '<p class="muted pm-pad">載入中…</p>'; }
