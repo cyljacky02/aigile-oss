@@ -1884,6 +1884,8 @@ span.pm-star.on-true { display: inline-flex; width: 32px; justify-content: cente
 .vis-opt { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
 .vis-opt input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
 .vis-opt > span { display: grid; gap: 2px; min-width: 0; }
+.np-vis { border: 0; margin: 0; padding: 0; min-width: 0; } /* 新增專案表單的可見度 */
+.np-vis legend { padding: 0; margin-bottom: 6px; }
 .ai-grants { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; display: grid; gap: 6px; }
 .ai-grants p { margin: 0; }
 .ai-grants-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

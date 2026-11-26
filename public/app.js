@@ -9181,7 +9181,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     'workspace_policy.update': ['修改工作區政策', 'Changed workspace policy'], 'recovery_window.update': ['修改可復原期', 'Changed recovery window'],
     'message.delete': ['刪除訊息', 'Deleted message'], 'message.restore': ['復原訊息', 'Restored message'], 'message.purge': ['永久清除訊息', 'Purged messages'],
     'project_messages.clear': ['清空專案訊息', 'Cleared project messages'], 'project_messages.restore': ['復原清空的專案訊息', 'Restored cleared project messages'],
-    'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
+    'project.create': ['建立專案', 'Created project'], 'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
   };
   const alogAction = k => (ALOG_ACTIONS[k] ? L(...ALOG_ACTIONS[k]) : k);
   const ALOG_PLATFORM = ['platform_admin.grant', 'platform_admin.revoke', 'account.disable', 'account.enable', 'backup.restore']; // 工作區頁的篩選不列
@@ -9218,6 +9218,13 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       out.push(L(`可復原期：${zh(d.from)} → ${zh(d.to)}`, `Recovery window: ${en(d.from)} → ${en(d.to)}`));
     } else if (d.field) out.push(`${d.field}: ${d.from ?? '—'} → ${d.to ?? '—'}`);
     else if ('from' in d || 'to' in d) out.push(`${d.from ?? '—'} → ${d.to ?? '—'}`);
+    if (e.action === 'project.create') { // 建立方式與可見度（代號在下面）
+      const how = { direct: ['直接建立', 'Created directly'], approved_request: ['核准申請後建立', 'Created from an approved request'], first_run: ['新站第一次啟動自動建立', 'Created automatically on first start'], demo: ['載入示範資料', 'Loaded demo data'] }[d.method];
+      if (how) out.push(L(...how));
+      if (d.requester?.name) out.push(L(`申請人 ${d.requester.name}`, `Requested by ${d.requester.name}`));
+      const vis = { open: ['開放', 'open'], review: ['審核', 'review'], private: ['私人', 'private'] }[d.visibility];
+      if (vis) out.push(L(`可見度：${vis[0]}`, `Visibility: ${vis[1]}`));
+    }
     if (d.revokedAiTokens) out.push(L(`作廢 ${d.revokedAiTokens} 個 AI 的 Token`, `Revoked ${d.revokedAiTokens} AI token(s)`));
     if (e.action === 'backup.restore') out.push(L(`備份版本 ${d.appVersion || '?'}；${d.humans ?? 0} 位人類、${d.ais ?? 0} 個 AI`, `Backup version ${d.appVersion || '?'}; ${d.humans ?? 0} human(s), ${d.ais ?? 0} AI(s)`));
     if (d.counts) out.push(L(`訊息 ${d.counts.messages ?? 0}、卡片 ${d.counts.cards ?? 0}、文件 ${d.counts.docs ?? 0}`, `${d.counts.messages ?? 0} messages, ${d.counts.cards ?? 0} cards, ${d.counts.docs ?? 0} docs`));
@@ -9867,11 +9874,14 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     return `<ol class="st-list np-st-list">${list.map((s, i) => `<li class="st-row" data-i="${i}"><span class="st-swatch" data-color="${esc(s.color)}" aria-hidden="true"></span><input class="st-name" value="${esc(s.name)}" maxlength="20" aria-label="狀態名稱"><select class="st-cat" aria-label="狀態類別">${catOpts(s.category)}</select><span class="st-acts"><button type="button" class="btn small" data-np-st-del ${list.length <= 3 ? 'disabled' : ''}>拿掉</button></span></li>`).join('')}</ol>
       <button type="button" class="link small" data-np-st-add ${list.length >= 12 ? 'disabled' : ''}>＋ 新增一個狀態</button>`;
   }
-  // 新增專案彈窗：名稱＋程式庫＋分支（選填）一次填完；看板狀態（選填）
+  // 新增專案彈窗：名稱＋可見度（預設審核；建立的同一步就設好，私人專案從一開始就是私人的）＋程式庫＋分支（選填）一次填完；看板狀態（選填）
   function openNewProject() {
     const body = openModal('新增專案', `<form id="np-form" class="stack">
         <label class="field">專案名稱<input name="name" required maxlength="20" autocomplete="off"></label>
         ${slugFieldHtml('np-slug', '')}
+        <fieldset class="field np-vis"><legend>專案可見度</legend>
+          <div class="vis-list" role="radiogroup" aria-label="專案可見度">${VISIBILITY.map(([v, t, sub]) => `<label class="vis-opt"><input type="radio" name="visibility" value="${v}"${v === 'review' ? ' checked' : ''}><span><b>${t}</b><span class="muted small">${sub}</span></span></label>`).join('')}</div>
+        </fieldset>
         <label class="field">程式庫連結（選填）<input name="url" maxlength="300" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://github.com/帳號/專案"></label>
         <label class="field">分支（選填）<input name="branch" maxlength="100" autocomplete="off" spellcheck="false" placeholder="main"></label>
         <details class="np-st"><summary>看板狀態（選填，預設六欄）</summary>${ST_HELP}<div id="np-st"></div></details>
@@ -9902,7 +9912,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       try {
         let r;
         const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
-        try { r = await api('/api/projects', { method: 'POST', body: { name, slug: sf.auto ? '' : sf.slug, ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
+        try { r = await api('/api/projects', { method: 'POST', body: { name, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review', ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
         catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
         let repoErr = '';
         if (url) { try { await api(`/api/projects/${encodeURIComponent(r.id)}/repo`, { method: 'PUT', body: { url, branch } }); } catch (e2) { repoErr = e2.message; } }
