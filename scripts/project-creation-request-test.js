@@ -7,7 +7,7 @@
 // - 撤回：本人、待審核才行；不通知、不寫稽核；之後可以用同名重送
 // - 送出與政策切換交錯：交易內斷言擋下，不留申請
 // - 資料表：CHECK 約束、部分唯一索引；唯一的狀態轉換（只有 pending 能轉）與取消入口
-// - 申請資料表還沒建立：503；暫時的啟用控制沒開時不能把政策設成 approval
+// - 申請資料表還沒建立：503；沒有任何啟用設定也能把政策設成 approval（#48 開放給正式環境）
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres。用法：node scripts/project-creation-request-test.js
 import './test-home.mjs';
 import fs from 'node:fs';
@@ -24,8 +24,7 @@ import { transitionStmts, cancelStmts, pendingCountSql } from '../src/project-cr
 import { lockWorkspaceStmt, isAssertionFailure } from '../src/write-order.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pcr-'));
-const BASE_CONFIG = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' };
-const CONFIG = { ...BASE_CONFIG, unreleasedProjectCreationRequests: '1' }; // 暫時的啟用控制（#48 移除）
+const CONFIG = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' };
 const code = r => r.body?.error?.code;
 const ok = (r, label) => { assert.ok(r.status < 400, `${label}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r.body; };
 const is = (r, status, errCode, label) => { assert.equal(r.status, status, `${label}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); if (errCode) assert.equal(code(r), errCode, label); return r.body; };
@@ -330,11 +329,14 @@ try {
   assert.deepEqual({ ...(await db.get('SELECT state, cancel_code, ended_by FROM project_creation_requests WHERE id = ?', 'uq_4')) }, { state: 'cancelled', cancel_code: 'workspace_member_left', ended_by: null });
   assert.equal((await db.get('SELECT state FROM project_creation_requests WHERE id = ?', 'uq_3')).state, 'withdrawn', '終止狀態不受影響');
 
-  // ---------- 12) 暫時的啟用控制沒開：不能把政策設成 approval；已經是 approval 的照常可以切走 ----------
+  // ---------- 12) 正式環境（沒有任何啟用設定，#48 開放）：三種政策都能選；不認得的值 400 ----------
   {
-    const { call: plain } = harness(db, BASE_CONFIG);
-    is(await plain(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'approval' }), 400, 'INVALID_REQUEST', '沒開啟用控制不能選 approval');
-    assert.equal((await plain(boss.token, '/api/workspace/settings')).body.createProjects, 'approval', '已存的值照常讀得到');
+    const { call: plain } = harness(db, CONFIG);
+    ok(await plain(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' }), '切到只有管理員');
+    const gs = ok(await plain(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'approval' }), '沒有任何啟用設定也能選 approval');
+    assert.equal(gs.createProjects, 'approval');
+    assert.deepEqual([...gs.createProjectsOptions].sort(), ['admins', 'approval', 'members'], '能設的值是三種');
+    is(await plain(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'everyone' }), 400, 'INVALID_REQUEST', '不認得的值');
     ok(await plain(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' }), '可以切回只有管理員');
   }
 

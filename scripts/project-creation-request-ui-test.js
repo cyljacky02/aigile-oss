@@ -6,7 +6,7 @@ import assert from 'node:assert';
 import { startKit, findBrowser, until } from './browser-kit.js';
 
 if (!findBrowser()) { console.log('project-creation-request-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
-const kit = await startKit('pcrui', { env: { AIGILE_UNRELEASED_PROJECT_CREATION_REQUESTS: '1' } }); // 暫時的啟用控制（#48 移除）
+const kit = await startKit('pcrui');
 try {
   const boss = (await kit.call(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body; // 工作區管理員
   const mate = (await kit.call(null, '/api/join', 'POST', { name: '陳大文', role: 'PG' })).body;

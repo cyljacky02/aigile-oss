@@ -3129,7 +3129,7 @@ window.AIGILE_EN = {
     "已儲存：只有工作區管理員能建立專案": "Saved: only workspace admins can create projects",
     "可連線的 AI 工具": "AI tools that can connect",
     "取消勾選的工具不會出現在「我的 AI › 接入」，也拿不到接入文字與一行啟動。已經用它接好的 AI 照常運作。全站一份，不分專案；至少要留一個開著。改的紀錄在下面的「工作區異動紀錄」。": "Unchecked tools are hidden from \"My AIs › Connect\" and cannot get onboarding text or a one-line start. AIs already connected with them keep working. One setting for the whole site, across all projects; at least one tool must stay on. Changes are recorded in the workspace change log below.",
-    "createProjects 只能是 members（所有成員）或 admins（只有工作區管理員）": "createProjects must be members (all members) or admins (workspace admins only)",
+    "createProjects 只能是 members（所有成員）、approval（成員申請，管理員核准）或 admins（只有工作區管理員）": "createProjects must be members (all members), approval (members request, admins approve) or admins (workspace admins only)",
     "{0} 設定誰可以建立專案：所有成員": "{0} set who can create projects: all members",
     "{0} 設定誰可以建立專案：只有工作區管理員": "{0} set who can create projects: workspace admins only",
     "邀請新的人、重發、作廢": "Invite people, resend, revoke",

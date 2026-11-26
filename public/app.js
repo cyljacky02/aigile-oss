@@ -9865,14 +9865,12 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       ${perm.gs && !perm.gs.error ? wsRecHtml(perm.gsRec) : ''}</div>`;
   }
   // 誰可以建立專案：所有成員／成員申請，管理員核准／只有工作區管理員（點了就存；從「成員申請」切走先確認，見 createProjectsChange）。
-  // 「成員申請」只在伺服器說能選（createProjectsOptions；暫時的啟用控制，#48 開放）或目前就是它時列出來
   function createProjectsHtml() {
     const gs = perm.gs;
     if (!gs || gs.error || !gs.createProjects) return '';
-    const approvalShown = gs.createProjects === 'approval' || (gs.createProjectsOptions || []).includes('approval');
     const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-cp" value="${v}" data-pp="createprojects"${gs.createProjects === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
     return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
-      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${approvalShown ? opt('approval', '成員申請，管理員核准', '一般成員送建立專案申請，工作區管理員或平台管理員核准後建立') : ''}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('approval', '成員申請，管理員核准', '一般成員送建立專案申請，工作區管理員或平台管理員核准後建立')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
   }
   // 切換「誰可以建立專案」（#46）：從「成員申請」切走會取消所有待審的建立專案申請——先讀預估數量、跳確認；
   // 存好後的提示用儲存回應的實際數字（預覽之後可能又有人送出）。取消就不存，單選項回到原本的值

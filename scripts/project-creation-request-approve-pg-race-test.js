@@ -56,7 +56,7 @@ const show = r => `${r.status} ${JSON.stringify(r.body).slice(0, 240)}`;
 
 try {
   const a = await open('switch.db'), b = await open('switch.db'); // 同一個 schema、不同的連線池
-  const config = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000', unreleasedProjectCreationRequests: '1' };
+  const config = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' };
   const g1 = gated(a);
   const mk = db => { const app = createApp({ db, storage: dbStorage(a), docText: '', config });
     return async (token, p, method = 'GET', body) => { const r = await app(new Request('http://localhost' + encodeURI(p), { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost'); return { status: r.status, body: await r.json().catch(() => ({})) }; }; };

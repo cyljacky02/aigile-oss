@@ -1,4 +1,4 @@
-// 畫面測試（#46）：工作區設定的「誰可以建立專案」三個單選項（成員申請要暫時的啟用控制，#48 移除）；
+// 畫面測試（#46）：工作區設定的「誰可以建立專案」三個單選項（正式環境都能選，#48）；
 // 從「成員申請」切走時跳確認視窗、顯示預估會取消幾份待審申請，取消就不改；確認後顯示實際取消數（預覽之後又多了申請時以實際為準）；
 // 申請人的「我的建立專案申請」顯示已取消與原因、帳號提醒有一則通知；375 寬不橫向捲動；英文介面
 // 本機暫存資料庫＋無頭 Chrome／Edge。用法：node scripts/project-creation-policy-ui-test.js
@@ -6,7 +6,7 @@ import assert from 'node:assert';
 import { startKit, findBrowser, until } from './browser-kit.js';
 
 if (!findBrowser()) { console.log('project-creation-policy-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
-const kit = await startKit('pcpolui', { env: { AIGILE_UNRELEASED_PROJECT_CREATION_REQUESTS: '1' } }); // 暫時的啟用控制（#48 移除）
+const kit = await startKit('pcpolui');
 try {
   const boss = (await kit.call(null, '/api/join', 'POST', { name: '林志明', role: 'PO' })).body; // 工作區管理員
   const mate = (await kit.call(null, '/api/join', 'POST', { name: '陳大文', role: 'PG' })).body;

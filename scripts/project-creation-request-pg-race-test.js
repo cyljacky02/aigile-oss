@@ -34,7 +34,7 @@ const appDb = { ...db, batch: stmts => {
   if (p) pause = null;
   return db.batch(p ? stmts.flatMap(st => (p.re.test(st[0]) ? [st, [`SELECT pg_advisory_xact_lock(${p.key})`, []]] : [st])) : stmts);
 } };
-const config = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000', unreleasedProjectCreationRequests: '1' }; // 暫時的啟用控制（#48 移除）
+const config = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' };
 const call = appCaller(createApp({ db: appDb, storage: dbStorage(db), docText: '', config }));
 const until = async (fn, ms, label) => { const end = Date.now() + ms; while (!(await fn())) { if (Date.now() > end) throw new Error('等太久：' + label); await new Promise(r => setTimeout(r, 25)); } };
 const lockWait = like => ctl.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE $1", [like]).then(r => r.rows[0].n > 0);

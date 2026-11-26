@@ -10,7 +10,7 @@ import { startKit, findBrowser, until } from './browser-kit.js';
 import { adminSession } from './test-admin.js';
 
 if (!findBrowser()) { console.log('project-creation-request-review-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
-const kit = await startKit('pcrrevui', { env: { AIGILE_UNRELEASED_PROJECT_CREATION_REQUESTS: '1' } }); // 暫時的啟用控制（#48 移除）
+const kit = await startKit('pcrrevui');
 try {
   const join = async (name, role = 'PG') => { const b = (await kit.call(null, '/api/join', 'POST', { name, role })).body; return { token: b.token, id: b.participant.participantId }; };
   const boss = await join('林志明', 'PO'); // 工作區管理員兼平台管理員

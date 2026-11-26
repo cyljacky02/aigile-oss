@@ -19,7 +19,7 @@ import { appCaller } from './test-call.js';
 import { adminSession } from './test-admin.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pcrr-'));
-const CONFIG = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000', unreleasedProjectCreationRequests: '1' }; // 暫時的啟用控制（#48 移除）
+const CONFIG = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' };
 const opened = [];
 const ok = (r, label) => { assert.ok(r.status < 400, `${label}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r.body; };
 // 一個站：fail(規則) 讓下一次符合的寫入整批丟錯（資料庫照交易規則什麼都不寫）
