@@ -9,6 +9,7 @@
 // 4. 既有的衝突（重複代號、代號與他案舊代號相同、重複網址英文名、未封存專案同名）原樣保留，identityConflicts 列給平台管理員看。
 import { lockWorkspaceStmt, ensureStmt, notRestoringStmt, writeOrdered, RESTORE_STATE_KEY } from './write-order.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
+import { claimAvailable, recoverableProjectClaims } from './project-claim-write.js';
 import { CLAIMS_VERSION, CLAIM_SCHEMA_QUERY, claimsSeeded, seedClaimsStmts, diagnoseClaims, notDisputed, routeToken } from './project-identity-claims.js';
 
 export const CODE_RE = /^[A-Z]{2,5}$/;
@@ -70,22 +71,23 @@ export const identityReadyStmt = () => ensureStmt(`EXISTS (SELECT 1 FROM app_set
   AND CASE WHEN json_valid(value) THEN CAST(json_extract(value, '$.claimsVersion') AS TEXT) END = ?)
   AND NOT EXISTS (${CLAIM_SCHEMA_QUERY})`, [IDENTITY_READY_KEY, String(CLAIMS_VERSION)]);
 // 這個網址英文名沒被別的專案用（存的網址英文名，或別的專案的 id；含可復原期內的）
-export const slugFreeCond = (slug, id) => ({
+const andCondition = (base, extra) => extra ? { cond: `(${base.cond}) AND (${extra.cond})`, args: [...base.args, ...extra.args] } : base;
+export const slugFreeCond = (slug, id, claimWrites = false) => andCondition({
   cond: `NOT EXISTS (SELECT 1 FROM app_settings WHERE key >= 'slug:' AND key < 'slug;' AND value = ? AND key != ?)
     AND NOT EXISTS (SELECT 1 FROM projects WHERE lower(id) = ? AND id != ?) AND ${notDisputed('slug')}`,
-  args: [slug, 'slug:' + id, routeToken(slug), id, routeToken(slug)] });
+  args: [slug, 'slug:' + id, routeToken(slug), id, routeToken(slug)] }, claimWrites && claimAvailable('slug', slug, id));
 // 現行代號、舊代號以及有衝突的代號保留。
-export const codeFreeCond = (code, id) => ({
+export const codeFreeCond = (code, id, claimWrites = false) => andCondition({
   cond: `NOT EXISTS (SELECT 1 FROM app_settings WHERE key >= 'pcode:' AND key < 'pcode;' AND value = ? AND key != ?)
     AND NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value != ?) AND ${notDisputed('code')}`,
-  args: [code, 'pcode:' + id, 'pcodeold:' + code, id, code] });
+  args: [code, 'pcode:' + id, 'pcodeold:' + code, id, code] }, claimWrites && claimAvailable('code', code, id));
 // 這個專案現在存的代號、網址英文名都沒跟別的專案重複（取消封存、復原：既有的衝突不能因此變成使用中）
-export const ownIdentityFreeCond = id => ({
+export const ownIdentityFreeCond = (id, claimWrites = false) => andCondition({
   cond: `NOT EXISTS (SELECT 1 FROM app_settings m JOIN app_settings o ON o.value = m.value AND o.key != m.key WHERE m.key = ? AND o.key >= 'pcode:' AND o.key < 'pcode;')
     AND NOT EXISTS (SELECT 1 FROM app_settings m JOIN app_settings o ON o.key = 'pcodeold:' || m.value AND o.value != ? WHERE m.key = ?)
     AND NOT EXISTS (SELECT 1 FROM app_settings m JOIN app_settings o ON o.value = m.value AND o.key != m.key WHERE m.key = ? AND o.key >= 'slug:' AND o.key < 'slug;')
     AND NOT EXISTS (SELECT 1 FROM app_settings m JOIN projects o ON lower(o.id) = m.value AND o.id != ? WHERE m.key = ?)`,
-  args: ['pcode:' + id, id, 'pcode:' + id, 'slug:' + id, id, 'slug:' + id] });
+  args: ['pcode:' + id, id, 'pcode:' + id, 'slug:' + id, id, 'slug:' + id] }, claimWrites && recoverableProjectClaims(id));
 export const ensureCond = c => ensureStmt(c.cond, c.args);
 // 用新鮮資料看條件現在成不成立（斷言失敗後判斷原因用）
 export const holdsNow = async (db, c) => !!(await db.get(`SELECT 1 AS x WHERE ${c.cond}`, ...c.args));

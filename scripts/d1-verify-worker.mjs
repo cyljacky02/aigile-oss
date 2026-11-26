@@ -10,6 +10,7 @@
 //                                                          before＝這批送出前先另外提交 sql（模擬別人剛好先改）。作用 times 次；{ re:null } 解除
 //     POST /__d1verify/fault-status                   → { hits, left }
 import worker from '../worker.js';
+import { createApp } from '../src/core.js';
 import { wrapD1 } from '../src/db-d1.js';
 import { isNotNullViolation, isConstraintViolation } from '../src/db-errors.js';
 
@@ -64,6 +65,7 @@ function metered(d1) {
 }
 
 let meteredDb = null; // worker.js 只在第一次建立 app 時讀 env.DB：一定要給同一個物件
+let stagedApp = null;
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 // 錯誤分類只是方便閱讀；驗證腳本拿 error 原文用 src/db-errors.js 的同一套判斷再核對一次
 const kindOf = e => (isNotNullViolation(e, 'app_settings') ? 'assertion' : !isConstraintViolation(e) ? 'other'
@@ -95,7 +97,10 @@ export default {
     meteredDb ??= metered(env.DB);
     const stats = { calls: 0, batches: 0, maxBatch: 0, maxParams: 0, maxSqlBytes: 0 };
     current = stats;
-    const res = await worker.fetch(request, { ...env, DB: meteredDb }, ctx);
+    // Only the local verifier can select the staged claim writer.
+    const staged = env.D1_VERIFY_TOKEN && request.headers.get('x-d1-verify-claims') === env.D1_VERIFY_TOKEN;
+    if (staged) stagedApp ??= createApp({ db: wrapD1(meteredDb), docText: '', projectClaimWrites: true, config: { updateCheck: '0' } });
+    const res = staged ? await stagedApp(request, url.origin, ctx) : await worker.fetch(request, { ...env, DB: meteredDb }, ctx);
     if (current === stats) current = null;
     const out = new Response(res.body, res);
     out.headers.set('x-d1-verify-stats', JSON.stringify(stats));

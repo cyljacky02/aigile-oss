@@ -58,9 +58,11 @@ async function check(id, title, fn) {
 
 // ---------- 對 Worker 的 HTTP ----------
 function site(base, token) {
-  const call = async (tok, p, method = 'GET', body) => {
+  const call = async (tok, p, method = 'GET', body, staged = false) => {
     for (let attempt = 0; ; attempt++) {
-      const r = await fetch(base + p, { method, headers: { 'content-type': 'application/json', ...(tok ? { authorization: `Bearer ${tok}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+      const headers = { 'content-type': 'application/json', ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+        ...(staged ? { 'x-d1-verify-claims': token } : {}) };
+      const r = await fetch(base + p, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
       const text = await r.text();
       let json = null; try { json = JSON.parse(text); } catch {}
       if (r.status === 429 && attempt < 3) { await sleep(((Number(json?.error?.retryAfter) || 5) * 1000) + 250); continue; } // 每人每分鐘 120 次的頻率限制
@@ -779,6 +781,40 @@ try {
     assert.ok(after.tables.some(t => t.name === 'project_templates' && Number(t.count) === 1));
     assert.deepEqual(ok(await dest.call(admin.token, `${base}/${template.id}`), '可選取還原後的範本'), template);
     is(await dest.call(admin.token, '/api/admin/restore/begin', 'POST', header), 409, 'NOT_EMPTY', '舊備份不能清除剛還原的範本');
+  });
+
+  await check('D1-15', '識別碼保留表寫入、回滾、復原及清除', async () => {
+    const worker = await A.dev({ vars: VARS });
+    running.push(worker);
+    const claimSite = site(worker.base, TOKEN);
+    const spec = { name: 'D1 atomic claims', slug: 'd1-atomic-route', code: 'DCLA' };
+    const create = () => claimSite.call(boss.token, '/api/projects', 'POST', spec, true);
+    await claimSite.fault({ re: '^INSERT INTO project_identity_claimants', mode: 'json' });
+    try {
+      assert.equal((await create()).status, 500);
+      assert.equal((await claimSite.faultStatus()).hits, 1);
+    } finally { await claimSite.fault({ re: null }); }
+    assert.equal(await claimSite.n('SELECT COUNT(*) FROM project_identity_claims WHERE value IN (?, ?)', spec.slug, spec.code), 0);
+    assert.equal(await claimSite.n('SELECT COUNT(*) FROM projects WHERE name = ?', spec.name), 0);
+    const { id } = ok(within('同批保留識別碼與建案', await create()), '重試建案');
+    assert.deepEqual(await claimSite.q('SELECT source, raw_value FROM project_identity_claimants WHERE project_id = ? ORDER BY source', id), [
+      { source: 'current_code', raw_value: spec.code }, { source: 'project_id', raw_value: id }, { source: 'slug', raw_value: spec.slug },
+    ]);
+    ok(within('同批保留舊代號', await claimSite.call(boss.token, `/api/projects/${id}/code`, 'PUT', { code: 'DNEW' }, true)), '改代號');
+    assert.equal((await claimSite.one("SELECT project_id FROM project_identity_claimants WHERE source = 'historical_code' AND value = ?", spec.code)).project_id, id);
+    is(await claimSite.call(boss.token, '/api/projects', 'POST', { name: 'D1 blocked alias', code: spec.code }, true), 409, 'CODE_TAKEN', '不能取別案舊代號');
+    const action = (name, body) => claimSite.call(boss.token, `/api/projects/${id}/${name}`, 'POST', body, true);
+    ok(await action('archive'), '封存');
+    await reauth(claimSite, boss);
+    const remove = () => action('delete', { confirmName: spec.name });
+    ok(await remove(), '移入可復原期');
+    is(await claimSite.call(boss.token, '/api/projects', 'POST', { name: 'D1 blocked slug', slug: spec.slug }, true), 409, 'SLUG_TAKEN', '可復原期保留網址英文名');
+    ok(await action('restore'), '復原');
+    ok(await claimSite.call(boss.token, '/api/platform/settings', 'PUT', { recoveryDays: 0 }, true), '立即永久清除');
+    ok(await remove(), '永久清除');
+    assert.equal(await claimSite.n('SELECT COUNT(*) FROM project_identity_claimants WHERE project_id = ?', id), 0);
+    assert.equal(await claimSite.n('SELECT COUNT(*) FROM project_identity_claims WHERE value IN (?, ?, ?, ?)', id, spec.slug, spec.code, 'DNEW'), 0);
+    ok(await create(), '永久清除後可以使用原識別碼');
   });
 
   if (usage.length) {

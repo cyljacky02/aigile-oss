@@ -203,7 +203,7 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
         [m.project, m.project]],
       ['DELETE FROM project_members WHERE project_id = ?', [m.project]],
       ['DELETE FROM join_requests WHERE project = ?', [m.project]]);
-      if (!(await identity.release([...rm, ...await removeJoinSettingsStmts(db, m.project)]))) keptProject = true; // 前提已改變：保留專案
+      if (!(await identity.release(m.project, [...rm, ...await removeJoinSettingsStmts(db, m.project)]))) keptProject = true; // 前提已改變：保留專案
     }
     await afterChange?.();
     return { cleared: true, keptProject, projectName: m.projectName };
