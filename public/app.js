@@ -84,6 +84,7 @@
       err.raw = msg; // 原文（中文）：表單用來對出錯的是哪一欄（英文介面 message 已經翻過）
       err.status = r.status;
       err.code = data?.error?.code; err.captchaRequired = !!data?.error?.captchaRequired; err.suggestion = data?.error?.suggestion || ''; err.field = data?.error?.field || '';
+      if (Array.isArray(data?.error?.projects)) err.projects = data.error.projects;
       state.lastErr = { code: err.code || `HTTP ${r.status}`, at: Date.now() };
       if (state.me && (err.code === 'INVALID_TOKEN' || err.code === 'TOKEN_EXPIRED')) logout(false);
       // 敏感操作：輸入密碼再驗證身分，通過後自動重送原本的操作（只重送一次）；還沒設密碼就引導去設定
@@ -11455,6 +11456,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   // 升級前就有的衝突原樣保留（不自動改名、不影響建立專案），這裡列出來讓平台管理員自己決定要不要整理
   const ident = { data: null, loading: false };
   const IDENT_KIND = { duplicate_code: '代號重複', code_is_old_alias: '代號跟別的專案的舊代號相同', duplicate_slug: '網址英文名重複', duplicate_name: '未封存的專案同名' };
+  const IDENT_FIELD = { duplicate_code: 'code', code_is_old_alias: 'code', duplicate_slug: 'slug', duplicate_name: 'name' };
+  const IDENT_LABEL = { code: '專案代號', slug: '網址英文名', name: '專案名稱' };
+  const identProject = p => `「${esc(p.name || p.id)}」${p.deleted ? '（可復原期內）' : p.archived ? '（已封存）' : ''}`;
+  const identProjectDetail = p => `${identProject(p)} <code>${esc(p.id)}</code>`;
   function identCardHtml() {
     if (!ident.data && !ident.loading) {
       ident.loading = true;
@@ -11462,12 +11467,66 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     }
     const d = ident.data;
     if (!d || d.hidden || (d.normalized && !d.conflicts.length)) return '';
-    const pj = p => `「${esc(p.name || p.id)}」${p.deleted ? '（已刪除）' : p.archived ? '（已封存）' : ''}`;
-    const list = d.conflicts.map(c => `<li><b>${esc(IDENT_KIND[c.kind] || c.kind)}</b> <code>${esc(c.value)}</code>：${c.projects.map(pj).join('、')}</li>`).join('');
+    const list = d.conflicts.map((c, i) => `<li><b>${esc(IDENT_KIND[c.kind] || c.kind)}</b> <code>${esc(c.value)}</code>：${c.projects.map(identProject).join('、')}
+      ${IDENT_FIELD[c.kind] ? `<button type="button" class="btn" data-ident-preview="${i}">預覽修復</button>` : ''}</li>`).join('');
     const head = d.normalized ? '' : '<p class="small"><b>專案的代號與網址英文名還沒整理完</b>：建立專案、改名、改代號或網址英文名暫時不能用，系統會自動重試。</p>';
-    const body = d.conflicts.length ? `<p class="small">升級前就有 ${d.conflicts.length} 處重複，原樣保留、建立專案照常；新的修改不會讓重複變多。要整理請改其中一個專案的名稱、代號或網址英文名。</p><ul class="small ident-list">${list}</ul>` : '';
+    const body = d.conflicts.length ? `<p class="small">升級前就有 ${d.conflicts.length} 處重複，原樣保留、建立專案照常。選擇一處重複來預覽變更的影響。</p><ul class="small ident-list">${list}</ul>` : '';
     return `<div class="pm-card ident-card"><div class="pm-card-head"><strong>專案代號與網址英文名</strong></div><div class="pm-pad">${head}${body}</div></div>`;
   }
+  function identPreviewHtml(plan) {
+    const names = new Map(plan.projects.map(p => [p.id, identProjectDetail(p)]));
+    const project = id => names.get(id) || `<code>${esc(id)}</code>`;
+    const source = { slug: '網址英文名', id: '專案 ID', name: '舊名稱網址', current: '現行代號', historical: '舊代號' };
+    const target = t => !t ? '<span>找不到</span>' : `${project(t.projectId)}（<span>${source[t.source]}</span>）${t.available === false ? ' <span>· 卡片無法存取</span>' : ''}`;
+    const card = c => c ? `${project(c.projectId)} <code>${esc(c.cardId)}</code>` : '<span>找不到</span>';
+    const shared = r => r.ambiguous ? '<p class="small">同一個參照無法同時指向兩個專案。</p>' : '';
+    const impacts = [
+      ...plan.routes.map(r => `<li><code>${esc(r.path)}</code> · ${target(r.before)} → ${target(r.after)}${shared(r)}</li>`),
+      ...plan.cardReferences.map(r => `<li><code>${esc(r.code)}-N</code> · ${target(r.before)} → ${target(r.after)}${shared(r)}
+        ${r.examples.length ? `<ul>${r.examples.map(e => `<li><code>${esc(e.reference)}</code> · ${card(e.before)} → ${card(e.after)}</li>`).join('')}</ul>` : ''}</li>`),
+    ];
+    return `<p><strong>${esc(IDENT_LABEL[plan.field])}</strong> <code>${esc(plan.current)}</code> → <code>${esc(plan.replacement)}</code></p>
+      <strong>受影響的專案</strong><ul>${plan.projects.map(p => `<li>${identProjectDetail(p)}</li>`).join('')}</ul>
+      ${plan.field === 'code' ? `<p>這個專案的卡片顯示代號會換成 <code>${esc(plan.replacement)}-N</code>，卡片編號 N 照舊。</p>` : ''}
+      <strong>參照解析（目前 → 預覽）</strong><ul>${impacts.join('')}</ul>`;
+  }
+  document.addEventListener('click', e => {
+    const button = e.target.closest?.('[data-ident-preview]');
+    const conflict = button && ident.data?.conflicts[button.dataset.identPreview];
+    if (!conflict) return;
+    const field = IDENT_FIELD[conflict.kind];
+    const candidates = conflict.projects.filter(p => p[field] === conflict.value);
+    const body = openModal('預覽修復', `<form id="ident-preview-form" class="stack">
+      <label class="field">要變更的專案<select name="projectId">${candidates.map(p => `<option value="${esc(p.id)}">${identProject(p)} ${esc(p.id)}</option>`).join('')}</select></label>
+      <label class="field">替換值 · ${esc(IDENT_LABEL[field])}<input name="replacement" required autocomplete="off"></label>
+      <button class="btn primary" type="submit">預覽修復</button>
+      <p id="ident-preview-error" role="alert"></p>
+      <div id="ident-preview-result" role="status" class="small"></div>
+    </form>`, { size: 'form', sub: '預覽只讀取資料。' });
+    const form = body.querySelector('form'), result = body.querySelector('#ident-preview-result'), error = body.querySelector('#ident-preview-error');
+    const buttonSubmit = form.querySelector('button[type="submit"]');
+    let request = 0;
+    const clear = () => { request++; result.innerHTML = ''; error.textContent = ''; buttonSubmit.disabled = false; };
+    form.addEventListener('input', clear);
+    form.addEventListener('submit', async ev => {
+      ev.preventDefault();
+      clear();
+      const version = request;
+      buttonSubmit.disabled = true;
+      result.textContent = '載入中…';
+      const { projectId, replacement } = Object.fromEntries(new FormData(form));
+      try {
+        const plan = await api('/api/admin/project-identity/preview', { method: 'POST', body: { projectId, field, replacement } });
+        if (version === request && body.isConnected) result.innerHTML = identPreviewHtml(plan);
+      } catch (err) {
+        if (version !== request || !body.isConnected) return;
+        result.textContent = '';
+        error.innerHTML = `${esc(err.message)}${err.projects?.length ? ` ${err.projects.map(identProjectDetail).join('、')}` : ''}`;
+      } finally {
+        if (version === request) buttonSubmit.disabled = false;
+      }
+    });
+  });
   // ---------- 有新版本：管理員打開成員與權限時查一次（伺服器一天最多問 GitHub 一次）----------
   const upd = { data: null, loading: false };
   const UPD_HIDE = 'aigile.updHidden';

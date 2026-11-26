@@ -456,8 +456,24 @@ try {
     const diag = ok(await a.call(boss.token, '/api/admin/project-identity'), '診斷');
     assert.equal(diag.normalized, true);
     assert.ok(diag.conflicts.some(c => c.kind === 'duplicate_slug' && c.value === 'legacy-site'), '診斷列出既有的網址英文名衝突：' + JSON.stringify(diag.conflicts));
+    const preview = (token, field, replacement) => a.call(token, '/api/admin/project-identity/preview', 'POST', { projectId: 'p_legacy_a', field, replacement });
+    const plan = ok(within('修復預覽', await preview(boss.token, 'slug', 'legacy-alpha')), '修復預覽');
+    assert.deepEqual(plan.routes.map(r => [r.path, r.before?.projectId, r.after?.projectId]), [
+      ['/p/legacy-site', 'p_legacy_a', 'p_legacy_b'], ['/p/legacy-alpha', undefined, 'p_legacy_a'],
+    ]);
+    is(await preview(dan.token, 'slug', 'legacy-alpha'), 403, 'NOT_ADMIN', '只有平台管理員能預覽');
+    assert.deepEqual(ok(await a.call(boss.token, '/api/admin/project-identity'), '預覽後診斷'), diag);
     is(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 舊代號', code: 'OLDL' }), 409, 'CODE_TAKEN', '舊代號別名也算占用');
     is(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 撞正規化', code: stored['pcode:p_legacy_b'] }), 409, 'CODE_TAKEN', '正規化寫入的代號也算占用');
+    const alphaCard = ok(await a.call(boss.token, '/api/cards', 'POST', { project: 'p_legacy_a', title: 'Legacy Alpha card', requestId: 'legacy-alpha-card' }), '建立甲卡');
+    const betaCard = ok(await a.call(boss.token, '/api/cards', 'POST', { project: 'p_legacy_b', title: 'Legacy Beta card', requestId: 'legacy-beta-card' }), '建立乙卡');
+    const oldCode = stored['pcode:p_legacy_a'];
+    assert.deepEqual(await a.batch([["INSERT INTO app_settings (key, value) VALUES (?, 'p_legacy_b')", [`pcodeold:${oldCode}`]]]), { ok: true });
+    const codePlan = ok(within('代號修復預覽', await preview(boss.token, 'code', 'LEGZ')), '代號修復預覽');
+    const oldRef = codePlan.cardReferences.find(r => r.code === oldCode);
+    assert.equal(oldRef.ambiguous, true);
+    assert.deepEqual(oldRef.examples.map(r => [r.before?.legacyId, r.after?.legacyId]), [[alphaCard.legacyId, betaCard.legacyId]]);
+    assert.equal(ok(await a.call(boss.token, `/api/cards/${oldCode}-1`), '預覽後查卡').legacyId, alphaCard.legacyId);
     note(`舊專案代號：${stored['pcode:p_legacy_a']}、${stored['pcode:p_legacy_b']}；既有衝突 ${diag.conflicts.length} 處`);
   });
 
