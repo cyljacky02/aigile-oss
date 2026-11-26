@@ -84,7 +84,6 @@
       err.raw = msg; // 原文（中文）：表單用來對出錯的是哪一欄（英文介面 message 已經翻過）
       err.status = r.status;
       err.code = data?.error?.code; err.captchaRequired = !!data?.error?.captchaRequired; err.suggestion = data?.error?.suggestion || ''; err.field = data?.error?.field || '';
-      if (Array.isArray(data?.error?.projects)) err.projects = data.error.projects;
       state.lastErr = { code: err.code || `HTTP ${r.status}`, at: Date.now() };
       if (state.me && (err.code === 'INVALID_TOKEN' || err.code === 'TOKEN_EXPIRED')) logout(false);
       // 敏感操作：輸入密碼再驗證身分，通過後自動重送原本的操作（只重送一次）；還沒設密碼就引導去設定
@@ -686,7 +685,7 @@
   // ---------- 網址英文名（選填）：跟伺服器同一套規則。留空＝依專案名稱自動產生；不合規則就在欄位下說哪裡不對，給建議值一鍵帶入 ----------
   const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/, SLUG_RESERVED = ['cross', 'p', 'api', 'hub'];
   const realSlug = p => (p && p.slug && p.slug !== p.id ? p.slug : ''); // 還沒設時 API 回專案 id（有底線），不能拿來當預設值
-  const slugUsed = exceptId => new Set((state.projectList || []).filter(p => p.id !== exceptId).flatMap(p => [p.slug, p.id.toLowerCase()].filter(Boolean)));
+  const slugUsed = exceptId => new Set((state.projectList || []).filter(p => p.id !== exceptId).flatMap(p => [p.slug, p.id.replace(/[A-Z]/g, c => c.toLowerCase())].filter(Boolean)));
   const slugClean = v => String(v ?? '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '');
   function slugFree(base, used) {
     const ok = s => SLUG_RE.test(s) && !SLUG_RESERVED.includes(s) && !used.has(s);
@@ -4144,32 +4143,13 @@
     updateTodoBadge();
     if (state.page === 'inbox' || state.page === 'hub') renderWork();
   });
-  function approvalSectionHtml(id, { sectionClass, title, count, rows, hint = '', more = '' }) {
-    if (!rows.length) return '';
-    return `<section class="wsugg ${sectionClass}" aria-labelledby="${id}"><div class="wsugg-head"><span class="wdot"></span><h3 id="${id}">${title}</h3><span class="wcount ora">${count}</span>${hint ? `<span class="muted small">${hint}</span>` : ''}</div>
-      ${rows.join('')}${more}</section>`;
-  }
-  function approvalRowHtml({ rowClass, attr, id, icon, title, scope, projectId, at, details = [], lateBadgeHtml = '', actions }) {
-    const preset = scope === projectId && (projectId === '預設專案' || projectId === '第二專案');
-    const keepName = projectId != null && !preset ? ' data-nt' : '';
-    const parts = [`<span${keepName}>${esc(scope)}</span>`, ...details.filter(Boolean), `<time datetime="${esc(at)}">${agoText(at)}</time>`];
-    return `<div class="sugg-row approval-row ${rowClass}" ${attr}="${esc(id)}"><span class="lead-ic" aria-hidden="true">${icon}</span>
-      <div class="sugg-main"><b data-nt>${esc(title)}</b><span class="muted small">${lateBadgeHtml}${parts.join(' · ')}</span></div>
-      <div class="sugg-actions">${actions}</div></div>`;
-  }
-  const approvalExcerpt = text => text ? `<span data-nt>「${esc(oneLine(text, 60))}」</span>` : '';
   function pcrRevHtml() {
-    const { items, total, next, loading } = work.pcrRev;
-    return approvalSectionHtml('approval-pcr-title', {
-      sectionClass: 'wpcr', title: '建立專案申請', count: total,
-      hint: '成員申請的新專案：核准後立即建立，申請人成為專案管理員',
-      rows: items.map(r => approvalRowHtml({
-        rowClass: 'pcr-rev-row', attr: 'data-pcr-rev-row', id: r.id, icon: '🗂️', title: r.name, scope: '工作區', at: r.createdAt,
-        details: [r.requesterName ? `<span data-nt>${esc(r.requesterName)}</span>` : '', approvalExcerpt(r.reason)],
-        actions: `<button type="button" class="btn small primary" data-pcr-review="${esc(r.id)}">查看並處理</button>`,
-      })),
-      more: next ? `<button type="button" class="link small" data-pcr-rev-more${loading ? ' disabled' : ''}>載入更多</button>` : '',
-    });
+    const items = work.pcrRev?.items || [];
+    if (!items.length) return '';
+    return `<section class="wsugg wpcr"><div class="wsugg-head"><span class="wdot"></span><h3>建立專案申請</h3><span class="wcount ora">${work.pcrRev.total}</span><span class="muted small">成員申請的新專案：核准後立即建立，申請人成為專案管理員</span></div>
+      ${items.map(r => `<div class="sugg-row pcr-rev-row" data-pcr-rev-row="${esc(r.id)}"><span class="lead-ic" aria-hidden="true">🗂️</span><div class="sugg-main"><b data-nt>${esc(r.name)}</b><span class="muted small"><span data-nt>${esc(r.requesterName || '')}</span> · <span>${agoText(r.createdAt)}</span> · <span data-nt>「${esc(oneLine(r.reason, 60))}」</span></span></div>
+        <div class="sugg-actions"><button type="button" class="btn small primary" data-pcr-review="${esc(r.id)}">查看並處理</button></div></div>`).join('')}
+      ${work.pcrRev.next ? `<button type="button" class="link small" data-pcr-rev-more${work.pcrRev.loading ? ' disabled' : ''}>載入更多</button>` : ''}</section>`;
   }
   // 審核視窗：完整不可修改的內容、自動識別碼的預估值（標明預估）、衝突提示、「核准並建立」與「拒絕」（理由必填）
   async function openPcrReview(id) {
@@ -4344,28 +4324,17 @@
         ${dmg.map(({ list, last: n }) => { const k = list.length, ids = esc(list.map(x => x.notificationId).join(' '));
           return `<div class="sugg-row dm-note" id="fyi-${esc(n.notificationId)}" data-fyi="${ids}"><div class="sugg-main"><b>${n.sender.system ? '平台通知' : `${esc(n.sender.name)} 回你了`}${k > 1 ? ` <span class="pill-tag">${k} 則</span>` : ''}</b><span class="muted small">${esc(oneLine(n.sender.system ? dmGist(n.preview, true) : String(n.preview).replace(/^\[頭像提案 [^\]]+\]\s*/, '🖼 頭像提案：'), 80))} · ${k > 1 ? '最後一則 ' : ''}${agoText(n.createdAt)}</span></div>
           <div class="sugg-actions"><button type="button" class="btn small primary" data-dm-open="${esc(n.sender.participantId)}" data-dm-pj="${esc(n.project || '')}">打開私訊</button><button type="button" class="link small" data-dm-read="${ids}" title="不打開對話，直接從這裡清掉">${k > 1 ? `全部已讀（${k}）` : '已讀'}</button></div></div>`; }).join('')}</section>` : '';
-    // 專案管理員先處理；工作區管理員只在沒有專案管理員或超過 1 天後看到。
+    // PLAT-381「👑 你負責的專案」：自己專案的加入申請、技能核准；管理員看到的是沒有 leader 或 leader 超過 1 天沒處理的
     const leadPjs = [...new Set([...joins.map(j => j.project), ...skRev.map(k => k.project)])].filter(pj => projectAdminsOf(pj).includes(meId()));
-    const late = pj => !projectAdminsOf(pj).includes(meId()) && otherLeads(pj).length ? `<span class="pill-tag yellow">專案管理員 ${esc(leadNames(pj))} 還沒處理</span> ` : '';
-    const joinSection = approvalSectionHtml('approval-join-title', {
-      sectionClass: 'wlead', title: '加入申請', count: joins.length,
-      rows: joins.map(j => approvalRowHtml({
-        rowClass: 'lead-row', attr: 'data-join-row', id: j.id, icon: '🙋', title: j.name, scope: j.projectName, projectId: j.project, at: j.createdAt,
-        details: [approvalExcerpt(j.note)], lateBadgeHtml: late(j.project),
-        actions: `<button type="button" class="btn small" data-lead-jno="${esc(j.id)}">${L('拒絕', 'Reject')}</button><button type="button" class="btn small primary" data-join-review="${esc(j.project)}">${L('核准', 'Approve')}</button>`,
-      })),
-    });
-    const skillSection = approvalSectionHtml('approval-skill-title', {
-      sectionClass: 'wlead', title: '技能審核', count: skRev.length,
-      rows: skRev.map(k => approvalRowHtml({
-        rowClass: 'lead-row', attr: 'data-skrev-row', id: k.skillId, icon: '🧩', title: k.name, scope: projName(k.project), projectId: k.project, at: k.uploadedAt,
-        details: [k.scripts ? `<span>${esc(L(`含腳本 ${k.scripts} 個`, `${k.scripts} script${k.scripts > 1 ? 's' : ''}`))}</span>` : '',
-          k.uploadedBy?.name ? `<span>${esc(L(`${k.uploadedBy.name}上傳`, `uploaded by ${k.uploadedBy.name}`))}</span>` : ''], lateBadgeHtml: late(k.project),
-        actions: `<button type="button" class="btn small" data-lead-skview="${esc(k.skillId)}">${L('看內容', 'View')}</button><button type="button" class="btn small primary" data-lead-skok="${esc(k.skillId)}">${L('核准', 'Approve')}</button>`,
-      })),
-    });
-    const leadNote = joinSection || skillSection ? `<p class="muted small wlead-note">${leadPjs.length ? `你是「${esc(leadPjs.map(projName).join('、'))}」的專案管理員，這些由你處理；超過 1 天沒處理，會提醒工作區管理員。` : '專案沒有專案管理員，或專案管理員超過 1 天沒處理的，會出現在這裡；你也可以直接處理。'}</p>` : '';
-    return pcrSection + joinSection + skillSection + leadNote + dmSection + askSection + decisionSectionHtml(decideMe) + verSection + confSection + suggHtml(true);
+    const late = pj => !projectAdminsOf(pj).includes(meId()) && otherLeads(pj).length ? `<span class="pill-tag yellow">專案管理員 ${esc(leadNames(pj))} 還沒處理</span> ` : ''; // 管理員看到的（已超過 1 天）
+    const joinSection = joins.length || skRev.length ? `
+      <section class="wsugg wlead"><div class="wsugg-head"><span class="wdot"></span><h3>${leadPjs.length ? '👑 你管理的專案' : '🛡 專案待處理'}</h3><span class="wcount ora">${joins.length + skRev.length}</span></div>
+        <p class="muted small wlead-note">${leadPjs.length ? `你是「${esc(leadPjs.map(projName).join('、'))}」的專案管理員，這些由你處理；超過 1 天沒處理，會提醒工作區管理員。` : '專案沒有專案管理員，或專案管理員超過 1 天沒處理的，會出現在這裡；你也可以直接處理。'}</p>
+        ${joins.map(j => `<div class="sugg-row lead-row" data-join-row="${esc(j.id)}"><span class="lead-ic" aria-hidden="true">🙋</span><div class="sugg-main"><b>加入申請：${esc(j.name)}</b><span class="muted small">${late(j.project)}<span>想加入「${esc(j.projectName)}」</span> · <span>${agoText(j.createdAt)}</span>${j.note ? ` · 「${esc(oneLine(j.note, 60))}」` : ''}</span></div>
+          <div class="sugg-actions"><button type="button" class="btn small" data-lead-jno="${esc(j.id)}">${L('拒絕', 'Reject')}</button><button type="button" class="btn small primary" data-join-review="${esc(j.project)}">${L('核准', 'Approve')}</button></div></div>`).join('')}
+        ${skRev.map(k => `<div class="sugg-row lead-row" data-skrev-row="${esc(k.skillId)}"><span class="lead-ic" aria-hidden="true">🧩</span><div class="sugg-main"><b>技能待核准：${esc(k.name)}</b><span class="muted small">${late(k.project)}<span>${esc(projName(k.project))}</span> · ${k.scripts ? `${esc(L(`含腳本 ${k.scripts} 個`, `${k.scripts} script${k.scripts > 1 ? 's' : ''}`))} · ` : ''}${esc(L(`${k.uploadedBy?.name || ''}上傳`, `uploaded by ${k.uploadedBy?.name || ''}`))} · <span>${agoText(k.uploadedAt)}</span></span></div>
+          <div class="sugg-actions"><button type="button" class="btn small" data-lead-skview="${esc(k.skillId)}">${L('看內容', 'View')}</button><button type="button" class="btn small primary" data-lead-skok="${esc(k.skillId)}">${L('核准', 'Approve')}</button></div></div>`).join('')}</section>` : '';
+    return pcrSection + joinSection + dmSection + askSection + decisionSectionHtml(decideMe) + verSection + confSection + suggHtml(true);
   }
 
   const wide = () => matchMedia('(min-width: 900px)').matches;
@@ -10183,23 +10152,16 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const sf = slugF.check();
       if (!sf) return;
       try {
+        let r;
         const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
-        let result;
-        try { result = await api('/api/projects', { method: 'POST', body: {
-          name, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review',
-          ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}),
-          ...(url ? { repo: { url, branch } } : {}),
-        } }); }
+        try { r = await api('/api/projects', { method: 'POST', body: { name, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review', ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
         catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
-        const savedRepo = result.items?.find(p => p.id === result.id)?.repo;
+        let repoErr = '';
+        if (url) { try { await api(`/api/projects/${encodeURIComponent(r.id)}/repo`, { method: 'PUT', body: { url, branch } }); } catch (e2) { repoErr = e2.message; } }
         closeModal();
-        if (url && (savedRepo?.url !== url || savedRepo?.branch !== branch)) {
-          toast(`已新增專案「${name}」。未確認程式庫設定，請到專案設定檢查。`, 6000);
-        } else {
-          toast(`已新增專案「${name}」，目前只有你`);
-        }
         await Promise.all([loadProjectList(), loadParticipants()]);
         drawProjSwitch(); drawPerm();
+        toast(repoErr ? `已新增專案「${name}」，但程式庫沒存：${repoErr}` : `已新增專案「${name}」，目前只有你`);
       } catch (e2) { err.textContent = e2.message; }
     });
     // 送出建立專案申請：送出中停用按鈕（按兩次也只送一次）；失敗後重按沿用同一個 requestId
@@ -11463,10 +11425,6 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   // 升級前就有的衝突原樣保留（不自動改名、不影響建立專案），這裡列出來讓平台管理員自己決定要不要整理
   const ident = { data: null, loading: false };
   const IDENT_KIND = { duplicate_code: '代號重複', code_is_old_alias: '代號跟別的專案的舊代號相同', duplicate_slug: '網址英文名重複', duplicate_name: '未封存的專案同名' };
-  const IDENT_FIELD = { duplicate_code: 'code', code_is_old_alias: 'code', duplicate_slug: 'slug', duplicate_name: 'name' };
-  const IDENT_LABEL = { code: '專案代號', slug: '網址英文名', name: '專案名稱' };
-  const identProject = p => `「${esc(p.name || p.id)}」${p.deleted ? '（可復原期內）' : p.archived ? '（已封存）' : ''}`;
-  const identProjectDetail = p => `${identProject(p)} <code>${esc(p.id)}</code>`;
   function identCardHtml() {
     if (!ident.data && !ident.loading) {
       ident.loading = true;
@@ -11474,90 +11432,12 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     }
     const d = ident.data;
     if (!d || d.hidden || (d.normalized && !d.conflicts.length)) return '';
-    const list = d.conflicts.map((c, i) => `<li><b>${esc(IDENT_KIND[c.kind] || c.kind)}</b> <code>${esc(c.value)}</code>：${c.projects.map(identProject).join('、')}
-      ${IDENT_FIELD[c.kind] ? `<button type="button" class="btn" data-ident-preview="${i}">預覽修復</button>` : ''}</li>`).join('');
+    const pj = p => `「${esc(p.name || p.id)}」${p.deleted ? '（已刪除）' : p.archived ? '（已封存）' : ''}`;
+    const list = d.conflicts.map(c => `<li><b>${esc(IDENT_KIND[c.kind] || c.kind)}</b> <code>${esc(c.value)}</code>：${c.projects.map(pj).join('、')}</li>`).join('');
     const head = d.normalized ? '' : '<p class="small"><b>專案的代號與網址英文名還沒整理完</b>：建立專案、改名、改代號或網址英文名暫時不能用，系統會自動重試。</p>';
-    const body = d.conflicts.length ? `<p class="small">升級前就有 ${d.conflicts.length} 處重複，原樣保留、建立專案照常。選擇一處重複來預覽變更的影響。</p><ul class="small ident-list">${list}</ul>` : '';
+    const body = d.conflicts.length ? `<p class="small">升級前就有 ${d.conflicts.length} 處重複，原樣保留、建立專案照常；新的修改不會讓重複變多。要整理請改其中一個專案的名稱、代號或網址英文名。</p><ul class="small ident-list">${list}</ul>` : '';
     return `<div class="pm-card ident-card"><div class="pm-card-head"><strong>專案代號與網址英文名</strong></div><div class="pm-pad">${head}${body}</div></div>`;
   }
-  function identPreviewHtml(plan) {
-    const names = new Map(plan.projects.map(p => [p.id, identProjectDetail(p)]));
-    const project = id => names.get(id) || `<code>${esc(id)}</code>`;
-    const source = { slug: '網址英文名', id: '專案 ID', name: '舊名稱網址', current: '現行代號', historical: '舊代號' };
-    const outcome = { lost: '參照會失效', redirected: '參照會轉到另一張卡', same_card: '同一張卡', gained: '參照會開始生效', missing: '前後都找不到' };
-    const lookupStatus = (status, found, channel) => {
-      if (status === 'archived') {
-        if (channel === 'route') return '<span>已封存，無法開啟專案頁面</span>';
-        return found ? '<span>已封存</span>' : '<span>已封存，卡片無法存取</span>';
-      }
-      if (status === 'recoverable') return '<span>可復原期內，無法存取</span>';
-      return found ? '' : '<span>找不到</span>';
-    };
-    const target = (t, status, channel) => `${t ? `${project(t.projectId)}（<span>${source[t.source]}</span>） ` : ''}${lookupStatus(status, t && t.available !== false, channel)}`;
-    const card = (c, status) => `${c ? `${project(c.projectId)} <code>${esc(c.cardId)}</code> ` : ''}${lookupStatus(status, c, 'card')}`;
-    const shared = r => r.ambiguous ? '<p class="small">同一個參照無法同時指向兩個專案。</p>' : '';
-    const coverage = { sample: '抽樣（最多兩個卡號）', requested: '指定卡號' };
-    const impacts = [
-      ...plan.routes.map(r => `<li><code>${esc(r.path)}</code> · ${target(r.before, r.beforeStatus, 'route')} → ${target(r.after, r.afterStatus, 'route')}${shared(r)}</li>`),
-      ...plan.cardReferences.map(r => `<li><code>${esc(r.code)}-N</code> · ${target(r.before, r.beforeStatus, 'card')} → ${target(r.after, r.afterStatus, 'card')}${shared(r)}
-        ${coverage[r.exampleCoverage] ? `<span class="muted">${coverage[r.exampleCoverage]}</span>` : ''}
-        ${r.examples.length ? `<ul>${r.examples.map(e => `<li><code>${esc(e.reference)}</code> · <span>${outcome[e.outcome]}</span> · ${card(e.before, e.beforeStatus)} → ${card(e.after, e.afterStatus)}</li>`).join('')}</ul>` : ''}</li>`),
-    ];
-    const retired = plan.retiredAlias;
-    const summary = retired ? `<p>${project(retired.projectId)} · <span>將停用這個專案的舊代號</span> <code>${esc(retired.code)}</code></p>`
-      : `<p><strong>${esc(IDENT_LABEL[plan.field])}</strong> <code>${esc(plan.current)}</code> → <code>${esc(plan.replacement)}</code></p>`;
-    const changes = plan.codeChanges.length ? `<strong>卡片顯示代號的變更</strong><ul>${plan.codeChanges.map(c => `<li>${project(c.projectId)} <code>${esc(c.before)}-N</code> → <code>${esc(c.after)}-N</code></li>`).join('')}</ul>` : '';
-    return `${summary}<strong>受影響的專案</strong><ul>${plan.projects.map(p => `<li>${identProjectDetail(p)}</li>`).join('')}</ul>
-      ${changes}<strong>參照解析（目前 → 預覽）</strong><ul>${impacts.join('')}</ul>`;
-  }
-  document.addEventListener('click', e => {
-    const button = e.target.closest?.('[data-ident-preview]');
-    const conflict = button && ident.data?.conflicts[button.dataset.identPreview];
-    if (!conflict) return;
-    const field = IDENT_FIELD[conflict.kind];
-    const candidates = conflict.projects.filter(p => p[field] === conflict.value);
-    const canRetire = conflict.kind === 'code_is_old_alias' && !ident.data.conflicts.some(c => c.kind === 'duplicate_code' && c.value === conflict.value);
-    const body = openModal('預覽修復', `<form id="ident-preview-form" class="stack">
-      <label class="field">要變更的專案<select name="projectId">${candidates.map(p => `<option value="${esc(p.id)}">${identProject(p)} ${esc(p.id)}</option>`).join('')}</select></label>
-      ${canRetire ? `<label class="field">處理方式<select name="repairAction"><option value="replace">替換現行代號</option><option value="retireAlias">保留現行代號，停用舊代號</option></select></label>` : ''}
-      <label id="ident-replacement" class="field">替換值 · ${esc(IDENT_LABEL[field])}<input name="replacement" required autocomplete="off"></label>
-      ${field === 'code' ? '<label class="field">指定卡號（選填）<input name="reference" autocomplete="off"></label>' : ''}
-      <button class="btn primary" type="submit">預覽修復</button>
-      <p id="ident-preview-error" role="alert"></p>
-      <div id="ident-preview-result" role="status" class="small"></div>
-    </form>`, { size: 'form', sub: '預覽只讀取資料。' });
-    const form = body.querySelector('form'), result = body.querySelector('#ident-preview-result'), error = body.querySelector('#ident-preview-error');
-    const buttonSubmit = form.querySelector('button[type="submit"]');
-    let request = 0;
-    const clear = () => { request++; result.innerHTML = ''; error.textContent = ''; buttonSubmit.disabled = false; };
-    const retire = () => form.elements.repairAction?.value === 'retireAlias';
-    form.addEventListener('input', () => {
-      form.querySelector('#ident-replacement').hidden = retire();
-      form.elements.replacement.disabled = retire();
-      clear();
-    });
-    form.addEventListener('submit', async ev => {
-      ev.preventDefault();
-      clear();
-      const version = request;
-      buttonSubmit.disabled = true;
-      result.textContent = '載入中…';
-      const { projectId, replacement, reference } = Object.fromEntries(new FormData(form));
-      const proposal = { projectId, field, replacement: retire() ? conflict.value : replacement };
-      if (retire()) proposal.retireAlias = true;
-      if (reference?.trim()) proposal.reference = reference.trim();
-      try {
-        const plan = await api('/api/admin/project-identity/preview', { method: 'POST', body: proposal });
-        if (version === request && body.isConnected) result.innerHTML = identPreviewHtml(plan);
-      } catch (err) {
-        if (version !== request || !body.isConnected) return;
-        result.textContent = '';
-        error.innerHTML = `${esc(err.message)}${err.projects?.length ? ` ${err.projects.map(identProjectDetail).join('、')}` : ''}`;
-      } finally {
-        if (version === request) buttonSubmit.disabled = false;
-      }
-    });
-  });
   // ---------- 有新版本：管理員打開成員與權限時查一次（伺服器一天最多問 GitHub 一次）----------
   const upd = { data: null, loading: false };
   const UPD_HIDE = 'aigile.updHidden';

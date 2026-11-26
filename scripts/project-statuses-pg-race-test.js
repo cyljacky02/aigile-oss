@@ -19,82 +19,36 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pgrace-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
 const ctl = new pg.Client({ connectionString: TEST_PG_URL }); // 測試自己的連線：拿 advisory lock、看誰在等鎖
 await ctl.connect();
-const ctlPid = (await ctl.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
 
 // 下一個含有符合 re 那句的交易，做完那句就停住，等測試放行（只作用一次）
 let pause = null;
 const appDb = { ...db, batch: stmts => {
   const p = pause && stmts.some(([sql]) => pause.re.test(sql)) ? pause : null;
   if (p) pause = null;
-  return db.batch(p ? stmts.flatMap(st => (p.re.test(st[0]) ? [st, ['SELECT pg_advisory_xact_lock(?, ?)', p.key]] : [st])) : stmts);
+  return db.batch(p ? stmts.flatMap(st => (p.re.test(st[0]) ? [st, [`SELECT pg_advisory_xact_lock(${p.key})`, []]] : [st])) : stmts);
 } };
 const app = createApp({ db: appDb, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0' } });
 const call = async (token, p, method = 'GET', body) => {
   const r = await app(new Request('http://localhost' + p, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
   return { status: r.status, body: await r.json().catch(() => ({})) };
 };
-const until = async (fn, ms, label) => { const end = Date.now() + ms; let v; while (!(v = await fn())) { if (Date.now() > end) throw new Error('等太久：' + label); await new Promise(r => setTimeout(r, 25)); } return v; };
-// 只看被指定連線擋住的等待，同一個資料庫裡別的程序也可能在等鎖。
-const lockWait = (like, blocker) => ctl.query(`SELECT pid FROM pg_stat_activity
-  WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE $1
-    AND $2 = ANY(pg_blocking_pids(pid))`, [like, blocker]).then(r => r.rows[0]?.pid ?? null);
+const until = async (fn, ms, label) => { const end = Date.now() + ms; while (!(await fn())) { if (Date.now() > end) throw new Error('等太久：' + label); await new Promise(r => setTimeout(r, 25)); } };
+const lockWait = like => ctl.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE $1", [like]).then(r => r.rows[0].n > 0);
 
 // first 做到 re 那句停住 → second 開始，等它被鎖住或做完 → 放行 first；回傳兩邊的回應
-let lockCounter = 0;
+let lockKey = 4_236_900_100;
 async function race({ re, first, second, secondSql }) {
-  // 每個測試控制連線有自己的鎖，讓同一支測試也能並行。
-  const key = [ctlPid, ++lockCounter];
-  await ctl.query('SELECT pg_advisory_lock($1, $2)', key);
-  let p1, p2, blocked;
-  try {
-    pause = { re, key };
-    let firstFailure;
-    p1 = first();
-    // 第一個請求還沒停在鎖上就失敗時，讓輪詢回報原始錯誤。
-    p1.catch(reason => { firstFailure = { reason }; });
-    const firstPid = await until(async () => {
-      const pid = await lockWait('%pg_advisory_xact_lock%', ctlPid);
-      if (firstFailure) throw firstFailure.reason;
-      return pid;
-    }, 10000, '第一個請求停在交易中');
-    let done2 = false;
-    p2 = second();
-    const markDone = () => { done2 = true; };
-    p2.then(markDone, markDone);
-    await until(async () => done2 || await lockWait(secondSql, firstPid), 10000, '第二個請求被鎖住或做完');
-    blocked = !done2;
-  } finally {
-    pause = null;
-    await ctl.query('SELECT pg_advisory_unlock($1, $2)', key);
-    await Promise.allSettled([p1, p2]);
-  }
+  const key = ++lockKey;
+  await ctl.query('SELECT pg_advisory_lock($1)', [key]);
+  pause = { re, key };
+  const p1 = first();
+  await until(() => lockWait('%pg_advisory_xact_lock%'), 10000, '第一個請求停在交易中');
+  let done2 = false;
+  const p2 = second().finally(() => { done2 = true; });
+  await until(async () => done2 || await lockWait(secondSql), 10000, '第二個請求被鎖住或做完');
+  const blocked = !done2;
+  await ctl.query('SELECT pg_advisory_unlock($1)', [key]);
   return { r1: await p1, r2: await p2, blocked };
-}
-
-// 在另一把 advisory lock 上製造真的等待，模擬同資料庫裡另一個程序正在升級。
-async function withUnrelatedWaiter(run) {
-  const holder = new pg.Client({ connectionString: TEST_PG_URL });
-  const waiter = new pg.Client({ connectionString: TEST_PG_URL });
-  let waiting;
-  try {
-    await holder.connect();
-    await waiter.connect();
-    const { rows: [{ pid }] } = await waiter.query('SELECT pg_backend_pid() AS pid');
-    // 等待者的 PID 不同，每個控制連線的競態測試也只用正數當計數。
-    const key = [pid, 0];
-    await holder.query('SELECT pg_advisory_lock($1, $2)', key);
-    waiting = waiter.query('SELECT pg_advisory_xact_lock($1, $2)', key);
-    waiting.catch(() => {});
-    await until(async () => {
-      const { rows } = await ctl.query('SELECT wait_event FROM pg_stat_activity WHERE pid = $1', [pid]);
-      return rows[0]?.wait_event === 'advisory';
-    }, 10000, '另一條連線正在等 advisory lock');
-    assert.equal(await lockWait('%pg_advisory_xact_lock%', ctlPid), null, '無關的鎖等待不能算成第一個請求已停住');
-    return await run();
-  } finally {
-    await holder.end(); // 先放鎖，再等等待者結束
-    try { await waiting; } finally { await waiter.end(); }
-  }
 }
 
 const ok = (r, label) => { assert.ok(r.status < 400, `${label}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r.body; };
@@ -118,12 +72,7 @@ try {
     await fresh('競態一');
     const qa = await add('QA', '待確認');
     const c = ok(await mkCard({ status: '進行中' }), '建卡');
-    const { r1, r2, blocked } = await withUnrelatedWaiter(() => race({
-      re: PROJECT_EVENT_INSERT,
-      first: del(qa.id),
-      second: () => call(boss.token, `/api/cards/${c.cardId}`, 'PATCH', { status: 'QA' }),
-      secondSql: '%UPDATE cards%',
-    }));
+    const { r1, r2, blocked } = await race({ re: PROJECT_EVENT_INSERT, first: del(qa.id), second: () => call(boss.token, `/api/cards/${c.cardId}`, 'PATCH', { status: 'QA' }), secondSql: '%UPDATE cards%' });
     assert.equal(r1.status, 200, '刪除成功：' + JSON.stringify(r1.body).slice(0, 200));
     assert.ok(blocked, '改卡片要等刪除的交易做完');
     assert.equal(r2.status, 409, '改卡片：' + JSON.stringify(r2.body).slice(0, 200)); assert.equal(r2.body.error?.code, 'STATUS_DELETED');

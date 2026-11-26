@@ -384,25 +384,7 @@ try {
     is(res2, 409, 'REQUESTER_NOT_ELIGIBLE', '交易內才發現申請人不符資格');
     assert.equal(await projectsNamed(q.name), 0, '沒有建立專案');
     assert.equal((await approve(q)).body?.state, 'approved', '前提恢復後核准成功');
-    note(`核准注入點：${points.map(p => p[0]).join('、')}`);
-
-    // 直接建立：在程式庫寫入後注入執行期錯誤，確認專案與程式庫沒有分批提交。
-    const spec = { name: 'D1 程式庫專案', repo: { url: 'https://example.com/team/project', branch: 'main' } };
-    const create = () => a.call(boss.token, '/api/projects', 'POST', spec);
-    const repoSettings = () => a.q("SELECT key, value FROM app_settings WHERE key >= 'repo:' AND key < 'repo;' ORDER BY key");
-    const settingsBefore = await repoSettings();
-    await a.fault({ re: /^INSERT INTO app_settings .* ON CONFLICT\(key\) DO UPDATE/.source, mode: 'json', times: 1 });
-    const failed = await create();
-    const repoFault = await a.faultStatus();
-    await a.fault({ re: null });
-    assert.equal(repoFault.hits, 1, '真的在寫入程式庫設定後注入錯誤');
-    assert.equal(failed.status, 500);
-    const listed = ok(await a.call(boss.token, '/api/projects'), '讀專案清單');
-    assert.ok(!listed.items.some(p => p.name === spec.name), '沒有留下部分建立的專案');
-    assert.deepEqual(await repoSettings(), settingsBefore, '程式庫設定也已回滾');
-    const retried = within('直接建立（含程式庫）', await create());
-    assert.equal(retried.status, 201);
-    assert.deepEqual(retried.body.items.find(p => p.id === retried.body.id)?.repo, spec.repo, '重試成功並立即回傳程式庫');
+    note(`注入點：${points.map(p => p[0]).join('、')}`);
   });
 
   // ===== D1-07 同時核准 =====
@@ -482,28 +464,8 @@ try {
     assert.equal(await a.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE project_id = 'p_legacy_a' AND source IN ('historical_code', 'project_id')"), 2);
     const duplicate = await a.batch([["INSERT INTO project_identity_claims (namespace, value) VALUES ('slug', 'legacy-site')", []]]);
     assert.match(duplicate.error, /UNIQUE constraint failed/i, JSON.stringify(duplicate));
-    const preview = (token, field, replacement, options = {}) => a.call(token, '/api/admin/project-identity/preview', 'POST', { projectId: 'p_legacy_a', field, replacement, ...options });
-    const plan = ok(within('修復預覽', await preview(boss.token, 'slug', 'legacy-alpha')), '修復預覽');
-    assert.deepEqual(plan.routes.map(r => [r.path, r.before?.projectId, r.after?.projectId]), [
-      ['/p/legacy-site', 'p_legacy_a', 'p_legacy_b'], ['/p/legacy-alpha', undefined, 'p_legacy_a'],
-    ]);
-    is(await preview(dan.token, 'slug', 'legacy-alpha'), 403, 'NOT_ADMIN', '只有平台管理員能預覽');
-    assert.deepEqual(ok(await a.call(boss.token, '/api/admin/project-identity'), '預覽後診斷'), diag);
     is(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 舊代號', code: 'OLDL' }), 409, 'CODE_TAKEN', '舊代號別名也算占用');
     is(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 撞正規化', code: stored['pcode:p_legacy_b'] }), 409, 'CODE_TAKEN', '正規化寫入的代號也算占用');
-    const alphaCard = ok(await a.call(boss.token, '/api/cards', 'POST', { project: 'p_legacy_a', title: 'Legacy Alpha card', requestId: 'legacy-alpha-card' }), '建立甲卡');
-    const betaCard = ok(await a.call(boss.token, '/api/cards', 'POST', { project: 'p_legacy_b', title: 'Legacy Beta card', requestId: 'legacy-beta-card' }), '建立乙卡');
-    const oldCode = stored['pcode:p_legacy_a'];
-    assert.deepEqual(await a.batch([["INSERT INTO app_settings (key, value) VALUES (?, 'p_legacy_b')", [`pcodeold:${oldCode}`]]]), { ok: true });
-    const codePlan = ok(within('代號修復預覽', await preview(boss.token, 'code', 'LEGZ')), '代號修復預覽');
-    const oldRef = codePlan.cardReferences.find(r => r.code === oldCode);
-    assert.equal(oldRef.ambiguous, true);
-    assert.deepEqual(oldRef.examples.map(r => [r.before?.legacyId, r.after?.legacyId]), [[alphaCard.legacyId, betaCard.legacyId]]);
-    assert.equal(ok(await a.call(boss.token, `/api/cards/${oldCode}-1`), '預覽後查卡').legacyId, alphaCard.legacyId);
-    const keep = ok(within('停用舊代號預覽', await preview(boss.token, 'code', oldCode, { retireAlias: true, reference: `${oldCode}-1` })), '保留現行代號');
-    assert.deepEqual(keep.retiredAlias, { code: oldCode, projectId: 'p_legacy_b' });
-    assert.deepEqual(keep.cardReferences[0].examples.map(r => [r.outcome, r.after?.legacyId]), [['same_card', alphaCard.legacyId]]);
-    assert.ok(keep.resolutionState);
     note(`舊專案代號：${stored['pcode:p_legacy_a']}、${stored['pcode:p_legacy_b']}；既有衝突 ${diag.conflicts.length} 處`);
   });
 
@@ -629,34 +591,27 @@ try {
     note(`備份：${Object.values(T).reduce((x, r) => x + r.length, 0)} 列；收尾取消 3 份`);
   });
 
-  await check('D1-11', '加入申請核准／拒絕：通知寫入失敗時整批回滾，重試後只生效一次', async () => {
-    const member = await join(a, '加入申請測試者');
-    const project = ok(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 加入申請', visibility: 'review' }), '建立審核專案');
-    assert.ok(project.id);
-    const p = `/api/projects/${encodeURIComponent(project.id)}`;
-    const pending = async id => ok(await a.call(boss.token, '/api/join-requests'), '待審清單').items.some(item => item.id === id);
-    const membership = async () => ok(await a.call(boss.token, p + '/members'), '成員清單').members.find(item => item.participantId === member.id);
-    const events = async () => ok(await a.call(boss.token, p + '/events'), '專案事件').items.filter(item => item.text.includes(member.name));
-    const notices = async kind => ok(await a.call(member.token, '/api/me/notices'), '帳號通知').items.filter(item => item.kind === kind);
-    for (const action of ['reject', 'approve']) {
-      const request = ok(await a.call(member.token, p + '/join-requests', 'POST', { note: 'D1 驗證' }), '送加入申請');
-      const decide = () => a.call(boss.token, `/api/join-requests/${request.id}/${action}`, 'POST', { reason: '請再試一次', role: 'UX', readOnly: true });
-      const kind = action === 'approve' ? 'join_approved' : 'join_rejected';
-      await a.fault({ re: '^INSERT INTO account_notices ', mode: 'json' });
-      const failed = await decide();
-      assert.equal((await a.faultStatus()).hits, 1);
-      assert.equal(failed.status, 500, failed.text.slice(0, 200));
-      assert.equal(await pending(request.id), true);
-      assert.equal(await membership(), undefined);
-      assert.deepEqual(await events(), []);
-      assert.deepEqual(await notices(kind), []);
-      ok(await decide(), '重試決定');
-      assert.equal(await pending(request.id), false);
-      assert.equal((await notices(kind)).length, 1);
-    }
-    const joined = await membership();
-    assert.deepEqual([joined.role, joined.title], ['viewer', 'UX']);
-    assert.equal((await events()).filter(item => item.text.includes('核准')).length, 1);
+  await check('D1-11', '大量識別碼：26,000 個既有專案，逐頁正規化', async note => {
+    const C = localD1({ wrangler, tmpRoot, repoRoot, name: 'site-large', main });
+    migrate(C, '大量專案站');
+    const w = await C.dev({ vars: VARS });
+    running.push(w);
+    const c = site(w.base, TOKEN), total = 26_000;
+    assert.deepEqual(await c.batch([
+      [`WITH RECURSIVE nums(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM nums WHERE n < ?)
+        INSERT INTO projects (id, name, archived, created_at) SELECT 'legacy-網址英文名專案-' || n, 'Legacy ' || n, 1, '2026-01-01T00:00:00.000Z' FROM nums`, [total]],
+      [`WITH RECURSIVE nums(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM nums WHERE n < ?)
+        INSERT INTO app_settings (key, value) SELECT 'pcode:legacy-網址英文名專案-' || n,
+          char(65+(n/17576)%26, 65+(n/676)%26, 65+(n/26)%26, 65+n%26) FROM nums`, [total]],
+      ["INSERT INTO app_settings (key, value) SELECT 'slug:' || id, id FROM projects WHERE rowid % 2 = 0", []],
+    ]), { ok: true });
+    const boot = await c.call(null, '/api/health');
+    assert.equal(boot.status, 200, boot.text.slice(0, 200));
+    assert.equal(await c.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE source = 'project_id'"), total);
+    assert.equal(await c.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE source = 'slug'"), total);
+    assert.equal(await c.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE source = 'current_code'"), total);
+    assert.ok(await c.one("SELECT value FROM app_settings WHERE key = 'project_identity_ready'"));
+    note(`${total} 個專案全部寫入保留表`);
   });
 
   if (usage.length) {

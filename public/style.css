@@ -3653,16 +3653,16 @@ body.viewer-open .confirm-root:not(.under-viewer) .overlay { z-index: 1001; } /*
   .att-pick, .att-bar > .btn { min-height: 44px; }
   .att-pick { width: 44px; height: 44px; }
 }
-/* 共用審批收件匣 */
-.wlead-note { margin: 0 0 6px; padding: 0 16px; }
-.approval-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
-@media (max-width: 640px) { .approval-row { grid-template-columns: auto minmax(0, 1fr); } .approval-row .sugg-actions { grid-column: 2; } }
+/* PLAT-381：leader 的「要你處理」區、專案管理頁 */
+.wlead-note { margin: 0 0 6px; }
+.lead-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
+@media (max-width: 640px) { .lead-row { grid-template-columns: auto minmax(0, 1fr); } .lead-row .sugg-actions { grid-column: 2; } }
 .lead-ic { font-size: 22px; flex: 0 0 auto; }
-/* 專案管理頁 */
 .pm-more-menu .pm-off, .pm-more-menu .pm-off .pm-sub { color: var(--muted); cursor: not-allowed; }
 .pset-menu [role="menuitem"] .muted.small { margin-left: auto; padding-left: 12px; }
 .pm-lead-note { padding: 12px 16px; }
 .pm-lead-note p { margin: 0; }
+.wlead-note { padding: 0 16px; }
 /* 知識庫：文件頁分頁、搜尋、讀原文、徽章與「⋯」選單 */
 .kb-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
 .kb-pill { font-size: 12.5px; line-height: 1.5; border-radius: 999px; padding: 0 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); white-space: nowrap; }

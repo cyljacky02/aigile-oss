@@ -121,9 +121,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // roleOf：快照裡 id 在 pj 的專案角色（不在專案回 null；AI 一律 member，唯讀跟著所屬人類看 isReadOnly）
   const roleOf = (id, pj) => (snap.byId.get(id) || []).find(x => x.project === pj)?.role || null;
   // 以這個專案角色加入（已在專案就不動）；改已在專案的人的專案角色。移出專案走 setProjectsStmts（卡片退回、職稱清掉在呼叫端）
-  const addMemberStmts = (id, pj, role, when = null) => when
-    ? [[`INSERT OR IGNORE INTO project_members (project_id, participant_id, role) SELECT ?, ?, ? WHERE ${when.cond}`, [pj, id, role, ...when.args]]]
-    : [['INSERT OR IGNORE INTO project_members (project_id, participant_id, role) VALUES (?, ?, ?)', [pj, id, role]]];
+  const addMemberStmts = (id, pj, role) => [['INSERT OR IGNORE INTO project_members (project_id, participant_id, role) VALUES (?, ?, ?)', [pj, id, role]]];
   const setMemberRoleStmts = (id, pj, role) => [['UPDATE project_members SET role = ? WHERE project_id = ? AND participant_id = ?', [role, pj, id]]];
 
   // ---------- 唯讀成員：只記人類；他名下的 AI 在該專案跟著唯讀（AI 權限不超過主人） ----------

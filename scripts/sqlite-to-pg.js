@@ -13,7 +13,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { listMigrations } from '../src/migrations.js';
-import { openPgDb, describeUrl, setPgSearchPath } from '../src/db-pg.js';
+import { openPgDb, describeUrl } from '../src/db-pg.js';
 
 const PAGE = 500;
 const SKIP = new Set(['sqlite_sequence', 'schema_migrations']); // 升級紀錄由目標自己建；sqlite_sequence 是 SQLite 內部用的
@@ -51,10 +51,9 @@ export async function migrate({ from, to, schema, log = console.log }) {
     const pg = (await import('pg')).default;
     const target = await openPgDb(to, { legacyProjects: false, schema, max: 1 });
     await target.close();
-    const client = new pg.Client({ connectionString: to });
+    const client = new pg.Client({ connectionString: to, ...(schema ? { options: `-c search_path=${q(schema)}` } : {}) });
     await client.connect();
     try {
-      if (schema) await setPgSearchPath(client, schema);
       for (const t of ['participants', 'messages', 'cards', 'projects']) {
         const n = Number((await client.query(`SELECT COUNT(*) AS n FROM ${q(t)}`)).rows[0].n);
         if (n) throw new Error(`目標不是空的：${t} 已經有 ${n} 筆。請換一個空的資料庫（或 --schema 換一個新的 schema）`);

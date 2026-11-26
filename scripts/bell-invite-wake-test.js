@@ -27,15 +27,8 @@ const race = async sql => {
     await raw.run('INSERT INTO participants (id, kind, name, code, token, created_at, updated_at) VALUES (?,?,?,?,?,?,?)', 'p_racer', 'human', n, 'RACE', 'tok_racer', new Date().toISOString(), new Date().toISOString());
   }
 };
-// 建人可能是單句，也可能在同一批先鎖邀請再建人。
-const db = { ...raw,
-  run: async (sql, ...args) => { await race(sql); return raw.run(sql, ...args); },
-  batch: async stmts => {
-    const insert = stmts.find(([sql]) => /^INSERT INTO participants/.test(sql.trim()));
-    if (insert) await race(insert[0]);
-    return raw.batch(stmts);
-  },
-};
+// 建人可能是單句，也可能跟專案歸屬一起一批寫（第一句建人）
+const db = { ...raw, run: async (sql, ...a) => { await race(sql); return raw.run(sql, ...a); }, batch: async stmts => { await race(stmts[0]?.[0] || ''); return raw.batch(stmts); } };
 // 門鈴打到假的 Supabase：記下來，故意慢一點（模擬網路）
 const bells = [];
 const realFetch = globalThis.fetch;
@@ -75,8 +68,7 @@ try {
   const itok = invRes.url.split('/invite/')[1];
   raceName = '搶名字';
   let r = await call(null, '/api/auth/invite', 'POST', { token: itok, name: '搶名字' });
-  assert.equal(raceName, null, '在建人前已插入同名成員');
-  assert.equal(r.status, 409, '撞名回 409');
+  assert.equal(r.status, 409, '撞名回 409（修正前 500）：' + JSON.stringify(r.body));
   assert.equal(r.body.error.code, 'NAME_TAKEN');
   assert.equal((await raw.get('SELECT used_at FROM invites WHERE id = ?', inv.inviteId || inv.id)).used_at, null, '邀請還回去');
   r = await call(null, '/api/auth/invite', 'POST', { token: itok, name: '王小明' });

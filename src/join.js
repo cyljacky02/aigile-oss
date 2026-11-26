@@ -5,44 +5,7 @@
 // 專案可見度：開放專案工作區成員直接加入（POST /api/projects/:id/join）；審核專案走上面的申請；
 // 私人專案不列出、不收申請，看不到的人拿到的錯誤跟「沒有這個專案」一樣。判斷都在權限模組（discover_project、join_project、request_join）
 import { ACCESS_ROLE, PROJECT_VISIBILITY, inWorkspace } from './access.js';
-import { DEFAULT_WORKSPACE, PROJECT_ROLE } from './membership.js';
-import { activeMemberCond, reviewerCond } from './project-creation-requests.js';
-import { holdsNow } from './project-identity.js';
-import { ensureStmt } from './write-order.js';
-
-const pending = id => ensureStmt("EXISTS (SELECT 1 FROM join_requests WHERE id = ? AND status = 'pending')", [id]);
-const ensure = ({ cond, args }) => ensureStmt(cond, args);
-const availableProject = (project, activeOnly = false, visibility = null) => ({
-  cond: `EXISTS (SELECT 1 FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL${activeOnly ? ' AND archived = 0' : ''}${visibility ? ' AND visibility = ?' : ''})`,
-  args: [project, DEFAULT_WORKSPACE, ...(visibility ? [visibility] : [])],
-});
-const settingsUnchanged = raw => raw === undefined
-  ? ensureStmt("NOT EXISTS (SELECT 1 FROM app_settings WHERE key = 'join_settings')")
-  : ensureStmt("EXISTS (SELECT 1 FROM app_settings WHERE key = 'join_settings' AND value = ?)", [raw]);
-function parseSettings(raw) {
-  try { return JSON.parse(raw || '{}') || {}; } catch { return {}; }
-}
-export const joinSettingsRaw = async db => (await db.get("SELECT value FROM app_settings WHERE key = 'join_settings'"))?.value;
-export const joinSettingsChangeStmts = (raw, next) => [settingsUnchanged(raw),
-  ["INSERT INTO app_settings (key, value) VALUES ('join_settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify(next)]]];
-export async function removeJoinSettingsStmts(db, project) {
-  const raw = await joinSettingsRaw(db), settings = parseSettings(raw);
-  if (!Object.hasOwn(settings, project)) return [];
-  delete settings[project];
-  return joinSettingsChangeStmts(raw, settings);
-}
-export const addClosedJoinSettingsStmts = async (db, project) => {
-  const raw = await joinSettingsRaw(db);
-  return joinSettingsChangeStmts(raw, { ...parseSettings(raw), [project]: { open: false, note: '' } });
-};
-const notProjectMember = (id, project) => ({
-  cond: 'NOT EXISTS (SELECT 1 FROM project_members WHERE project_id = ? AND participant_id = ?)', args: [project, id],
-});
-export const reviewPermission = (id, project) => {
-  const admin = reviewerCond(id), member = activeMemberCond(id);
-  return { cond: `(${admin.cond} OR (${member.cond} AND EXISTS (SELECT 1 FROM project_members WHERE project_id = ? AND participant_id = ? AND role = 'admin')))`,
-    args: [...admin.args, ...member.args, project, id] };
-};
+import { PROJECT_ROLE } from './membership.js';
 
 export const joinOpen = (set, pj) => (set && set[pj] ? set[pj].open !== false : true);
 export const JOIN_NOTE_MAX = 200;
@@ -50,15 +13,18 @@ export const JOIN_DESC_MAX = 100;
 
 export function registerJoin(d) {
   const { route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, peopleMap, projectsOf, PROJECTS, nameOf,
-    loadProjects, projectRows, loadProjectAdmins, adminOf, access, readRole, writeInWorkspace, writeWithProjectRoles,
-    addMemberStmts, setMemberRoleStmts, loadMembers, invalidatePeople, projEvent, liveTo = () => {} } = d; // liveTo：內建即時通道（本機／Docker），申請結果幾秒內推給申請人
+    loadProjects, projectRows, loadProjectAdmins, adminOf, access, applyMembership, loadProjectRoles, saveProjectRoles, titles, readRole,
+    addReadOnly, addMemberStmts, loadMembers, invalidatePeople, projEvent, liveTo = () => {} } = d; // liveTo：內建即時通道（本機／Docker），申請結果幾秒內推給申請人
 
-  const joinSettings = async () => parseSettings(await joinSettingsRaw(db).catch(() => undefined));
+  async function joinSettings() {
+    const r = await db.get("SELECT value FROM app_settings WHERE key = 'join_settings'").catch(() => null);
+    try { return JSON.parse(r?.value || '{}') || {}; } catch { return {}; }
+  }
   const notice = (pid, kind, detail) => ['INSERT INTO account_notices (id, participant_id, kind, detail, created_at) VALUES (?,?,?,?,?)', [randId('ntc'), pid, kind, String(detail || '').slice(0, 200), Date.now()]];
   const activeProject = pj => projectRows().find(r => r.id === pj);
   // 誰能審：該專案的專案管理員、工作區管理員（只有人類）＝權限模組的 manage_project
   async function reviewer(ctx, me, pj) {
-    const v = await access.check(ctx, me, 'manage_project', { project: pj }, { deny: () => notReviewer(pj) });
+    const v = await access.check(ctx, me, 'manage_project', { project: pj }, { deny: () => new ApiError(403, 'NOT_REVIEWER', `只有「${nameOf(pj)}」的專案管理員能處理加入申請。`) });
     return { admin: v.roleIn(me, 'workspace') === ACCESS_ROLE.WORKSPACE_ADMIN };
   }
   const reviewersOf = (pj, leaders, admin) => { const l = (leaders[pj] || []).filter(Boolean); return l.length ? l : admin ? [admin.id] : []; };
@@ -73,16 +39,10 @@ export function registerJoin(d) {
     const note = String(body.note ?? '').trim();
     if (note.length > JOIN_DESC_MAX || /[\r\n]/.test(note)) throw invalid(`說明最多 ${JOIN_DESC_MAX} 字、不能換行`);
     const v = { open: body.open === true, note };
-    const at = nowIso(), raw = await joinSettingsRaw(db), all = parseSettings(raw);
-    const stmts = [ensure(availableProject(row.id)), ensure(reviewPermission(me.id, row.id)),
-      ...joinSettingsChangeStmts(raw, { ...all, [row.id]: v })];
+    const at = nowIso(), all = await joinSettings();
+    const stmts = [["INSERT INTO app_settings (key, value) VALUES ('join_settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify({ ...all, [row.id]: v })]]];
     if (joinOpen(all, row.id) !== v.open) stmts.push(projEvent(row.id, me.id, `${me.name} ${v.open ? '打開' : '關閉'}「開放申請加入」`, at));
-    if (!(await writeInWorkspace(stmts))) {
-      await loadProjects(true);
-      if (!activeProject(row.id)) throw projectMissing();
-      await reviewer(ctx, me, row.id);
-      throw conflict();
-    }
+    await db.batch(stmts);
     return { project: row.id, ...v, pending: (await db.get("SELECT COUNT(*) AS n FROM join_requests WHERE project = ? AND status = 'pending'", row.id)).n };
   });
 
@@ -120,10 +80,8 @@ export function registerJoin(d) {
     if (projectsOf(me).includes(row.id)) throw new ApiError(409, 'ALREADY_MEMBER', '你已經在這個專案');
     await access.check(ctx, me, 'join_project', { project: row.id });
     const at = nowIso();
-    const eligible = enrollmentGuards(row.id, me.id, PROJECT_VISIBILITY.OPEN);
-    const done = await writeInWorkspace([...eligible, ...addMemberStmts(me.id, row.id, PROJECT_ROLE.MEMBER),
-      ['UPDATE participants SET updated_at = ? WHERE id = ?', [at, me.id]], projEvent(row.id, me.id, `${me.name} 加入專案（開放專案，專案成員）`, at)]);
-    if (!done) await explainEnrollment(ctx, me, row.id, 'join_project');
+    await db.batch([...addMemberStmts(me.id, row.id, PROJECT_ROLE.MEMBER), ['UPDATE participants SET updated_at = ? WHERE id = ?', [at, me.id]],
+      projEvent(row.id, me.id, `${me.name} 加入專案（開放專案，專案成員）`, at)]);
     invalidatePeople(); await loadMembers(true); ctx.people = null;
     return { __status: 201, project: row.id, participantId: me.id, role: PROJECT_ROLE.MEMBER };
   });
@@ -131,22 +89,19 @@ export function registerJoin(d) {
   // 同仁送出申請：只建申請，不會加入（只有審核專案；開放專案回 JOIN_DIRECTLY）
   route('POST', '/api/projects/:id/join-requests', async ({ ctx, me, req, params }) => {
     requireHuman(me);
-    const row = await joinTarget(ctx, me, params.id), raw = await joinSettingsRaw(db);
+    const row = await joinTarget(ctx, me, params.id), set = await joinSettings();
     if (projectsOf(me).includes(row.id)) throw new ApiError(409, 'ALREADY_MEMBER', '你已經在這個專案');
     if (row.archived) throw new ApiError(409, 'PROJECT_ARCHIVED', '這個專案已封存');
     await access.check(ctx, me, 'request_join', { project: row.id });
-    if (!joinOpen(parseSettings(raw), row.id)) throw joinClosed();
+    if (!joinOpen(set, row.id)) throw new ApiError(403, 'JOIN_CLOSED', '這個專案目前不開放申請');
     const body = await readJson(req);
     const note = String(body.note ?? '').trim();
     if (note.length > JOIN_NOTE_MAX) throw invalid(`想做什麼最多 ${JOIN_NOTE_MAX} 字`);
     const id = randId('jr'), at = nowIso();
     const [leaders, admin] = [await loadProjectAdmins(), adminOf(await peopleMap(ctx))];
     try {
-      const eligible = enrollmentGuards(row.id, me.id, PROJECT_VISIBILITY.REVIEW);
-      const done = await writeInWorkspace([...eligible, settingsUnchanged(raw),
-        ['INSERT INTO join_requests (id, project, participant_id, note, status, created_at) VALUES (?,?,?,?,?,?)', [id, row.id, me.id, note, 'pending', at]],
+      await db.batch([['INSERT INTO join_requests (id, project, participant_id, note, status, created_at) VALUES (?,?,?,?,?,?)', [id, row.id, me.id, note, 'pending', at]],
         ...reviewersOf(row.id, leaders, admin).map(pid => notice(pid, 'join_request', `${me.name} 申請加入「${row.name}」`))]);
-      if (!done) await explainEnrollment(ctx, me, row.id, 'request_join');
     } catch (e) {
       if (/UNIQUE/i.test(e.message)) throw new ApiError(409, 'JOIN_PENDING', '審核中，等專案管理員處理');
       throw e;
@@ -170,55 +125,9 @@ export function registerJoin(d) {
     }) };
   });
 
-  const notReviewer = pj => new ApiError(403, 'NOT_REVIEWER', `只有「${nameOf(pj)}」的專案管理員能處理加入申請。`);
-  const decided = () => new ApiError(409, 'JOIN_DECIDED', '這個申請已經處理過了');
-  const archived = () => new ApiError(409, 'PROJECT_ARCHIVED', '這個專案已封存，不能核准');
-  const conflict = () => new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
-  const projectMissing = () => new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-  const requestMissing = () => new ApiError(404, 'NOT_FOUND', '找不到這個申請');
-  const joinClosed = () => new ApiError(403, 'JOIN_CLOSED', '這個專案目前不開放申請');
-  function enrollmentGuards(project, id, visibility) {
-    const implicit = reviewerCond(id);
-    return [ensure(availableProject(project, true, visibility)), ensure(activeMemberCond(id)),
-      ensure(notProjectMember(id, project)), ensureStmt(`NOT (${implicit.cond})`, implicit.args)];
-  }
-  async function explainEnrollment(ctx, me, project, action) {
-    await loadProjects(true);
-    const actor = await db.get('SELECT * FROM participants WHERE id = ?', me.id);
-    if (!actor) throw projectMissing();
-    const row = await joinTarget(ctx, actor, project); // 私人專案不可見時回 404
-    if (row.archived) throw new ApiError(409, 'PROJECT_ARCHIVED', '這個專案已封存');
-    if (!(await holdsNow(db, notProjectMember(me.id, project))) || await holdsNow(db, reviewerCond(me.id))) {
-      throw new ApiError(409, 'ALREADY_MEMBER', '你已經在這個專案');
-    }
-    if (!(await holdsNow(db, activeMemberCond(me.id)))) throw new ApiError(403, 'FORBIDDEN', '只有工作區成員能加入專案。');
-    await access.check(ctx, actor, action, { project });
-    if (action === 'request_join' && !joinOpen(await joinSettings(), project)) throw joinClosed();
-    throw conflict();
-  }
-  async function explainDecision(ctx, me, r, canReview, applicant = null) {
-    const current = await db.get('SELECT status FROM join_requests WHERE id = ?', r.id);
-    if (!current) throw requestMissing();
-    await loadProjects(true);
-    const row = activeProject(r.project);
-    if (!row) throw projectMissing();
-    if (!(await holdsNow(db, canReview))) {
-      const actor = await db.get('SELECT * FROM participants WHERE id = ?', me.id);
-      if (actor) await reviewer(ctx, actor, r.project); // 私人專案不可見時保留 404
-      throw notReviewer(r.project);
-    }
-    if (current.status !== 'pending') throw decided();
-    if (applicant) {
-      if (row.archived) throw archived();
-      await applicant();
-    }
-    throw conflict();
-  }
   async function pendingReq(ctx, me, id) {
     const r = await db.get('SELECT * FROM join_requests WHERE id = ?', String(id));
-    if (!r) throw requestMissing();
-    await loadProjects(true);
-    if (!activeProject(r.project)) throw projectMissing();
+    if (!r) throw new ApiError(404, 'NOT_FOUND', '找不到這個申請');
     const who = await reviewer(ctx, me, r.project);
     if (r.status !== 'pending') throw new ApiError(409, 'JOIN_DECIDED', r.status === 'approved' ? '這個申請已經核准了' : '這個申請已經拒絕了');
     return { r, ...who };
@@ -226,38 +135,26 @@ export function registerJoin(d) {
   // 核准：選角色＋一般／唯讀；才變成員、寫專案異動、通知申請人
   route('POST', '/api/join-requests/:id/approve', async ({ ctx, me, req, params }) => {
     const { r, admin } = await pendingReq(ctx, me, params.id);
+    await loadProjects(true);
     const row = activeProject(r.project);
-    if (!row) throw projectMissing();
-    if (row.archived) throw archived();
+    if (!row || row.archived) throw new ApiError(409, 'PROJECT_ARCHIVED', '這個專案已封存，不能核准');
     const body = await readJson(req);
     const role = readRole(body.role), ro = body.readOnly === true;
-    const applicant = async () => {
-      const p = await db.get('SELECT p.*, a.status AS account_status FROM participants p LEFT JOIN accounts a ON a.id = p.account_id WHERE p.id = ?', r.participant_id);
-      if (!p || p.status !== 'active' || p.kind !== 'human' || (p.account_status && p.account_status !== 'active')) {
-        throw new ApiError(409, 'APPLICANT_GONE', '申請人已停用或刪除，請拒絕這個申請');
-      }
-      if (!inWorkspace(p) || p.workspace_id !== DEFAULT_WORKSPACE) throw new ApiError(403, 'NOT_WORKSPACE_MEMBER', `${p.name} 已經不是工作區成員，不能加入專案；請拒絕這個申請。`);
-      return p;
-    };
-    const p = await applicant(), at = nowIso();
-    const canReview = reviewPermission(me.id, r.project);
-    const active = availableProject(r.project, true), missing = notProjectMember(p.id, r.project), implicit = reviewerCond(p.id);
-    const explicitJoin = { cond: `${missing.cond} AND NOT (${implicit.cond})`, args: [...missing.args, ...implicit.args] };
-    const who = admin ? me.name : `${me.name}（${row.name} 專案管理員）`;
-    const done = await writeWithProjectRoles([
-      pending(r.id), ensure(canReview), ensure(active), ensure(activeMemberCond(p.id)),
-      ["UPDATE join_requests SET status = 'approved', role = ?, read_only = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
-        [role, ro ? 1 : 0, me.id, at, r.id]],
-      // 隱含權限已能進專案；只有真的加入才記成員異動。明確選唯讀時，照舊設定成員角色。
-      [`INSERT INTO project_events (project_id, at, actor_id, text) SELECT ?,?,?,? WHERE ${explicitJoin.cond}`,
-        [r.project, at, me.id, `${who} 加入 ${p.name}`, ...explicitJoin.args]],
-      [`UPDATE participants SET updated_at = ? WHERE id = ? AND ${explicitJoin.cond}`, [at, p.id, ...explicitJoin.args]],
-      ...addMemberStmts(p.id, r.project, PROJECT_ROLE.MEMBER, explicitJoin),
-      ...(ro ? [...addMemberStmts(p.id, r.project, PROJECT_ROLE.VIEWER), ...setMemberRoleStmts(p.id, r.project, PROJECT_ROLE.VIEWER)] : []),
-      projEvent(r.project, me.id, `${me.name} 核准 ${p.name} 加入${role ? `（${role}）` : ''}${ro ? '，唯讀' : ''}`, at),
-      notice(p.id, 'join_approved', `「${row.name}」已核准你加入${ro ? '（唯讀）' : ''}`),
-    ], role ? cur => ({ ...cur, [p.id]: { ...(cur[p.id] || {}), [r.project]: role } }) : null);
-    if (!done) await explainDecision(ctx, me, r, canReview, applicant);
+    const p = (await peopleMap(ctx)).get(r.participant_id);
+    if (!p || p.status !== 'active' || p.kind !== 'human') throw new ApiError(409, 'APPLICANT_GONE', '申請人已停用或刪除，請拒絕這個申請');
+    const notMember = () => new ApiError(403, 'NOT_WORKSPACE_MEMBER', `${p.name} 已經不是工作區成員，不能加入專案；請拒絕這個申請。`);
+    if (!inWorkspace(p)) throw notMember();
+    const at = nowIso();
+    // 先改狀態（同一筆只會成功一次；申請人同時被移出工作區也不會成功），再加入專案
+    const upd = await db.run("UPDATE join_requests SET status = 'approved', role = ?, read_only = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'active' AND workspace_status = 'active')", role, ro ? 1 : 0, me.id, at, r.id, p.id);
+    if (!upd.changes) {
+      if ((await db.get('SELECT workspace_status FROM participants WHERE id = ?', p.id))?.workspace_status === 'removed') throw notMember();
+      throw new ApiError(409, 'JOIN_DECIDED', '這個申請已經處理過了');
+    }
+    if (!projectsOf(p).includes(r.project)) await applyMembership(ctx, me, [{ id: p.id, projects: PROJECTS.filter(x => projectsOf(p).includes(x) || x === r.project) }], { byLeader: !admin });
+    if (role) { await loadProjectRoles(true); const cur = titles(); await saveProjectRoles({ ...cur, [p.id]: { ...(cur[p.id] || {}), [r.project]: role } }); }
+    if (ro) await addReadOnly(p.id, [r.project]);
+    await db.batch([projEvent(r.project, me.id, `${me.name} 核准 ${p.name} 加入${role ? `（${role}）` : ''}${ro ? '，唯讀' : ''}`, at), notice(p.id, 'join_approved', `「${row.name}」已核准你加入${ro ? '（唯讀）' : ''}`)]);
     invalidatePeople();
     liveTo([p.id], 'join', { project: r.project, name: row.name, status: 'approved' });
     return { id: r.id, status: 'approved', project: r.project, participantId: p.id, role, readOnly: ro };
@@ -268,15 +165,11 @@ export function registerJoin(d) {
     const reason = String((await readJson(req)).reason ?? '').trim();
     if (!reason) throw invalid('拒絕要寫一句原因（申請人會看到）');
     if (reason.length > JOIN_NOTE_MAX) throw invalid(`原因最多 ${JOIN_NOTE_MAX} 字`);
-    const name = nameOf(r.project), at = nowIso(), canReview = reviewPermission(me.id, r.project);
-    const exists = availableProject(r.project);
-    const done = await writeInWorkspace([
-      pending(r.id), ensure(canReview), ensure(exists),
-      ["UPDATE join_requests SET status = 'rejected', reason = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'", [reason, me.id, at, r.id]],
-      notice(r.participant_id, 'join_rejected', `「${name}」沒有核准你的申請：${reason}`),
-    ]);
-    if (!done) await explainDecision(ctx, me, r, canReview);
-    liveTo([r.participant_id], 'join', { project: r.project, name, status: 'rejected' });
+    const at = nowIso();
+    const upd = await db.run("UPDATE join_requests SET status = 'rejected', reason = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'", reason, me.id, at, r.id);
+    if (!upd.changes) throw new ApiError(409, 'JOIN_DECIDED', '這個申請已經處理過了');
+    await db.batch([notice(r.participant_id, 'join_rejected', `「${nameOf(r.project)}」沒有核准你的申請：${reason}`)]);
+    liveTo([r.participant_id], 'join', { project: r.project, name: nameOf(r.project), status: 'rejected' });
     return { id: r.id, status: 'rejected' };
   });
 
