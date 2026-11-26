@@ -5,9 +5,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { migrateNode } from './migrations.js';
 
-export function openNodeDb(file, { legacyProjects = true } = {}) { // legacyProjects：測試用，先建「預設專案」「第二專案」（代號固定）
+// legacyProjects：測試用，先建「預設專案」「第二專案」（代號固定）
+// limits：測試用，node:sqlite 的限制（例：src/db-d1.js 的 D1_SQLITE_LIMITS，模擬 D1 比較嚴的 SQLite 限制）
+export function openNodeDb(file, { legacyProjects = true, limits = null } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new DatabaseSync(file);
+  const db = new DatabaseSync(file, limits ? { limits } : {});
   db.exec('PRAGMA journal_mode = WAL;');
   const schema = fs.readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
   // 資料庫升級：全新的站用最新 schema.sql 建表；舊站照編號套 migrations/ 還沒套的（失敗丟 MigrationError，server.js 印出原因後停止）
