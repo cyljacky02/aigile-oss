@@ -16,7 +16,14 @@ import { adminSession } from './test-admin.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-wsadmin-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
-const app = createApp({ db, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' } });
+let contendForTitle;
+const appDb = { ...db, async batch(stmts) {
+  if (contendForTitle && stmts.some(([sql]) => sql.startsWith("INSERT INTO app_settings (key, value) VALUES ('project_roles', ?) ON CONFLICT(key) DO UPDATE"))) {
+    await contendForTitle();
+  }
+  return db.batch(stmts);
+} };
+const app = createApp({ db: appDb, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' } });
 const call = async (token, p, method = 'GET', body) => {
   const r = await app(new Request('http://localhost' + encodeURI(p), { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost');
   return { status: r.status, body: await r.json().catch(() => ({})) };
@@ -131,8 +138,22 @@ try {
   const Li = li.participant.participantId;
   assert.equal((await call(boss.token, `/api/participants/${Li}/projects`, 'PUT', { projects: [A] })).status, 200);
   const liAi = (await call(li.token, '/api/my-ais', 'POST', { projects: [A], roleKey: 'UX', role: '設計', name: '李的UX', ...S })).body;
+  assert.equal((await call(li.token, `/api/participants/${Li}/project-roles`, 'PUT', { roles: { [A]: 'UX' } })).status, 200);
+  const card = await call(boss.token, '/api/cards', 'POST', { requestId: 'leave-atomic', project: A, title: '離開前的卡', ownerId: Li });
+  assert.equal(card.status, 201, JSON.stringify(card.body));
+  const readCard = async () => (await call(boss.token, `/api/cards/${card.body.cardId}`)).body;
+  let contention = 0;
+  contendForTitle = async () => {
+    contention++;
+    await db.run("UPDATE app_settings SET value = value || ' ' WHERE key = 'project_roles'");
+  };
+  try { assert.deepEqual([(await call(li.token, '/api/leave', 'POST')).status, contention], [409, 4]); } finally { contendForTitle = undefined; }
+  assert.equal((await call(li.token, '/api/me')).status, 200, '失敗後仍可重試離開');
+  assert.equal((await readCard()).owner?.participantId, Li);
   const left = await call(li.token, '/api/leave', 'POST');
   assert.equal(left.status, 200, JSON.stringify(left.body));
+  assert.equal((await readCard()).owner, null, '離開後卡片退回');
+  assert.ok(!(await call(boss.token, `/api/projects/${A}/members`)).body.members.some(m => [Li, liAi.participantId].includes(m.participantId)));
   assert.equal((await call(li.token, '/api/me')).status, 401, '離開後進不來');
   assert.equal((await call(liAi.token, '/api/me')).status, 401, '他的 AI 也進不來');
   const roster = (await call(chen.token, '/api/roster')).body; // 陳昭宇是平台管理員：看得到全平台帳號

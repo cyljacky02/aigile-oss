@@ -10182,16 +10182,23 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const sf = slugF.check();
       if (!sf) return;
       try {
-        let r;
         const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
-        try { r = await api('/api/projects', { method: 'POST', body: { name, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review', ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
+        let result;
+        try { result = await api('/api/projects', { method: 'POST', body: {
+          name, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review',
+          ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}),
+          ...(url ? { repo: { url, branch } } : {}),
+        } }); }
         catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
-        let repoErr = '';
-        if (url) { try { await api(`/api/projects/${encodeURIComponent(r.id)}/repo`, { method: 'PUT', body: { url, branch } }); } catch (e2) { repoErr = e2.message; } }
+        const savedRepo = result.items?.find(p => p.id === result.id)?.repo;
         closeModal();
+        if (url && (savedRepo?.url !== url || savedRepo?.branch !== branch)) {
+          toast(`已新增專案「${name}」。未確認程式庫設定，請到專案設定檢查。`, 6000);
+        } else {
+          toast(`已新增專案「${name}」，目前只有你`);
+        }
         await Promise.all([loadProjectList(), loadParticipants()]);
         drawProjSwitch(); drawPerm();
-        toast(repoErr ? `已新增專案「${name}」，但程式庫沒存：${repoErr}` : `已新增專案「${name}」，目前只有你`);
       } catch (e2) { err.textContent = e2.message; }
     });
     // 送出建立專案申請：送出中停用按鈕（按兩次也只送一次）；失敗後重按沿用同一個 requestId
