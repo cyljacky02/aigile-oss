@@ -10,7 +10,8 @@
 //     撤回（這裡）、核准與拒絕（#45）都走它；放進呼叫端那一批（第一句工作區列鎖之後）
 //   cancelStmts({ workspaceId, requesterId?, cancelCode, at })：取消（系統依規則，不是使用者動作，沒有公開 API）。
 //     政策切走、移出、離開、停用帳號（#46）、還原後檢查（#47）在自己的交易裡呼叫；pendingCountSql 給稽核的 countOf 與預覽數字
-//   activeMemberCond／directCreateCond／policyCond：交易內斷言的條件（核准要斷言申請人仍是有效成員、政策仍是 approval）
+//   activeMemberCond／directCreateCond／policyCond／reviewerCond／pendingCond：交易內斷言的條件（核准要斷言申請人仍是有效成員、政策仍是 approval、審核人仍有管理權）
+//   核准與拒絕（#45）：POST …/:id/approve、…/:id/reject；核准用 creation.create（src/project-create.js）在同一批建立專案
 //   registerProjectCreationRequests 回傳的 visibleTo(v, me, row)、view(row, ...)：審核清單與單筆的審核人欄位（#45）沿用同一套可見範圍與輸出
 //
 // 交易（ADR 0005）：送出與撤回都在 writeInWorkspace（第一句工作區列鎖 → 不在還原中 → 斷言 → 寫入）；即時事件在提交後才發。
@@ -19,6 +20,9 @@ import { ensureStmt } from './write-order.js';
 import { isUniqueConstraintViolation, isMissingTable } from './db-errors.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { CREATE_PROJECTS } from './workspace-settings.js';
+import { CREATION_METHOD } from './project-create.js';
+import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
+import { holdsNow } from './project-identity.js';
 
 export const PCR_TABLE = 'project_creation_requests';
 export const PCR_STATE = Object.freeze({ PENDING: 'pending', APPROVED: 'approved', REJECTED: 'rejected', WITHDRAWN: 'withdrawn', CANCELLED: 'cancelled' });
@@ -34,6 +38,9 @@ export const PCR_REQUEST_ID_MAX = 128;
 export const PCR_PAGE = Object.freeze({ DEFAULT: 50, MAX: 100 });
 // 送出時通知審核人（account_notices 的 kind）；細節只有申請人名字
 export const PCR_NOTICE_SUBMITTED = 'project_creation_request';
+// 核准、拒絕時通知申請人（#45）；細節只有申請的名稱（申請人自己的資料）
+export const PCR_NOTICE_APPROVED = 'project_creation_request_approved';
+export const PCR_NOTICE_REJECTED = 'project_creation_request_rejected';
 // 即時事件：只說「資料可能變了，請重新抓取」，不帶任何內容；事件名稱不帶業務語意（只推給相關的人）
 export const LIVE_STALE = 'stale';
 
@@ -48,6 +55,14 @@ export const activeMemberCond = (id, workspaceId = DEFAULT_WORKSPACE) => ({
 export const directCreateCond = id => ({
   cond: `EXISTS (SELECT 1 FROM participants p WHERE p.id = ? AND (p.workspace_role = 'admin'
     OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.platform_role = 'admin' AND a.status = 'active')))`, args: [id] });
+// 審核人（#45）：有效的人類，是這個工作區的工作區管理員，或帳號是啟用中的平台管理員（隱含權限）。核准、拒絕在交易內斷言
+export const reviewerCond = (id, workspaceId = DEFAULT_WORKSPACE) => ({
+  cond: `EXISTS (SELECT 1 FROM participants p WHERE p.id = ? AND p.kind = 'human' AND p.status = 'active'
+    AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.status != 'active')
+    AND ((p.workspace_role = 'admin' AND p.workspace_id = ? AND p.workspace_status = 'active')
+      OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.platform_role = 'admin' AND a.status = 'active')))`, args: [id, workspaceId] });
+// 申請仍待審核
+export const pendingCond = id => ({ cond: `EXISTS (SELECT 1 FROM ${PCR_TABLE} WHERE id = ? AND state = 'pending')`, args: [id] });
 const ensure = ({ cond, args }) => ensureStmt(cond, args);
 const ensureNot = ({ cond, args }) => ensureStmt(`NOT ${cond}`, args);
 
@@ -117,9 +132,10 @@ function decodeCursor(raw) {
 //   readSpec(body) → { name, visibility, slug｜null, code｜null, statuses｜null }：跟直接建立同一套驗證與正規化（core.js）
 //   loadProjects()、projectInfo(id) → { id, name }｜null：專案還在（沒被刪除）時的資料（核准的申請顯示連結；#45 之後才會有）
 //   liveTo(ids, type, data)：內建即時通道（只推給指定的人；沒有就不推）
+//   creation：共用的建立專案邏輯（src/project-create.js），核准就是用它建立（#45）；auditLog：稽核紀錄（拒絕的 project_creation_request.reject）
 export function registerProjectCreationRequests(d) {
   const { route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, access, peopleMap, writeInWorkspace, readSpec,
-    loadProjects = async () => {}, projectInfo = () => null, liveTo = () => {}, workspaceId = DEFAULT_WORKSPACE } = d;
+    loadProjects = async () => {}, projectInfo = () => null, liveTo = () => {}, workspaceId = DEFAULT_WORKSPACE, creation = null, auditLog = null } = d;
   const notFound = () => new ApiError(404, 'NOT_FOUND', '找不到這份建立專案申請');
   const notReady = () => new ApiError(503, 'PROJECT_CREATION_REQUESTS_NOT_READY', '建立專案申請還沒準備好（資料庫還沒升級），請稍後再試。', { retryAfter: 5 });
   const conflict = () => new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
@@ -139,7 +155,7 @@ export function registerProjectCreationRequests(d) {
     }
     let statuses = null;
     try { statuses = r.statuses_json ? JSON.parse(r.statuses_json) : null; } catch {}
-    return { id: r.id, requestId: r.request_id, requesterId: r.requester_id, name: r.name, reason: r.reason, visibility: r.visibility, slug: r.slug ?? null, code: r.code ?? null, statuses,
+    return { id: r.id, requestId: r.request_id, requesterId: r.requester_id, requesterName: v.people?.get(r.requester_id)?.name ?? null, name: r.name, reason: r.reason, visibility: r.visibility, slug: r.slug ?? null, code: r.code ?? null, statuses,
       state: r.state, createdAt: r.created_at, endedAt: r.ended_at ?? null, rejectReason: r.reject_reason ?? null, cancelCode: r.cancel_code ?? null, project,
       canWithdraw: r.state === PCR_STATE.PENDING && v.can(me, 'withdraw_project_creation_request', { target: { id: r.requester_id } }) };
   }
@@ -218,18 +234,23 @@ export function registerProjectCreationRequests(d) {
     return { __status: 201, ...view(v, me, await byId(id)) };
   }));
 
-  // 列表：scope=mine＝自己的申請（新的在前）；游標分頁（預設 50、最多 100）。scope=review（審核人看全部）在 #45
+  // 列表：scope=mine＝自己的申請（新的在前）；游標分頁（預設 50、最多 100）。
+  // scope=review＝審核人看這個工作區全部的申請（#45），另外回準確的待審總數 pendingTotal（不用載入的筆數推算）
   const SCOPES = {
     mine: async (ctx, me) => {
       const v = await access.check(ctx, me, 'see_own_project_creation_requests', { target: me });
       return { v, where: 'workspace_id = ? AND requester_id = ?', args: [workspaceId, me.id] };
+    },
+    review: async (ctx, me) => {
+      const v = await access.check(ctx, me, 'review_project_creation_requests', 'workspace');
+      return { v, where: 'workspace_id = ?', args: [workspaceId], pendingTotal: true };
     },
   };
   route('GET', '/api/project-creation-requests', guarded(async ({ ctx, me, url }) => {
     requireHuman(me);
     const q = url.searchParams;
     const scope = SCOPES[q.get('scope') || 'mine'];
-    if (!scope) throw invalid('scope 只能是 mine');
+    if (!scope) throw invalid('scope 只能是 mine 或 review');
     const state = q.get('state') || null;
     if (state && !PCR_STATES.includes(state)) throw invalid('state 只能是 pending、approved、rejected、withdrawn、cancelled');
     const raw = q.get('limit');
@@ -238,21 +259,144 @@ export function registerProjectCreationRequests(d) {
     const take = Math.min(limit, PCR_PAGE.MAX);
     const cur = q.get('cursor') ? decodeCursor(q.get('cursor')) : null;
     if (q.get('cursor') && !cur) throw invalid('cursor 不對（請用上一頁回傳的 nextCursor）');
-    const { v, where, args } = await scope(ctx, me);
+    const { v, where, args, pendingTotal } = await scope(ctx, me);
     await loadProjects();
     const rows = await db.all(`SELECT * FROM ${PCR_TABLE} WHERE ${where}${state ? ' AND state = ?' : ''}${cur ? ' AND (created_at < ? OR (created_at = ? AND id < ?))' : ''}
       ORDER BY created_at DESC, id DESC LIMIT ?`, ...args, ...(state ? [state] : []), ...(cur ? [cur[0], cur[0], cur[1]] : []), take + 1);
     const page = rows.slice(0, take);
-    return { items: page.map(r => view(v, me, r)), nextCursor: rows.length > take ? encodeCursor(page[page.length - 1]) : null };
+    const out = { items: page.map(r => view(v, me, r)), nextCursor: rows.length > take ? encodeCursor(page[page.length - 1]) : null };
+    if (pendingTotal) { const [sql, a] = pendingCountSql({ workspaceId }); out.pendingTotal = Number(Object.values(await db.get(sql, ...a))[0]) || 0; }
+    return out;
   }));
 
-  // 單筆：申請人本人或審核人；其他人（含 AI）一律 404。審核人額外的欄位（預估識別碼、衝突、能否核准）在 #45
+  // 單筆：申請人本人或審核人；其他人（含 AI）一律 404。
+  // 審核人另外得到 review：自己能不能核准或拒絕；待審核的再加自動網址英文名與代號的預估值、目前衝突的欄位（只說哪個欄位，不透露被哪個專案占用）
   route('GET', '/api/project-creation-requests/:id', guarded(async ({ ctx, me, params }) => {
     const row = await byId(params.id);
     const v = await access.load(ctx, { fresh: true });
     if (!visibleTo(v, me, row)) throw notFound();
     await loadProjects();
-    return view(v, me, row);
+    const out = view(v, me, row);
+    if (v.can(me, 'review_project_creation_requests', 'workspace')) {
+      const pending = row.state === PCR_STATE.PENDING;
+      out.review = { canApprove: pending && v.can(me, 'approve_project_creation_request', 'workspace'), canReject: pending && v.can(me, 'reject_project_creation_request', 'workspace') };
+      if (pending && creation) {
+        const p = await creation.preview(specOf(row));
+        Object.assign(out.review, { preview: { slug: p.slug, code: p.code, slugEstimated: p.slugEstimated, codeEstimated: p.codeEstimated }, conflicts: p.conflicts });
+      }
+    }
+    return out;
+  }));
+
+  // ---------- 核准與拒絕（#45） ----------
+  const notReviewer = () => new ApiError(403, 'NOT_REVIEWER', '只有工作區管理員或平台管理員能審核建立專案申請。');
+  const policyChanged = () => new ApiError(409, 'POLICY_CHANGED', '工作區政策已經不是「成員申請，管理員核准」，不能核准這份申請。');
+  const requesterGone = () => new ApiError(409, 'REQUESTER_NOT_ELIGIBLE', '申請人已經不是有效的工作區成員（可能已被移出或帳號已停用），不能核准。');
+  const auditNotReady = () => new ApiError(503, 'AUDIT_NOT_READY', '稽核紀錄還沒準備好（資料庫還沒升級），這次沒有處理；請稍後再試。', { retryAfter: 5 });
+  // 名稱或指定的識別碼被占用：409，只說是哪個欄位（field），不說被哪個專案占用、也不給建議值（核准不能改申請內容）
+  const TAKEN = {
+    NAME_TAKEN: ['name', '已有同名的專案，這份申請暫時不能核准；可以附理由拒絕，或等申請人撤回重提。'],
+    SLUG_TAKEN: ['slug', '申請指定的網址英文名已經有專案在用，這份申請暫時不能核准；可以附理由拒絕，或等申請人撤回重提。'],
+    CODE_TAKEN: ['code', '申請指定的專案代號已經有專案在用（或是舊代號），這份申請暫時不能核准；可以附理由拒絕，或等申請人撤回重提。'],
+  };
+  const taken = e => new ApiError(409, e.code, TAKEN[e.code][1], { field: TAKEN[e.code][0] });
+  // 另一位審核人剛好先核准了（不是錯誤：回原本的結果）
+  class ApprovedMeanwhile { constructor(row) { this.row = row; } }
+  const holds = c => holdsNow(db, c);
+  function specOf(row) {
+    let statuses = null;
+    try { statuses = row.statuses_json ? JSON.parse(row.statuses_json) : null; } catch {}
+    return { name: row.name, visibility: row.visibility, slug: row.slug ?? null, code: row.code ?? null, statuses };
+  }
+  // 呼叫者還能不能審核（新鮮資料，不用快取）：不能→還看得到（是申請人本人）403、看不到 404
+  async function callerBlocked(me, row) {
+    if (await holds(reviewerCond(me.id, workspaceId))) return null;
+    const own = !!row && row.requester_id === me.id && await holds(activeMemberCond(me.id, workspaceId));
+    return own ? notReviewer() : notFound();
+  }
+  // 核准的前提（規格 (a)–(d)）用新鮮資料判斷：先確認呼叫者的權限，再看申請狀態、政策、申請人資格。都成立回 null
+  // 交易前用來給明確的錯誤；交易內斷言沒過時（explain）只用來產生回應。保證靠交易內的斷言
+  async function approvalBlocked(me, id) {
+    const now = await byId(id);
+    const who = await callerBlocked(me, now);
+    if (who) return who;
+    if (!now || now.workspace_id !== workspaceId) return notFound();
+    if (now.state === PCR_STATE.APPROVED) return new ApprovedMeanwhile(now);
+    if (now.state !== PCR_STATE.PENDING) return ended(now);
+    if (!(await holds(policyCond(workspaceId)))) return policyChanged();
+    if (!(await holds(activeMemberCond(now.requester_id, workspaceId)))) return requesterGone();
+    return null;
+  }
+  // 已核准：回原本的結果（200，不再寫任何東西）。結果專案依呼叫者現行的專案權限（專案後來封存、刪除、清除也不重建）
+  async function approvedResult(ctx, me, row, duplicate) {
+    await loadProjects(true); // 專案可能是別份程式剛建的
+    const v = await access.load(ctx, { fresh: true });
+    return { __status: 200, duplicate, ...view(v, me, row) };
+  }
+  const notice = (requesterId, kind, row) => ['INSERT INTO account_notices (id, participant_id, kind, detail, created_at) VALUES (?,?,?,?,?)',
+    [randId('ntc'), requesterId, kind, JSON.stringify({ n: String(row.name).slice(0, 40) }), Date.now()]];
+
+  // 核准並建立：用共用的建立專案邏輯（受益人＝申請人、執行者＝審核人、建立方式＝approved_request）。
+  // 同一批（第一句工作區列鎖）：斷言 (a) 仍待審核 (b) 審核人仍有管理權 (c) 申請人仍是有效成員 (d) 政策仍是 approval (e) 名稱與識別碼沒被占用
+  // → 專案、申請人的專案管理員身分、project.create 稽核（必要：稽核還沒就緒 503）、申請轉為已核准、給申請人的通知。審核人不成為專案成員。
+  // 自動產生的識別碼因競態被用掉：建立模組重算重試（每次整批重新斷言 (a)–(e)）
+  route('POST', '/api/project-creation-requests/:id/approve', guarded(async ({ ctx, me, params }) => {
+    const row = await byId(params.id);
+    const v = await access.load(ctx, { fresh: true });
+    if (!visibleTo(v, me, row)) throw notFound();
+    if (!v.can(me, 'approve_project_creation_request', 'workspace')) throw notReviewer();
+    // 冪等：合法的審核人對已核准的申請再核准，回原本的結果（不重新檢查政策或申請人資格）
+    if (row.state === PCR_STATE.APPROVED) return approvedResult(ctx, me, row, true);
+    if (row.state !== PCR_STATE.PENDING) throw ended(row);
+    try {
+      const why = await approvalBlocked(me, row.id);
+      if (why) throw why;
+      const requester = await db.get('SELECT id, name FROM participants WHERE id = ?', row.requester_id);
+      if (!requester) throw requesterGone();
+      await creation.create({ actor: me, beneficiary: requester, method: CREATION_METHOD.APPROVED_REQUEST, requestId: row.id, spec: specOf(row), workspaceId,
+        guards: [ensure(pendingCond(row.id)), ensure(reviewerCond(me.id, workspaceId)), ensure(activeMemberCond(row.requester_id, workspaceId)), ensure(policyCond(workspaceId))],
+        extra: ({ id, at }) => [...transitionStmts({ id: row.id, to: PCR_STATE.APPROVED, at, by: me.id, projectId: id }), notice(row.requester_id, PCR_NOTICE_APPROVED, row)],
+        explain: () => approvalBlocked(me, row.id) });
+    } catch (e) {
+      if (e instanceof ApprovedMeanwhile) return approvedResult(ctx, me, e.row, true); // 另一位審核人同時核准、先完成
+      if (e instanceof ApiError && TAKEN[e.code]) throw taken(e);
+      throw e;
+    }
+    pokeLater(row.requester_id);
+    return approvedResult(ctx, me, await byId(row.id), false);
+  }));
+
+  // 拒絕：理由必填（1～200 字）。同一批（第一句工作區列鎖）斷言仍待審核、審核人仍有管理權 → 申請轉為已拒絕、
+  // project_creation_request.reject 稽核（必要：稽核還沒就緒 503）、給申請人的通知
+  route('POST', '/api/project-creation-requests/:id/reject', guarded(async ({ ctx, me, params, req }) => {
+    const row = await byId(params.id);
+    const v = await access.load(ctx, { fresh: true });
+    if (!visibleTo(v, me, row)) throw notFound();
+    if (!v.can(me, 'reject_project_creation_request', 'workspace')) throw notReviewer();
+    const reason = String((await readJson(req)).reason ?? '').trim();
+    if (!reason || reason.length > PCR_REASON_MAX) throw invalid(`拒絕理由為必填，最多 ${PCR_REASON_MAX} 字`);
+    if (row.state !== PCR_STATE.PENDING) throw ended(row);
+    const requester = await db.get('SELECT id, name FROM participants WHERE id = ?', row.requester_id);
+    const who = { id: row.requester_id, name: requester?.name ?? '' };
+    const audit = auditLog?.stmt({ actor: me, action: AUDIT_ACTION.PROJECT_CREATION_REQUEST_REJECT, scope: AUDIT_SCOPE.WORKSPACE, workspaceId,
+      target: { kind: 'participant', ...who }, detail: { requestId: row.id, requester: who } });
+    if (!audit) throw auditNotReady();
+    const done = await writeInWorkspace([
+      ensure(reviewerCond(me.id, workspaceId)),
+      ...transitionStmts({ id: row.id, to: PCR_STATE.REJECTED, at: nowIso(), by: me.id, rejectReason: reason }),
+      audit, notice(row.requester_id, PCR_NOTICE_REJECTED, row),
+    ]);
+    if (!done) {
+      // 用新鮮資料判斷：先看呼叫者的權限，再看申請狀態；判斷不出回一般的 409
+      const now = await byId(row.id);
+      const why = await callerBlocked(me, now);
+      if (why) throw why;
+      if (now && now.state !== PCR_STATE.PENDING) throw ended(now);
+      throw conflict();
+    }
+    pokeLater(row.requester_id);
+    await loadProjects();
+    return view(await access.load(ctx, { fresh: true }), me, await byId(row.id));
   }));
 
   // 撤回：申請人本人；交易內斷言仍待審核、操作者仍是有效成員。不通知任何人、不寫稽核（歷史在申請本身）

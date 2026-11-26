@@ -202,9 +202,12 @@ try {
   assert.equal(await code(appr.check(ctx, member, 'create_project', 'workspace')), 'PROJECT_CREATION_REQUIRES_APPROVAL', '直接建立的錯誤代碼');
   assert.equal(await code(appr.check(ctx, bot, 'create_project', 'workspace')), 'NOT_ADMIN', 'AI 直接建立維持既有拒絕');
   for (const p of [admin, admin2, plat]) assert.ok(!av.can(p, 'request_project_creation', 'workspace'), `${p.id} 直接建立，不送申請`);
-  for (const p of [admin, admin2, plat]) assert.ok(av.can(p, 'review_project_creation_requests', 'workspace'), `${p.id} 是審核人`);
-  for (const p of [lead, member]) assert.ok(!av.can(p, 'review_project_creation_requests', 'workspace'), `${p.id}（專案管理員也一樣）不是審核人`);
-  for (const action of ['request_project_creation', 'see_own_project_creation_requests', 'withdraw_project_creation_request', 'review_project_creation_requests']) {
+  for (const action of ['review_project_creation_requests', 'approve_project_creation_request', 'reject_project_creation_request']) { // 查看待審、核准、拒絕（#45）
+    for (const p of [admin, admin2, plat]) assert.ok(av.can(p, action, 'workspace'), `${p.id} 能 ${action}`);
+    for (const p of [lead, member]) assert.ok(!av.can(p, action, 'workspace'), `${p.id}（專案管理員也一樣）不能 ${action}`);
+    assert.equal(await code(appr.check(ctx, member, action, 'workspace')), 'NOT_REVIEWER', `成員 ${action} 的錯誤代碼`);
+  }
+  for (const action of ['request_project_creation', 'see_own_project_creation_requests', 'withdraw_project_creation_request', 'review_project_creation_requests', 'approve_project_creation_request', 'reject_project_creation_request']) {
     for (const ai of [bot, { ...bot, owner_id: 'admin' }]) {
       assert.ok(!av.can(ai, action, { target: ai }), `can：AI 不能 ${action}`);
       assert.ok(await code(appr.check(ctx, ai, action, { target: ai })), `check：AI 不能 ${action}`);

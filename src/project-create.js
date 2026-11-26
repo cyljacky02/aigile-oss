@@ -16,6 +16,7 @@
 //     自動產生的網址英文名或代號因競態被用掉：重讀重算整批重試（次數有限）；指定的值被用掉、同名：409，不改值
 //   creation.stmts({ id, at, actor, beneficiary, method, requestId, spec: { name, visibility, slug, code, statuses }, eventText? }) → 這一批的斷言與寫入（不含鎖）
 //     給自己管寫入與重試的呼叫端用（新站預設專案、示範資料）
+//   creation.preview({ name, slug|null, code|null }) → { slug, code, slugEstimated, codeEstimated, conflicts }：審核畫面的預估值與衝突欄位（#45）
 import { ensureStmt } from './write-order.js';
 import { slugFreeCond, codeFreeCond, ensureCond, holdsNow } from './project-identity.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
@@ -99,5 +100,17 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
       if (!(slugLost || codeLost) || attempt >= IDENTITY_TRIES) throw why;
     }
   }
-  return { create, stmts };
+  // 審核畫面用的預估（#45）：沒指定的網址英文名與代號現在會產生什麼（只是預估，建立時重算）、哪些欄位現在有衝突。
+  // conflicts 只列欄位（name、slug、code），不說被哪個專案占用；自動產生的值會避開已用的，不算衝突
+  async function preview({ name, slug = null, code = null }) {
+    await names.refresh();
+    const used = await names.usedSlugs();
+    const conflicts = [];
+    if (names.nameInUse(name)) conflicts.push('name');
+    if (slug && used.has(slug)) conflicts.push('slug');
+    if (code) { try { names.checkCode(code, null); } catch (e) { if (e?.code !== 'CODE_TAKEN') throw e; conflicts.push('code'); } }
+    const s = slug || names.autoSlug(name, used);
+    return { slug: s, code: code || names.autoCode(s), slugEstimated: !slug, codeEstimated: !code, conflicts };
+  }
+  return { create, stmts, preview };
 }
