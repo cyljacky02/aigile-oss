@@ -1,5 +1,5 @@
 // 測試共用：開一個資料庫。預設 SQLite（照舊開檔案）；設了 AIGILE_TEST_PG_URL 就改開 Postgres，
-// 同一個檔案路徑對到同一個 schema（重開資料還在），不同路徑互不影響。
+// 同一次 run-all 中，同一個檔案路徑對到同一個 schema（重開資料還在），不同路徑互不影響。
 // 安全：AIGILE_TEST_PG_URL 只准本機（localhost、127.0.0.1）或 CI 的 postgres 服務，其他一律拒跑，絕不連正式庫。
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';

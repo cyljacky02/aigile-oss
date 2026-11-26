@@ -11,9 +11,10 @@
 // 環境變數 TEST_TIMEOUT_SEC：單一測試最多跑幾秒，預設 300；逾時算失敗
 // 環境變數 AIGILE_TEST_PG_URL：改在 Postgres 跑同一套（要先 npm install；只准本機或 CI 的 postgres 服務），
 //   例：AIGILE_TEST_PG_URL=postgres://postgres:test@127.0.0.1:5432/aigile_test npm test
-//   每個測試資料夾一個 t_ 開頭的 schema，開始前與跑完都會清掉
+//   每個測試資料夾一個 schema，run-all 只清掉這次執行的 schema；舊版或程序被強制中斷留下的 schema 不動。
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,7 +27,7 @@ const FIXED_PORT = ['cards-test.js', 'files-test.js', 'login-test.js', 'notes-te
 //   message-view-ui-test：第一次載入後才設「上次看到」再重新整理，機器忙時舊頁面會蓋掉它，紅線等不到
 const SERIAL = ['boot-retry-ui-test.js', 'message-view-ui-test.js', 'wait-test.js'];
 
-// AIGILE_TEST_RUN_DIR 只給 run-all-isolation-test 用：改跑那個資料夾裡的假測試
+// AIGILE_TEST_RUN_DIR 只給 run-all 的隔離測試用：改跑那個資料夾裡的假測試
 const dir = process.env.AIGILE_TEST_RUN_DIR ? path.resolve(process.env.AIGILE_TEST_RUN_DIR) : fileURLToPath(new URL('.', import.meta.url));
 const args = process.argv.slice(2);
 const filters = [];
@@ -45,17 +46,55 @@ const files = fs.readdirSync(dir).filter(f => /-test\.js$/.test(f) || f === 'smo
   .filter(f => !filters.length || filters.some(k => f.includes(k)));
 if (!files.length) { console.error(`沒有符合「${filters.join(' ')}」的測試`); process.exit(1); }
 
+const PG_URL = process.env.AIGILE_TEST_PG_URL;
+async function withPgClient(fn) {
+  const { assertTestPgUrl } = await import('../src/db-pg.js');
+  const url = assertTestPgUrl(PG_URL);
+  const { default: pg } = await import('pg');
+  const c = new pg.Client({ connectionString: url });
+  await c.connect();
+  try { return await fn(c); } finally { await c.end(); }
+}
+
+// 用空 schema 保留這次執行的前綴。即使兩次抽到同一個前綴，Postgres 也只會讓其中一個建成功。
+const pgRun = PG_URL ? await withPgClient(async c => {
+  for (;;) {
+    const prefix = 't_' + randomBytes(16).toString('hex');
+    try {
+      await c.query(`CREATE SCHEMA "${prefix}"`);
+      return prefix;
+    } catch (e) {
+      if (e.code !== '42P06' && e.code !== '23505') throw e; // 名稱已存在，或同時建立撞到唯一索引
+    }
+  }
+}) : '';
+if (pgRun) console.log('資料庫：Postgres（AIGILE_TEST_PG_URL）\n');
+
+async function dropTestSchemas() {
+  await withPgClient(async c => {
+    const { TEST_SCHEMA_SUFFIX_LENGTH } = await import('../src/db-pg.js');
+    const pattern = `^${pgRun}_[0-9a-f]{${TEST_SCHEMA_SUFFIX_LENGTH}}$`;
+    const { rows } = await c.query('SELECT nspname FROM pg_namespace WHERE nspname ~ $1', [pattern]);
+    for (const { nspname } of rows) await c.query(`DROP SCHEMA "${nspname}" CASCADE`);
+    await c.query(`DROP SCHEMA "${pgRun}"`); // 最後才釋放前綴
+  });
+}
+
 // 接入檢查會寫 ~/.aigile/、Codex 版會改 ~/.codex/config.toml、Antigravity CLI 寫 ~/.gemini、Copilot CLI 寫 ~/.copilot/mcp-config.json：
 // 每支測試開自己的暫存家目錄，跑完刪掉（有設 AIGILE_HOME 就在它底下開子資料夾）
 const tempHome = kind => fs.mkdtempSync(path.join(os.tmpdir(), `aigile-${kind}-`));
 const AIGILE_HOME = process.env.AIGILE_HOME ? path.resolve(process.env.AIGILE_HOME) : '';
 if (AIGILE_HOME) fs.mkdirSync(AIGILE_HOME, { recursive: true });
 const aigileHome = () => AIGILE_HOME ? fs.mkdtempSync(path.join(AIGILE_HOME, 'run-')) : tempHome('home');
+// 不把本機部署的資料庫設定傳給測試；測試要開自己的伺服器還是可以明確設定。
+const dbEnvKeys = new Set(['DATABASE_URL', 'DATABASE_SCHEMA', 'AIGILE_TEST_PG_URL', 'AIGILE_TEST_PG_RUN']);
+const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !dbEnvKeys.has(key.toUpperCase())));
+if (pgRun) Object.assign(childEnv, { AIGILE_TEST_PG_URL: PG_URL, AIGILE_TEST_PG_RUN: pgRun });
 const run = f => new Promise(resolve => {
   const started = Date.now();
   const homes = { home: aigileHome(), codex: tempHome('codexhome'), gemini: tempHome('geminihome'), copilot: tempHome('copilothome') };
   let out = '', timedOut = false;
-  const p = spawn(process.execPath, [f], { cwd: fileURLToPath(new URL('..', import.meta.url)), env: { ...process.env, FORCE_COLOR: '0', AIGILE_HOME: homes.home, AIGILE_TEST_CODEX_HOME: homes.codex, CODEX_HOME: homes.codex, COPILOT_HOME: homes.copilot, AIGILE_TEST_COPILOT_HOME: homes.copilot, AIGILE_TEST_GEMINI_HOME: homes.gemini, AIGILE_GEMINI_HOME: homes.gemini, AIGILE_CODEX_BIN: fileURLToPath(new URL('./fake-codex.mjs', import.meta.url)), AIGILE_ANTIGRAVITY_BIN: fileURLToPath(new URL('./fake-antigravity.mjs', import.meta.url)) } });
+  const p = spawn(process.execPath, [f], { cwd: fileURLToPath(new URL('..', import.meta.url)), env: { ...childEnv, FORCE_COLOR: '0', AIGILE_HOME: homes.home, AIGILE_TEST_CODEX_HOME: homes.codex, CODEX_HOME: homes.codex, COPILOT_HOME: homes.copilot, AIGILE_TEST_COPILOT_HOME: homes.copilot, AIGILE_TEST_GEMINI_HOME: homes.gemini, AIGILE_GEMINI_HOME: homes.gemini, AIGILE_CODEX_BIN: fileURLToPath(new URL('./fake-codex.mjs', import.meta.url)), AIGILE_ANTIGRAVITY_BIN: fileURLToPath(new URL('./fake-antigravity.mjs', import.meta.url)) } });
   p.stdout.on('data', d => { out += d; }); p.stderr.on('data', d => { out += d; });
   const timer = setTimeout(() => { timedOut = true; p.kill(); }, TIMEOUT_MS);
   p.on('close', code => {
@@ -64,20 +103,6 @@ const run = f => new Promise(resolve => {
     resolve({ f, ok: code === 0 && !timedOut, code, timedOut, sec: ((Date.now() - started) / 1000).toFixed(1), out });
   });
 });
-
-// Postgres 模式：清掉上次留下的測試 schema（只動 t_ 加 20 碼的）
-const PG_URL = process.env.AIGILE_TEST_PG_URL;
-async function dropTestSchemas() {
-  const { assertTestPgUrl } = await import('../src/db-pg.js');
-  const { default: pg } = await import('pg');
-  const c = new pg.Client({ connectionString: assertTestPgUrl(PG_URL) });
-  await c.connect();
-  try {
-    const { rows } = await c.query("SELECT nspname FROM pg_namespace WHERE nspname ~ '^t_[0-9a-f]{20}$'");
-    for (const r of rows) await c.query(`DROP SCHEMA "${r.nspname}" CASCADE`);
-  } finally { await c.end(); }
-}
-if (PG_URL) { await dropTestSchemas(); console.log('資料庫：Postgres（AIGILE_TEST_PG_URL）\n'); }
 
 const failed = [];
 const t0 = Date.now();
@@ -106,5 +131,5 @@ else {
 }
 failed.sort();
 console.log(`\n${files.length - failed.length}/${files.length} 通過，共 ${((Date.now() - t0) / 1000).toFixed(0)} 秒${failed.length ? `；沒過：${failed.join('、')}` : ''}`);
-if (PG_URL) await dropTestSchemas();
+if (pgRun) await dropTestSchemas();
 process.exitCode = failed.length ? 1 : 0;

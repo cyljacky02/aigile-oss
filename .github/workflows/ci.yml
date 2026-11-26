@@ -4,6 +4,7 @@
 # or on demand: `gh workflow run ci.yml --ref <branch>` (or the "Run workflow" button on the Actions tab).
 # The SQLite jobs have no install step on purpose: the default (SQLite) setup must keep working with zero dependencies.
 # The Postgres job installs the one optional dependency (pg) and runs the same full suite against a Postgres service.
+# The D1 job runs the local Wrangler verification suite without Cloudflare credentials.
 # Publishing the image to ghcr.io on a version tag is in release.yml.
 name: CI
 
@@ -80,6 +81,25 @@ jobs:
           CI: 'true'
           TEST_TIMEOUT_SEC: '300'
           AIGILE_TEST_PG_URL: postgres://postgres:test@localhost:5432/aigile_test
+
+  test-d1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install Wrangler in runner temp
+        run: npm install --prefix "$RUNNER_TEMP/aigile-d1" --no-audit --no-fund wrangler@4.168.0
+      - name: Verify local D1
+        run: npm run verify:d1
+        env:
+          # Miniflare uses local Request.cf defaults in test mode.
+          NODE_ENV: test
+          D1_VERIFY_WRANGLER: ${{ runner.temp }}/aigile-d1/node_modules/wrangler/bin/wrangler.js
 
   docker:
     runs-on: ubuntu-latest

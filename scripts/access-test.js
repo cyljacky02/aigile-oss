@@ -128,6 +128,9 @@ try {
   assert.ok(!v.can(viewerBot, 'write', { project: 'main' }));
   assert.ok(!v.can(viewer, 'write', { project: null }));
   assert.ok(v.can(member, 'write', { project: null }));
+  const aiProject = { project: 'main' };
+  assert.ok(v.can(bot, 'write', aiProject), '一般 AI 照樣能在專案寫入');
+  await access.check(ctx, bot, 'write', aiProject);
   assert.equal(await code(access.check(ctx, viewerBot, 'write', { project: 'main' })), 'READ_ONLY');
   console.log('✓ 寫入');
 
@@ -211,7 +214,7 @@ try {
   for (const action of ['request_project_creation', 'see_own_project_creation_requests', 'withdraw_project_creation_request', 'review_project_creation_requests', 'approve_project_creation_request', 'reject_project_creation_request']) {
     for (const ai of [bot, { ...bot, owner_id: 'admin' }]) {
       assert.ok(!av.can(ai, action, { target: ai }), `can：AI 不能 ${action}`);
-      assert.ok(await code(appr.check(ctx, ai, action, { target: ai })), `check：AI 不能 ${action}`);
+      await assert.rejects(appr.check(ctx, ai, action, { target: ai }), { status: 403, code: 'FORBIDDEN' }, `check：AI 不能 ${action}`);
     }
     assert.ok(!av.can({ ...member, status: 'disabled' }, action, { target: member }), `停用的人不能 ${action}`);
   }
@@ -226,11 +229,26 @@ try {
   // 專案可見度：main 開放、side 私人；沒注入（上面的 access）＝審核
   assert.equal(v.visibilityOf('main'), 'review', '沒設可見度＝審核');
   const vis = { main: 'open', side: 'private' };
-  const va = await createAccess({
+  const visibilityAccess = createAccess({
     ApiError, requireHuman, nameOf: id => id, people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
     isolatedFrom: me => ACTIVE.some(x => !(me.projects || []).includes(x)), loadProjectAdmins: async () => leaders, projectAdminsOf: pj => leaders[pj] || [],
     loadReadOnly: async () => readOnly, isReadOnly: () => false, titles: () => titles, visibilityOf: pj => vis[pj],
-  }).load(ctx);
+  });
+  const va = await visibilityAccess.load(ctx);
+  const joinDecisions = {};
+  for (const [projectAccess, action, project] of [[access, 'request_join', 'side'], [visibilityAccess, 'join_project', 'main']]) {
+    const scope = { project };
+    await assert.rejects(projectAccess.check(ctx, bot, action, scope), { status: 403, code: 'FORBIDDEN', message: '此操作僅限人類成員' });
+    joinDecisions[action] = {
+      viewCan: projectAccess.view({ people }).can(bot, action, scope),
+      accessCan: await projectAccess.can(ctx, bot, action, scope),
+    };
+    await projectAccess.check(ctx, loner, action, scope);
+  }
+  assert.deepStrictEqual(joinDecisions, {
+    request_join: { viewCan: false, accessCan: false },
+    join_project: { viewCan: false, accessCan: false },
+  }, 'AI 不能申請加入或直接加入專案');
   assert.ok(va.can(loner, 'discover_project', { project: 'main' }), '開放專案人人看得到');
   assert.ok(!va.can(member, 'discover_project', { project: 'side' }), '私人專案非成員看不到');
   assert.ok(!va.can(bot, 'discover_project', { project: 'side' }), 'AI 也看不到');

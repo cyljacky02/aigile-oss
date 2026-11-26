@@ -11,7 +11,7 @@
 // - 專案角色存在 project_members：admin＝專案管理員（工作區管理員有隱含權限，取較高者）、member＝專案成員、viewer＝唯讀成員
 // - 隱含權限不算成員資格：工作區管理員（含平台管理員）在沒加入的專案不列為成員，只有職稱也一樣（implicitOnlyIn）
 // - 唯讀成員的 AI 跟著唯讀；明確的唯讀成員跟隱含權限取較高者：升為工作區／平台管理員就能寫，他的 AI 也是（工作區管理員不能被設成唯讀成員）
-// - AI 不能做任何管理動作
+// - AI 不能做任何管理動作，也不能做標記為僅限人類的動作
 // - 敏感動作（動作表標 sensitive: true）：權限檢查通過後，還要這台裝置剛再驗證過（deps.requireRecentAuth 不行就丟錯；沒注入時不檢查）
 // - 成員名冊：工作區成員（含 AI）看得到工作區裡所有人（see_member）；已移出的人只有工作區管理員看得到（see_removed_members；待接受的邀請走 invite）
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
@@ -66,7 +66,7 @@ export const adminOf = people => {
   return [...people.values()].filter(p => p.kind === 'human' && p.status === 'active').sort(byJoined)[0] || null;
 };
 
-// 動作表。admin：管理動作（AI 一律不行）；human：check 時先擋 AI（回「僅限人類」）；light：只看唯讀名單，不必讀成員；
+// 動作表。admin：管理動作（僅限人類）；human：僅限人類（check 先回「僅限人類」）；light：只看唯讀名單，不必讀成員；
 // fresh：check 時重讀專案管理員名單與工作區設定（別份程式剛改過也算數）
 // rule(v, me, s)：v 是 load() 的判斷視圖，s 是整理過的範圍 { kind, project, target }
 // deny(d)：不行時回的錯誤（沒寫＝DENY.workspace）。d＝{ v, me, s, action, what, err(status, code, message), adminName(), nameOf, readOnly() }
@@ -77,7 +77,7 @@ const workspaceAdmin = (v, me) => v.roleIn(me, 'workspace') === R.WORKSPACE_ADMI
 const activeProjectAdmin = (v, me, s) => workspaceAdmin(v, me) || (v.active(s.project) && v.roleIn(me, s) === R.PROJECT_ADMIN);
 // 不能動對方的上層管理權：對象是平台管理員時，要是平台管理員才行（沒帶對象＝不看）
 const notAboveMe = (v, me, { target }) => !target || v.roleIn(target, 'platform') !== R.PLATFORM_ADMIN || platformAdmin(v, me);
-// 有效的人類（啟用中）。動作表的 human 旗標只在 check() 生效、can() 不看；要讓 can 與 check 對 AI 都回否的動作，規則本身要先問這個
+// 有效的人類（啟用中）。human 旗標只看身分種類，有啟用狀態要求的動作另外用這個判斷
 const activeHuman = me => !!me && me.kind === 'human' && me.status === 'active';
 // 建立專案申請的申請人本人：有效的人類工作區成員（沒被移出）；target＝申請人（沒帶＝問「自己的」）
 const ownRequest = (v, me, s) => activeHuman(me) && inWorkspace(me) && (!s.target || s.target.id === me.id);
@@ -122,7 +122,7 @@ const ACTIONS = {
     deny: d => (activeHuman(d.me) && d.v.membersRequestProjects() && d.v.roleIn(d.me, 'workspace') === R.MEMBER
       ? d.err(403, 'PROJECT_CREATION_REQUIRES_APPROVAL', '工作區政策是「成員申請，管理員核准」：請改送建立專案申請，由工作區管理員核准後建立。這次沒有建立專案，也沒有送出申請。')
       : DENY.workspace(d)) },
-  // 建立專案申請（docs/adr/0004）。規則本身要求有效的人類：can 與 check 對 AI 都回否（不靠只在 check 生效的 human 旗標）
+  // 建立專案申請（docs/adr/0004）。規則除了 human 旗標，也要求人類仍在啟用中
   // 送出：政策是 approval、有效的人類工作區成員、不具直接建立權（工作區管理員與平台管理員直接建立）。fresh：重讀工作區設定
   request_project_creation: { human: true, fresh: true, rule: (v, me) => activeHuman(me) && v.membersRequestProjects() && v.roleIn(me, 'workspace') === R.MEMBER,
     deny: d => (workspaceAdmin(d.v, d.me) ? d.err(403, 'CAN_CREATE_DIRECTLY', '你可以直接建立專案，不用送建立專案申請。')
@@ -268,7 +268,7 @@ export function createAccess(deps) {
       can(me, action, scope) {
         const def = ACTIONS[action];
         if (!def) throw new Error(`沒有這個權限動作：${action}`);
-        if (!me || (def.admin && me.kind !== 'human')) return false; // AI 不能做任何管理動作
+        if (!me || ((def.admin || def.human) && me.kind !== 'human')) return false;
         const s = scopeOf(scope);
         if (s.project && deps.isDeletedProject?.(s.project)) return false; // 可復原期內的專案：誰都不能對它做什麼
         return !!def.rule(v, me, s);
