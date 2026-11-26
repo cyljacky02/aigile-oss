@@ -55,13 +55,21 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   // 匯入中只認開始匯入的那位（備份的成員寫進來後，最早的人類會變成管理員，不能再用權限模組的管理員判斷）。
   // 收尾已經把登入轉到備份裡的管理員（restore_state.you）：認那位，而且只剩收尾能做（finishing）
   const holder = st => st.you || st.by;
+  // 回 { st, raw }：raw 是這次讀到的 restore_state 原字串。之後的寫入在交易內比對它（還是同一個階段），不再另外重讀
   const restorer = async (me, { finishing = false } = {}) => {
     requireHuman(me);
-    const st = await restoring();
-    if (!st || holder(st) !== me.id) throw new ApiError(409, 'NOT_RESTORING', '沒有你開始的匯入（先按匯入，restore/begin）');
+    const cur = await readState().catch(() => null);
+    const st = cur?.st;
+    if (!st || holder(st) !== me.id) throw notRestoring();
     if (st.you && !finishing) throw finishingError();
-    return st;
+    return cur;
   };
+  // restore_state 還是 raw（沒被收尾或別的匯入改過）：先鎖工作區列、再鎖 restore_state 這列（順序：工作區 → 其他），再斷言。
+  // 匯入到一半工作區列可能還不在（鎖不到任何東西），restore_state 這列的鎖一定在：跟收尾每一段的寫入排隊
+  const samePhaseStmts = raw => [lockWorkspaceStmt(DEFAULT_WORKSPACE), ['UPDATE app_settings SET value = value WHERE key = ?', [RESTORE_STATE_KEY]],
+    ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, raw])];
+  // 空站（跟 isEmpty 同一個定義）：開始匯入在交易內斷言
+  const emptyCond = `NOT EXISTS (SELECT 1 FROM participants WHERE id != ?) AND ${['messages', 'dms', 'cards', 'skills', 'docs'].map(t => `NOT EXISTS (SELECT 1 FROM ${t})`).join(' AND ')}`;
   const finishingError = () => new ApiError(409, 'RESTORE_FINISHING', '備份的資料已經匯入，只差收尾：請再按一次「完成匯入」（restore/finish）。');
   // restore_state 這一列：raw 是存的原字串（收尾比對「沒被別的收尾改過」用）
   const readState = async () => {
@@ -136,7 +144,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   // 開始：確認空站與版本 → 清掉新站自動建的資料 → 把你暫時改名（避免跟備份裡的同名成員撞）
   // 中途失敗可以再按一次（有 restore_state 時允許重來，會再清一次）
   route('POST', '/api/admin/restore/begin', async ({ ctx, me, req }) => {
-    const state = await restoring();
+    const cur = await readState().catch(() => null), state = cur?.st || null;
     if (state?.you && state.you === me.id) { requireHuman(me); throw finishingError(); } // 收尾已經開始（登入已轉移）：不能從頭來，只能重試收尾
     if (state?.by === me.id) requireHuman(me); else await adminOnly(ctx, me); // 中途失敗重來：開始匯入的那位可以再按
     const body = await readJson(req);
@@ -145,14 +153,25 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     if (String(body.appVersion).split('.')[0] !== APP_VERSION.split('.')[0]) throw new ApiError(400, 'BACKUP_MAJOR', `備份是 ${body.appVersion} 版，跟這個站（${APP_VERSION}）的主版本不同，不能直接匯入`);
     if (!state && !(await isEmpty(me))) throw new ApiError(409, 'NOT_EMPTY', '只有空站能匯入：這個站已經有其他成員、訊息、卡片、技能或文件。請在新架的站匯入。');
     if (state && holder(state) !== me.id) throw new ApiError(409, 'RESTORE_BY_OTHER', '別的管理員正在匯入');
-    // 第一句鎖工作區這列：跟建立專案、改名、政策更新排隊，清空時不會漏掉剛好同時寫入的（之後它們看得到 restore_state，回 503）
-    const stmts = [lockWorkspaceStmt(DEFAULT_WORKSPACE), ...[...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES].includes(t)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []])];
+    // 第一句鎖工作區這列：跟建立專案、改名、政策更新排隊，清空時不會漏掉剛好同時寫入的（之後它們看得到 restore_state，回 503）。
+    // 交易內再確認可以開始：第一次要是空站、沒有別的匯入；重來要是剛剛讀到的那個匯入（交易前的檢查只用來給明確的錯誤）
+    const stmts = [lockWorkspaceStmt(DEFAULT_WORKSPACE),
+      cur ? ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, cur.raw])
+        : ensureStmt(`NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?) AND ${emptyCond}`, [RESTORE_STATE_KEY, me.id]),
+      ...[...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES].includes(t)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []])];
     stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
     const orig = state ? { name: state.name, code: state.code } : { name: me.name, code: me.code }; // 重來時你已經是暫時的名字：用第一次記下的
     stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${orig.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
     stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: orig.name, code: orig.code, appVersion: body.appVersion })]]);
-    await db.batch(stmts);
+    try { await db.batch(stmts); } catch (e) {
+      if (!isAssertionFailure(e)) throw e;
+      // 用新鮮資料判斷原因（只用來產生回應）
+      const now = await restoring();
+      if (now && holder(now) !== me.id) throw new ApiError(409, 'RESTORE_BY_OTHER', '別的管理員正在匯入');
+      if (!now && !(await isEmpty(me))) throw new ApiError(409, 'NOT_EMPTY', '只有空站能匯入：這個站已經有其他成員、訊息、卡片、技能或文件。請在新架的站匯入。');
+      throw new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
+    }
     if (docStorage) for (const d of await db.all('SELECT id FROM docs')) await docStorage.delete(`docs/${d.id}`).catch(() => {}); // 上面已清表；這裡保險
     await clearCaches?.(); // 資料清空了：只清快取。成員、稽核等修整一律等收尾才做（資料還沒匯入）
     return { ok: true };
@@ -161,7 +180,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   // 第一階段之前的備份（成員沒有 workspace_id）：舊的 is_admin、projects 這版沒有欄位了，抄到 legacy_members，
   // 匯入完由成員資格的升級轉換（membership.migrateLegacy）轉成新表；原本的管理員先標成工作區管理員，結束匯入時才找得到他
   route('POST', '/api/admin/restore/rows', async ({ ctx, me, req }) => {
-    await restorer(me);
+    const { raw } = await restorer(me);
     const body = await readJson(req, 6 * 1024 * 1024); // file_chunks 一列 512 KB，base64 後約 700 KB
     const t = body.table;
     if (!EXPORT_TABLES.includes(t)) throw invalid('table 不在可匯入的清單');
@@ -193,8 +212,10 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       // 稽核紀錄跟這個站原本的合併：流水號重新編（不跟原本的撞），已經有的 id 略過（中途重來不重複）
       stmts.push([`INSERT${t === 'audit_log' ? ' OR IGNORE' : ''} INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})${t === 'app_settings' ? ' ON CONFLICT(key) DO UPDATE SET value = excluded.value' : ''}`, cols.map(c => row[c])]);
     }
+    // 每一批在交易內確認還在匯入（restore_state 還是這次讀到的）：收尾開始後才到的資料列不寫（收尾的修整與檢查看不到它們）
     for (let i = 0; i < stmts.length; i += 100) {
-      try { await db.batch(stmts.slice(i, i + 100)); } catch (e) {
+      try { await db.batch([...samePhaseStmts(raw), ...stmts.slice(i, i + 100)]); } catch (e) {
+        if (isAssertionFailure(e)) throw (await restoring())?.you ? finishingError() : notRestoring();
         if (ROW_CHECKS[t] && isConstraintViolation(e)) throw rowInvalid(t, null, ROW_INVALID_MSG.constraint);
         throw e;
       }
@@ -227,9 +248,10 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   //   3. 寫入 backup.restore 稽核（含檢查待審申請時因還原而取消的數量），跟解除「還原中」同一批（稽核只會有一筆）
   //   4. 清快取
   route('POST', '/api/admin/restore/finish', async ({ me }) => {
-    let state = await restorer(me, { finishing: true });
+    const started = await restorer(me, { finishing: true });
+    let state = started.st;
     try {
-      if (!state.you) state = await transferLogin(me, state);
+      if (!state.you) state = await transferLogin(me, started);
       await db.syncIds?.(); // Postgres：匯入時明寫了流水號，自動編號要接到最大號後面（SQLite／D1 會自己接，沒有這個方法）
       for (const step of restoreSteps) {
         const cur = await readState();
@@ -263,14 +285,14 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   });
   const notRestoring = () => new ApiError(409, 'NOT_RESTORING', '沒有你開始的匯入（先按匯入，restore/begin）');
   // 收尾第 1 步：你的登入改掛到備份裡的管理員，其他人類標要重設登入；跟 restore_state 記下「已轉移」（you、admin）同一批。
-  // 第一句鎖 restore_state 這列、再確認它沒被別的收尾改過：同時按兩次只轉一次。回記下之後的 restore_state
-  async function transferLogin(me, state) {
-    const { raw } = (await readState()) || {}; // 不見了：下面的比對不成立，回 409
+  // 先鎖工作區列與 restore_state 這列，再確認它還是這次收尾開始時讀到的值（state 就是從它來的）：同時按兩次只轉一次、不蓋掉別的收尾寫的值。
+  // 回記下之後的 restore_state
+  async function transferLogin(me, { st: state, raw }) {
     const rows = await db.all("SELECT * FROM participants WHERE id != ? AND kind = 'human' AND status = 'active'", me.id);
     const platform = await db.get("SELECT p.id FROM participants p JOIN accounts a ON a.id = p.account_id WHERE a.platform_role = 'admin' AND a.status = 'active' AND p.kind = 'human' AND p.status = 'active' AND p.id != ? ORDER BY p.created_at, p.id", me.id);
     const legacy = rows.filter(p => p.workspace_id === null || p.workspace_id === undefined); // 還沒轉的舊成員（is_admin 已標成工作區管理員）
     const target = platform ? rows.find(p => p.id === platform.id) : legacy.length ? adminOf(new Map(legacy.map(p => [p.id, p]))) : null;
-    const stmts = [['UPDATE app_settings SET value = value WHERE key = ?', [RESTORE_STATE_KEY]], ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, raw])];
+    const stmts = samePhaseStmts(raw);
     if (target) {
       for (const t of ['credentials', 'devices', 'account_notices']) stmts.push([`UPDATE ${t} SET participant_id = ? WHERE participant_id = ?`, [target.id, me.id]]);
       stmts.push(...membership.forgetStmts([me.id]), ['DELETE FROM participants WHERE id = ?', [me.id]]);

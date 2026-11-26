@@ -113,11 +113,16 @@ export function createProjectIdentity({ db, nowIso, waits }) {
       const items = rows.flatMap(r => [['slug:' + r.id, shown.slugs[r.id]], ['pcode:' + r.id, shown.codes[r.id]]])
         .filter(([k, v]) => stored.get(k) !== v).map(([k, v]) => ({ k, v, p: k.slice(k.indexOf(':') + 1) }));
       const conflicts = identityConflicts(rows, shown);
-      // 第一句工作區列鎖（跟建立、改名、改識別碼、開始匯入排隊）；確認快照之後專案與識別碼設定都沒變（數量一樣：
-      // 識別碼的寫入在正規化前都被擋下，會變的只有永久清除、開始匯入、新站自動建的預設專案），變了就重讀重算
+      // 第一句工作區列鎖（跟建立、改名、改識別碼、開始匯入排隊）；確認快照之後專案與識別碼設定都沒變，變了就重讀重算。
+      // 比的是值：數量一樣，而且現在每一列都在快照裡（專案的 id 與建立時間決定推導的順序；設定的 key 與 value）。
+      // 編碼是 key（或 id）＋'=' ＋值：key 與專案 id 不含 '='，所以不會把不同的兩列編成同一個字串
+      const projectKeys = JSON.stringify(rows.map(r => `${r.id}=${r.created_at ?? ''}`)), settingKeys = JSON.stringify(settings.map(r => `${r.key}=${r.value}`));
       const stmts = [lockWorkspaceStmt(DEFAULT_WORKSPACE),
         finishingRestore ? null : notRestoringStmt(),
-        ensureStmt(`(SELECT COUNT(*) FROM projects) = ? AND (SELECT COUNT(*) FROM app_settings WHERE ${SETTINGS_RANGE}) = ?`, [rows.length, settings.length]),
+        ensureStmt(`(SELECT COUNT(*) FROM projects) = ? AND (SELECT COUNT(*) FROM app_settings WHERE ${SETTINGS_RANGE}) = ?
+          AND NOT EXISTS (SELECT 1 FROM projects WHERE (id || '=' || COALESCE(created_at, '')) NOT IN (SELECT value FROM json_each(?)))
+          AND NOT EXISTS (SELECT 1 FROM app_settings WHERE (${SETTINGS_RANGE}) AND (key || '=' || value) NOT IN (SELECT value FROM json_each(?)))`,
+        [rows.length, settings.length, projectKeys, settingKeys]),
         items.length ? [`INSERT INTO app_settings (key, value) SELECT json_extract(value, '$.k'), json_extract(value, '$.v') FROM json_each(?)
           WHERE EXISTS (SELECT 1 FROM projects WHERE id = json_extract(value, '$.p')) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [JSON.stringify(items)]] : null,
         ['INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [IDENTITY_READY_KEY, JSON.stringify({ at: nowIso(), projects: rows.length, written: items.length, conflicts: conflicts.length })]]];
