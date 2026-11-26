@@ -268,6 +268,27 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('isolation_since', '1970-01-01T00:00:00.000Z');
 
+-- 專案識別碼的全站保留表。由應用程式與舊設定一併正規化（ADR 0006）。
+CREATE TABLE IF NOT EXISTS project_identity_claims (
+  namespace TEXT NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY (namespace, value),
+  CHECK ((namespace = 'slug' AND value = lower(value)) OR (namespace = 'code' AND value = upper(value)))
+);
+-- 保留每種來源。一個代號可以同時是同一專案的現行代號、舊代號；也可能有多個專案宣稱。
+-- 舊代號即使找不到對應的專案也保留，因此 project_id 不設專案外鍵。
+CREATE TABLE IF NOT EXISTS project_identity_claimants (
+  namespace TEXT NOT NULL,
+  value TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  raw_value TEXT NOT NULL,
+  PRIMARY KEY (namespace, value, project_id, source, raw_value),
+  FOREIGN KEY (namespace, value) REFERENCES project_identity_claims (namespace, value),
+  CHECK ((namespace = 'slug' AND source IN ('slug', 'project_id'))
+    OR (namespace = 'code' AND source IN ('current_code', 'historical_code')))
+);
+
 -- 新登入：邀請連結、裝置、6 位數配對碼
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
@@ -401,6 +422,17 @@ CREATE TABLE IF NOT EXISTS join_requests (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_join_pending ON join_requests (project, participant_id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_join_status ON join_requests (status, project);
 CREATE INDEX IF NOT EXISTS idx_join_person ON join_requests (participant_id, created_at);
+-- 專案範本是工作區的本機預設值，不是專案或建立專案申請的依賴。
+CREATE TABLE IF NOT EXISTS project_templates (
+  workspace_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 30),
+  visibility TEXT NOT NULL CHECK (visibility IN ('open', 'review', 'private')),
+  statuses_json TEXT NOT NULL,
+  retired_at TEXT,
+  PRIMARY KEY (workspace_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_templates_active ON project_templates (workspace_id, name, id) WHERE retired_at IS NULL;
 -- 建立專案申請（docs/adr/0004；migrations/015）：一般成員在 approval 政策下送出，審核人核准後才建立專案。申請不是專案，內容送出後不可修改；
 -- 只有 pending 可以轉換，四種終止狀態不可逆（src/project-creation-requests.js 的 transitionStmts）。沒有外鍵：專案清除、成員移出都不連帶刪除申請歷史
 CREATE TABLE IF NOT EXISTS project_creation_requests (

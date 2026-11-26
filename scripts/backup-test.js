@@ -98,6 +98,13 @@ try {
   assert.equal(kbPage.status, 201, '知識頁：' + JSON.stringify(kbPage.body));
   const att = await A.call(liu.token, `/api/files?name=note.txt&declared=true&project=${pj}`, 'POST', null, enc('附件內容'));
   assert.equal(att.status, 201, JSON.stringify(att.body));
+  const templates = '/api/workspace/project-templates';
+  const defaults = { visibility: 'private', statuses: [{ name: '排隊', category: '待處理' }, { name: '執行', category: '進行中' }, { name: '交件', category: '已完成' }] };
+  const activeTemplate = await A.call(liu.token, templates, 'POST', { name: '進行中的範本', ...defaults });
+  const retiredTemplate = await A.call(liu.token, templates, 'POST', { name: '要停用的範本', ...defaults });
+  assert.equal(activeTemplate.status, 201, JSON.stringify(activeTemplate.body));
+  assert.equal(retiredTemplate.status, 201, JSON.stringify(retiredTemplate.body));
+  assert.equal((await A.call(liu.token, `${templates}/${retiredTemplate.body.id}`, 'DELETE', { expected: retiredTemplate.body })).status, 200);
   await A.db.run("INSERT INTO app_settings (key, value) VALUES ('olink:p_x', '{\"h\":\"secret\"}')");
   // 建立專案申請：待審與已撤回各一份，原樣跟著備份走。政策是 approval、申請人是有效成員：還原後的待審檢查保留待審核
   await A.db.run("UPDATE workspaces SET create_projects = 'approval' WHERE id = 'default'");
@@ -119,6 +126,7 @@ try {
   assert.ok(backup.tables.messages.length > 620);
   for (const t of ['participants', 'projects', 'messages', 'cards', 'skills', 'app_settings', 'docs', 'files', 'kb_chunks', 'kb_pages']) assert.ok(backup.tables[t]?.length, '有 ' + t);
   for (const t of SKIP_TABLES) assert.equal(backup.tables[t], undefined, '不帶 ' + t);
+  for (const t of ['project_identity_claims', 'project_identity_claimants']) assert.ok(backup.tables[t], '備份保留爭議來源 ' + t);
   const text = JSON.stringify(backup);
   for (const tok of [liu.token, chen.token, aiTok]) assert.ok(!text.includes(tok), '不含 Token');
   assert.ok(!/pbkdf2/.test(text), '不含密碼雜湊');
@@ -155,9 +163,20 @@ try {
   assert.ok(!settingsDuringRestore.body.rows.some(r => r.key === 'project_roles'), '還原期間不初始化職稱設定');
   assert.equal((await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'participants', rows: backup.tables.participants })).status, 200);
   assert.equal((await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'devices', rows: [{}] })).status, 400, '不收登入用的表');
+  const [firstTemplate, secondTemplate] = backup.tables.project_templates;
+  const malformedStatuses = JSON.parse(secondTemplate.statuses_json);
+  malformedStatuses[0].name = 42; // 看板狀態驗證會轉成字串，但不能把原本的數字存進範本
+  const badTemplate = { ...secondTemplate, statuses_json: JSON.stringify(malformedStatuses) };
+  const malformed = await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'project_templates', rows: [firstTemplate, badTemplate] });
+  assert.equal(malformed.status, 400, JSON.stringify(malformed.body));
+  assert.equal(malformed.body.error.code, 'BACKUP_ROW_INVALID');
+  assert.equal((await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'project_templates', rows: [firstTemplate] })).body.inserted, 1, '不合法的批次沒有留下前一筆');
   const fin = await importAll(B, dev, backup);
   assert.equal(fin.status, 200, JSON.stringify(fin.body));
   assert.equal(fin.body.admin.name, '王小明', '管理員是備份裡的');
+  assert.equal(backup.tables.project_templates.length, 2, '備份含可用及已停用的範本');
+  assert.deepEqual((await B.call(dev, templates)).body.items, [activeTemplate.body], '只列出還原後仍可用的範本');
+  assert.equal((await B.call(dev, `${templates}/${retiredTemplate.body.id}`)).status, 404, '停用的範本還原後也不能選取');
 
   // 5. 資料一樣
   for (const t of ['participants', 'messages', 'cards', 'card_log', 'skills', 'docs', 'files', 'projects', 'kb_chunks', 'kb_pages', 'project_creation_requests']) {

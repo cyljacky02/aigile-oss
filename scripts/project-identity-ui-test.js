@@ -49,6 +49,11 @@ try {
   assert.ok(!(await js("!!document.querySelector('.ident-card')")), '沒有衝突就不顯示');
   console.log('✓ 沒有衝突就不顯示');
 
+  // 既有的網址英文名以及改網址英文名之前的專案 id 書籤都能開同一個專案。
+  for (const token of ['second', '第二專案']) {
+    await login(boss.token, `/p/${encodeURIComponent(token)}/messages`);
+    await until(() => js("document.querySelector('#crumbs')?.textContent.includes('第二專案')"), 10000, `開啟書籤 ${token}`);
+  }
   const post = (project, text) => kit.call(boss.token, '/api/messages', 'POST', { project, text, requestId: text });
   assert.equal((await post('預設專案', 'Route target one')).status, 201);
   assert.equal((await post('第二專案', 'Route target two')).status, 201);

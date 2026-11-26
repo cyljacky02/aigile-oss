@@ -17,7 +17,9 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pidrs-'));
 const db = await openTestDb(path.join(dir, 'switch.db'), { legacyProjects: false });
 let failReady = false; // 寫入「已正規化」標記的那批一律失敗
 const flaky = { ...db, batch: stmts => {
-  if (failReady && stmts.some(([sql, a]) => /VALUES/.test(sql) && (a || [])[0] === IDENTITY_READY_KEY)) return Promise.reject(new Error('模擬的資料庫寫入失敗'));
+  if (failReady && stmts.some(([sql, a]) => /VALUES/.test(sql) && (a || [])[0] === IDENTITY_READY_KEY)) {
+    return db.batch([...stmts, ["INSERT INTO project_identity_claims (namespace, value) VALUES ('invalid', 'FAIL')", []]]);
+  }
   return db.batch(stmts);
 } };
 const app = createApp({ db: flaky, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0' } });
@@ -48,6 +50,11 @@ const stored = async id => [(await db.get('SELECT value FROM app_settings WHERE 
 try {
   const me = (await call(null, '/api/join', 'POST', { name: '匯入的人', role: 'PO' })).body;
   assert.ok(await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', IDENTITY_READY_KEY), '這個站本來已正規化');
+  const readClaims = () => db.all('SELECT namespace, value FROM project_identity_claims ORDER BY namespace, value');
+  const oldClaims = await readClaims();
+  assert.ok(oldClaims.length > 0);
+  const exported = (await call(me.token, '/api/admin/backup')).body;
+  assert.ok(exported.tables.some(t => t.name === 'project_identity_claims') && exported.tables.some(t => t.name === 'project_identity_claimants'), '現代備份保留識別碼爭議來源');
   let r = await call(me.token, '/api/admin/restore/begin', 'POST', { format: backup.format, formatVersion: backup.formatVersion, appVersion: backup.appVersion });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   for (const [table, rows] of Object.entries(backup.tables)) {
@@ -62,6 +69,7 @@ try {
   assert.deepEqual([r.status, r.body.error?.code], [503, 'RESTORE_UNFINISHED'], JSON.stringify(r.body));
   assert.ok(await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'"), '維持還原中');
   assert.deepEqual(await stored(A), [undefined, undefined], '沒有寫入一半');
+  assert.deepEqual(await readClaims(), [], '還原失敗維持匯入目的站的保留表為空，不留下部分備份來源');
   failReady = false;
   r = await call(me.token, '/api/admin/restore/finish', 'POST', {});
   assert.equal(r.status, 200, '再按一次收尾：' + JSON.stringify(r.body));
@@ -78,6 +86,9 @@ try {
   assert.equal((await call(tok, '/api/cards/SITE-7')).body.cardId, 'WEBS-7', '舊代號連結照舊');
   const d = (await call(tok, '/api/admin/project-identity')).body;
   assert.deepEqual([d.normalized, d.conflicts], [true, []], '診斷：已正規化、沒有衝突');
+  assert.deepEqual(d.claims, { status: 'current', disputes: [] });
+  const restoredClaims = (await readClaims()).map(r => r.namespace + ':' + r.value);
+  assert.deepEqual(restoredClaims, ['code:MAIN', 'code:SECO', 'code:SITE', 'code:WEBS', 'slug:main', 'slug:p_web', 'slug:second', 'slug:website', 'slug:第二專案', 'slug:預設專案']);
   // 還原後建立專案照常（不會撞到備份裡的代號）
   const n = await call(tok, '/api/projects', 'POST', { name: 'Website Two', code: 'WEBS' });
   assert.deepEqual([n.status, n.body.error?.code], [409, 'CODE_TAKEN'], JSON.stringify(n.body));

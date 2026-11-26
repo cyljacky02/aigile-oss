@@ -139,6 +139,7 @@ try {
   const files = listMigrations(path.join(repoRoot, 'migrations'));
   const PCR_MIGRATION = files.find(f => /_project_creation_requests\.sql$/.test(f.name))?.name;
   const ACTOR_MIGRATION = files.find(f => /_account_review_actors\.sql$/.test(f.name))?.name;
+  const CLAIMS_MIGRATION = '016_project_identity_claims.sql';
   const migrate = (d, label) => {
     const tables = d.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('participants', 'schema_migrations')").map(r => r.name);
     const fresh = !tables.includes('participants');
@@ -185,13 +186,13 @@ try {
     assert.ok(ACTOR_MIGRATION);
     checkReviewActors(A, '全新 D1 的帳號審核與稽核');
     // 還原 015 的資料表，再確認 018 保留既有的 participant 審核紀錄。
-    A.exec(`DROP TABLE project_creation_requests; ALTER TABLE audit_log DROP COLUMN actor_account_id; DELETE FROM schema_migrations WHERE name = '${ACTOR_MIGRATION}'; ${files.find(f => f.name === PCR_MIGRATION).sql}`, { label: '模擬舊 D1' });
+    A.exec(`DROP TABLE project_identity_claimants; DROP TABLE project_identity_claims; DROP TABLE project_creation_requests; ALTER TABLE audit_log DROP COLUMN actor_account_id; DELETE FROM schema_migrations WHERE name IN ('${CLAIMS_MIGRATION}', '${ACTOR_MIGRATION}'); ${files.find(f => f.name === PCR_MIGRATION).sql}`, { label: '模擬舊 D1' });
     const oldDecision = `INSERT INTO project_creation_requests (id, workspace_id, requester_id, request_id, name, reason, state, created_at, ended_at, ended_by, reject_reason)
       VALUES ('pcr_legacy', 'default', 'p_requester', 'legacy', 'Legacy', 'Request', 'rejected', 't', 't', 'p_reviewer', 'Reason')`;
     A.exec(`${oldDecision}; INSERT INTO audit_log (id, at, actor_kind, actor_id, action, scope_kind, workspace_id)
       VALUES ('aud_legacy', 't', 'human', 'p_reviewer', 'project_creation_request.reject', 'workspace', 'default')`, { label: '舊審核與稽核紀錄' });
     const up = migrate(A, '舊 D1');
-    assert.deepEqual(up.plan.apply.map(f => f.name), [ACTOR_MIGRATION]);
+    assert.deepEqual(up.plan.apply.map(f => f.name), [CLAIMS_MIGRATION, ACTOR_MIGRATION]);
     assert.deepEqual(structure(A), fresh, '升級後的表、欄位、索引跟全新建的一樣');
     assert.deepEqual(A.query("SELECT ended_by, ended_by_account_id FROM project_creation_requests WHERE id = 'pcr_legacy'")[0], { ended_by: 'p_reviewer', ended_by_account_id: null });
     assert.deepEqual(A.query("SELECT actor_id, actor_account_id, actor_kind, workspace_id FROM audit_log WHERE id = 'aud_legacy'"),
@@ -200,7 +201,7 @@ try {
     A.exec("DELETE FROM project_creation_requests WHERE id = 'pcr_legacy'; DELETE FROM audit_log WHERE id = 'aud_legacy'", { label: '清理升級測試資料' });
     const again = migrate(A, '重跑');
     assert.deepEqual(again.plan.apply, [], '重跑沒有要套的升級（可安全重跑）');
-    note(`升級 ${files.length} 個；舊 D1 套 ${ACTOR_MIGRATION}`);
+    note(`升級 ${files.length} 個。舊 D1 套用 ${CLAIMS_MIGRATION} 與 ${ACTOR_MIGRATION}`);
   });
   if (!migrated) blocked = '資料庫升級沒過';
 
@@ -502,6 +503,12 @@ try {
     const diag = ok(await a.call(boss.token, '/api/admin/project-identity'), '診斷');
     assert.equal(diag.normalized, true);
     assert.ok(diag.conflicts.some(c => c.kind === 'duplicate_slug' && c.value === 'legacy-site'), '診斷列出既有的網址英文名衝突：' + JSON.stringify(diag.conflicts));
+    assert.deepEqual(diag.claims, { status: 'stale', disputes: [{ namespace: 'slug', value: 'legacy-site', claimants: [
+      { projectId: 'p_legacy_a', source: 'slug', rawValue: 'legacy-site' }, { projectId: 'p_legacy_b', source: 'slug', rawValue: 'legacy-site' },
+    ] }] }, '保留所有爭議來源，建立專案的舊寫入後標為過時');
+    assert.equal(await a.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE project_id = 'p_legacy_a' AND source IN ('historical_code', 'project_id')"), 2);
+    const duplicate = await a.batch([["INSERT INTO project_identity_claims (namespace, value) VALUES ('slug', 'legacy-site')", []]]);
+    assert.match(duplicate.error, /UNIQUE constraint failed/i, JSON.stringify(duplicate));
     const preview = (token, field, replacement, options = {}) => a.call(token, '/api/admin/project-identity/preview', 'POST', { projectId: 'p_legacy_a', field, replacement, ...options });
     const plan = ok(within('修復預覽', await preview(boss.token, 'slug', 'legacy-alpha')), '修復預覽');
     assert.deepEqual(plan.routes.map(r => [r.path, r.before?.projectId, r.after?.projectId]), [
@@ -619,6 +626,12 @@ try {
       ok(within(`匯入 ${t}`, await b.call(admin.token, '/api/admin/restore/rows', 'POST', { table: t, rows: rows.slice(i, i + 1000) })), '匯入 ' + t);
       if (!rows.length) break;
     }
+    const claimsBefore = await b.q('SELECT namespace, value FROM project_identity_claims ORDER BY namespace, value');
+    await b.fault({ re: /^INSERT INTO project_identity_claimants /.source, mode: 'json', times: 1 });
+    is(await b.call(admin.token, '/api/admin/restore/finish', 'POST', {}), 503, 'RESTORE_UNFINISHED', '保留表寫入後失敗');
+    assert.equal((await b.faultStatus()).hits, 1);
+    assert.deepEqual(await b.q('SELECT namespace, value FROM project_identity_claims ORDER BY namespace, value'), claimsBefore, '新保留表整批回復');
+    assert.equal(await b.n("SELECT COUNT(*) AS n FROM app_settings WHERE key = 'project_identity_ready'"), 0, '沒有留下完成標記');
     const fin = within('還原收尾', await b.call(admin.token, '/api/admin/restore/finish', 'POST', {}));
     assert.equal(fin.status, 200, '收尾：' + fin.text.slice(0, 300));
     assert.equal(fin.body.cancelledProjectCreationRequests, 3, '收尾回應：因還原而取消 3 份');
@@ -634,6 +647,7 @@ try {
     assert.equal(Number(audit[0].count), 3, '稽核記下因還原而取消的數量');
     assert.ok(await b.one("SELECT 1 AS x FROM app_settings WHERE key = 'project_identity_ready'"), '收尾後已正規化');
     assert.ok(await b.one("SELECT value FROM app_settings WHERE key = 'pcode:p_legacy_a'"), '拿掉的代號在收尾時重新存進資料庫');
+    assert.equal(await b.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE namespace = 'slug' AND value = 'legacy-site' AND source = 'slug'"), 2, '重建爭議識別碼及來源');
     assert.equal(await b.n("SELECT COUNT(*) AS n FROM app_settings WHERE key = 'restore_state'"), 0, '不再是還原中');
     // 還原後照常運作：（登入已改掛到備份裡的平台管理員）有效的那份可以核准
     const ap = await b.call(admin.token, `/api/project-creation-requests/${keep.id}/approve`, 'POST', {});
@@ -643,21 +657,25 @@ try {
   });
 
   await check('D1-11', '加入申請核准／拒絕：通知寫入失敗時整批回滾，重試後只生效一次', async () => {
-    const member = await join(a, '加入申請測試者');
-    const project = ok(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 加入申請', visibility: 'review' }), '建立審核專案');
+    // 用新的 Worker 程序重設 per-participant request limiter，避免前面壓力測試累積的次數污染此案例。
+    const worker = await A.dev({ vars: VARS });
+    running.push(worker);
+    const joinSite = site(worker.base, TOKEN);
+    const member = await join(joinSite, '加入申請測試者');
+    const project = ok(await joinSite.call(boss.token, '/api/projects', 'POST', { name: 'D1 加入申請', visibility: 'review' }), '建立審核專案');
     assert.ok(project.id);
     const p = `/api/projects/${encodeURIComponent(project.id)}`;
-    const pending = async id => ok(await a.call(boss.token, '/api/join-requests'), '待審清單').items.some(item => item.id === id);
-    const membership = async () => ok(await a.call(boss.token, p + '/members'), '成員清單').members.find(item => item.participantId === member.id);
-    const events = async () => ok(await a.call(boss.token, p + '/events'), '專案事件').items.filter(item => item.text.includes(member.name));
-    const notices = async kind => ok(await a.call(member.token, '/api/me/notices'), '帳號通知').items.filter(item => item.kind === kind);
+    const pending = async id => ok(await joinSite.call(boss.token, '/api/join-requests'), '待審清單').items.some(item => item.id === id);
+    const membership = async () => ok(await joinSite.call(boss.token, p + '/members'), '成員清單').members.find(item => item.participantId === member.id);
+    const events = async () => ok(await joinSite.call(boss.token, p + '/events'), '專案事件').items.filter(item => item.text.includes(member.name));
+    const notices = async kind => ok(await joinSite.call(member.token, '/api/me/notices'), '帳號通知').items.filter(item => item.kind === kind);
     for (const action of ['reject', 'approve']) {
-      const request = ok(await a.call(member.token, p + '/join-requests', 'POST', { note: 'D1 驗證' }), '送加入申請');
-      const decide = () => a.call(boss.token, `/api/join-requests/${request.id}/${action}`, 'POST', { reason: '請再試一次', role: 'UX', readOnly: true });
+      const request = ok(await joinSite.call(member.token, p + '/join-requests', 'POST', { note: 'D1 驗證' }), '送加入申請');
+      const decide = () => joinSite.call(boss.token, `/api/join-requests/${request.id}/${action}`, 'POST', { reason: '請再試一次', role: 'UX', readOnly: true });
       const kind = action === 'approve' ? 'join_approved' : 'join_rejected';
-      await a.fault({ re: '^INSERT INTO account_notices ', mode: 'json' });
+      await joinSite.fault({ re: '^INSERT INTO account_notices ', mode: 'json' });
       const failed = await decide();
-      assert.equal((await a.faultStatus()).hits, 1);
+      assert.equal((await joinSite.faultStatus()).hits, 1);
       assert.equal(failed.status, 500, failed.text.slice(0, 200));
       assert.equal(await pending(request.id), true);
       assert.equal(await membership(), undefined);
@@ -669,7 +687,98 @@ try {
     }
     const joined = await membership();
     assert.deepEqual([joined.role, joined.title], ['viewer', 'UX']);
-    assert.equal((await events()).filter(item => item.text.includes('核准')).length, 1);
+    assert.equal((await events()).filter(item => item.text.includes('核准')).length, 1);  });
+
+  await check('D1-12', '大量識別碼：26,000 個既有專案，逐頁正規化', async note => {
+    const C = localD1({ wrangler, tmpRoot, repoRoot, name: 'site-large', main });
+    migrate(C, '大量專案站');
+    const w = await C.dev({ vars: VARS });
+    running.push(w);
+    const c = site(w.base, TOKEN), total = 26_000;
+    assert.deepEqual(await c.batch([
+      [`WITH RECURSIVE nums(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM nums WHERE n < ?)
+        INSERT INTO projects (id, name, archived, created_at) SELECT 'legacy-網址英文名專案-' || n, 'Legacy ' || n, 1, '2026-01-01T00:00:00.000Z' FROM nums`, [total]],
+      [`WITH RECURSIVE nums(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM nums WHERE n < ?)
+        INSERT INTO app_settings (key, value) SELECT 'pcode:legacy-網址英文名專案-' || n,
+          char(65+(n/17576)%26, 65+(n/676)%26, 65+(n/26)%26, 65+n%26) FROM nums`, [total]],
+      ["INSERT INTO app_settings (key, value) SELECT 'slug:' || id, id FROM projects WHERE rowid % 2 = 0", []],
+    ]), { ok: true });
+    const boot = await c.call(null, '/api/health');
+    assert.equal(boot.status, 200, boot.text.slice(0, 200));
+    assert.equal(await c.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE source = 'project_id'"), total);
+    assert.equal(await c.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE source = 'slug'"), total);
+    assert.equal(await c.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE source = 'current_code'"), total);
+    assert.ok(await c.one("SELECT value FROM app_settings WHERE key = 'project_identity_ready'"));
+    note(`${total} 個專案全部寫入保留表`);
+  });
+
+  await check('D1-13', '專案範本：選取本機預設值、停用後仍可依送出的內容核准', async () => {
+    // 使用獨立的 Worker 程序，避免前面壓力測試累積的請求次數影響範本測試。
+    const worker = await A.dev({ vars: VARS });
+    running.push(worker);
+    const templateSite = site(worker.base, TOKEN);
+    const base = '/api/workspace/project-templates';
+    const draft = { name: '交付流程', visibility: 'private', statuses: THREE };
+    const t = ok(within('新增範本', await templateSite.call(boss.token, base, 'POST', draft)), '新增範本');
+    const selected = ok(within('選取範本', await templateSite.call(chen.token, `${base}/${t.id}`)), '選取範本');
+    assert.equal(selected.visibility, 'private');
+    const q = ok(await templateSite.call(chen.token, '/api/project-creation-requests', 'POST', {
+      requestId: 'd1-template-snapshot', name: 'D1 範本申請', reason: '驗證選取範本', visibility: selected.visibility, statuses: selected.statuses,
+    }), '送出範本申請');
+    const edited = ok(within('修改範本', await templateSite.call(boss.token, `${base}/${t.id}`, 'PUT', { ...draft, visibility: 'open', expected: t })), '修改範本');
+    ok(within('停用範本', await templateSite.call(boss.token, `${base}/${t.id}`, 'DELETE', { expected: edited })), '停用範本');
+    assert.equal((await templateSite.call(chen.token, `${base}/${t.id}`)).status, 404, '不能再選取');
+    const resolved = ok(await templateSite.call(boss.token, `/api/project-creation-requests/${q.id}/approve`, 'POST', {}), '核准');
+    const projects = ok(await templateSite.call(chen.token, '/api/projects'), '查看建立結果');
+    const p = projects.items.find(p => p.id === resolved.project.id);
+    assert.equal(p.visibility, 'private');
+    assert.deepEqual(p.statuses.map(s => s.name), THREE.map(s => s.name));
+  });
+
+  await check('D1-14', '升級範本表前可匯出及匯入舊備份，升級後可匯出及匯入範本', async () => {
+    const siteOld = localD1({ wrangler, tmpRoot, repoRoot, name: 'site-before-templates', main });
+    migrate(siteOld, '匯入相容性測試');
+    const templateMigration = files.find(f => /_project_templates\.sql$/.test(f.name)).name;
+    siteOld.exec(`DROP TABLE project_templates; DELETE FROM schema_migrations WHERE name = '${templateMigration}'`, { label: '模擬舊 D1' });
+    const worker = await siteOld.dev({ vars: VARS });
+    running.push(worker);
+    const old = site(worker.base, TOKEN);
+    const admin = await defaultAdmin(old, 'd1oldtemplate');
+    const backup = ok(await old.call(admin.token, '/api/admin/backup'), '舊 D1 仍可匯出');
+    assert.equal(backup.empty, true);
+    assert.ok(!backup.tables.some(t => t.name === 'project_templates'));
+    const { format, formatVersion, appVersion } = backup, header = { format, formatVersion, appVersion };
+    const destinationRows = {};
+    for (const table of ['workspaces', 'accounts', 'participants']) {
+      destinationRows[table] = ok(await old.call(admin.token, `/api/admin/backup/rows?table=${table}`), `匯出 ${table}`).rows;
+    }
+    is(await old.call(admin.token, '/api/admin/restore/begin', 'POST', header), 200, null, '舊 D1 能開始匯入');
+    is(await old.call(admin.token, '/api/admin/restore/rows', 'POST', { table: 'project_templates', rows: [{ id: 'saved' }] }), 503, 'PROJECT_TEMPLATES_NOT_READY', '尚不能匯入範本列');
+    const legacyWorkspaces = destinationRows.workspaces.map(row => ({ ...row, name: '舊備份的工作區' }));
+    ok(await old.call(admin.token, '/api/admin/restore/rows', 'POST', { table: 'workspaces', rows: legacyWorkspaces }), '舊備份可匯入工作區');
+    ok(await old.call(admin.token, '/api/admin/restore/finish', 'POST', {}), '未升級也能完成舊備份匯入');
+    assert.deepEqual(await old.one('SELECT name FROM workspaces WHERE id = ?', legacyWorkspaces[0].id), { name: '舊備份的工作區' });
+    await worker.stop();
+    assert.deepEqual(migrate(siteOld, '升級範本表').plan.apply.map(f => f.name), [templateMigration]);
+    const upgraded = await siteOld.dev({ vars: VARS });
+    running.push(upgraded);
+    const dest = site(upgraded.base, TOKEN);
+    const templateWorker = await A.dev({ vars: VARS });
+    running.push(templateWorker);
+    const sourceSite = site(templateWorker.base, TOKEN);
+    const base = '/api/workspace/project-templates';
+    const template = ok(await sourceSite.call(boss.token, base, 'POST', { name: '備份範本', visibility: 'private', statuses: THREE }), '來源工作區新增範本');
+    const source = ok(await sourceSite.call(boss.token, '/api/admin/backup/rows?table=project_templates'), '來源工作區匯出範本');
+    const saved = source.rows.find(r => r.id === template.id);
+    ok(await dest.call(admin.token, '/api/admin/restore/begin', 'POST', header), '升級後可重新開始匯入');
+    for (const [table, rows] of Object.entries({ ...destinationRows, project_templates: [saved] })) {
+      ok(await dest.call(admin.token, '/api/admin/restore/rows', 'POST', { table, rows }), `匯入 ${table}`);
+    }
+    ok(await dest.call(admin.token, '/api/admin/restore/finish', 'POST', {}), '升級後完成匯入');
+    const after = ok(await dest.call(admin.token, '/api/admin/backup'), '升級後可匯出');
+    assert.ok(after.tables.some(t => t.name === 'project_templates' && Number(t.count) === 1));
+    assert.deepEqual(ok(await dest.call(admin.token, `${base}/${template.id}`), '可選取還原後的範本'), template);
+    is(await dest.call(admin.token, '/api/admin/restore/begin', 'POST', header), 409, 'NOT_EMPTY', '舊備份不能清除剛還原的範本');
   });
 
   if (usage.length) {
