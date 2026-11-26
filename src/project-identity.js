@@ -17,6 +17,20 @@ export const SLUG_DEFAULT = { '預設專案': 'main', '第二專案': 'second' }
 // 「已正規化」的標記（app_settings）：不跟著備份搬（backup.js skipSetting），開始匯入時跟著清掉，還原收尾一定重新正規化
 export const IDENTITY_READY_KEY = 'project_identity_ready';
 const SETTINGS_RANGE = "(key >= 'pcode:' AND key < 'pcode;') OR (key >= 'pcodeold:' AND key < 'pcodeold;') OR (key >= 'slug:' AND key < 'slug;')";
+
+export function identitySnapshotStmts({ rows, settings }) {
+  return [
+    ensureStmt(`(SELECT COUNT(*) FROM projects) = ? AND (SELECT COUNT(*) FROM app_settings WHERE ${SETTINGS_RANGE}) = ?`, [rows.length, settings.length]),
+    ...Array.from(jsonPages(rows), ([json, count]) => ensureStmt(`(SELECT COUNT(*) FROM (SELECT value FROM json_each(?)) AS r
+      JOIN projects p ON p.id = json_extract(r.value, '$.id') AND p.name = json_extract(r.value, '$.name')
+        AND p.archived = CAST(json_extract(r.value, '$.archived') AS INTEGER) AND p.created_at = json_extract(r.value, '$.created_at')
+        AND NOT EXISTS (SELECT p.deleted_at EXCEPT SELECT json_extract(r.value, '$.deleted_at'))) = ?`, [json, count])),
+    ...settingSnapshotStmts(settings),
+  ];
+}
+const settingSnapshotStmts = settings => Array.from(jsonPages(settings), ([json, count]) => ensureStmt(`(SELECT COUNT(*) FROM
+  (SELECT json_extract(value, '$.key') AS key, json_extract(value, '$.value') AS value FROM json_each(?)) AS snapshot
+  JOIN app_settings s ON s.key = snapshot.key AND s.value = snapshot.value) = ?`, [json, count]));
 const letter = n => String.fromCharCode(65 + (n % 26));
 
 // 識別碼設定列 → { codes: 專案→存的代號, slugs: 專案→存的網址英文名, olds: 舊代號→專案 }
@@ -89,12 +103,23 @@ export const ownIdentityFreeCond = (id, claimWrites = false) => andCondition({
     AND NOT EXISTS (SELECT 1 FROM app_settings m JOIN projects o ON lower(o.id) = m.value AND o.id != ? WHERE m.key = ?)`,
   args: ['pcode:' + id, id, 'pcode:' + id, 'slug:' + id, id, 'slug:' + id] }, claimWrites && recoverableProjectClaims(id));
 export const ensureCond = c => ensureStmt(c.cond, c.args);
+// Ordinary edits cannot remove a live claimant from an ambiguous reference.
+export const unambiguousCodeCond = (code, id) => ({
+  cond: `NOT EXISTS (SELECT 1 FROM app_settings WHERE key >= 'pcode:' AND key < 'pcode;' AND value = ? AND key != ?)
+    AND NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value != ?)`,
+  args: [code, 'pcode:' + id, 'pcodeold:' + code, id],
+});
+export const unambiguousSlugCond = (slug, id) => ({
+  cond: `NOT EXISTS (SELECT 1 FROM app_settings WHERE key >= 'slug:' AND key < 'slug;' AND lower(value) = ? AND key != ?)
+    AND NOT EXISTS (SELECT 1 FROM projects WHERE lower(id) = ? AND id != ?)`,
+  args: [routeToken(slug), 'slug:' + id, routeToken(slug), id],
+});
 // 用新鮮資料看條件現在成不成立（斷言失敗後判斷原因用）
 export const holdsNow = async (db, c) => !!(await db.get(`SELECT 1 AS x WHERE ${c.cond}`, ...c.args));
 
 // ---------- 既有衝突的診斷 ----------
 // rows：所有專案（含封存、可復原期內）；shown：displayedIdentity 的結果。回 [{ kind, value, projects: [id…] }]
-export const CONFLICT_KINDS = ['duplicate_code', 'code_is_old_alias', 'duplicate_slug', 'duplicate_name'];
+export const CONFLICT_KINDS = ['duplicate_code', 'code_is_old_alias', 'duplicate_slug', 'slug_is_project_id', 'duplicate_name'];
 export function identityConflicts(rows, shown) {
   const out = [], ids = new Set(rows.map(r => r.id));
   const dup = (kind, keyOf, list = rows) => {
@@ -112,13 +137,24 @@ export function identityConflicts(rows, shown) {
     const code = shown.codes[r.id], owner = shown.olds[code];
     if (code && owner !== undefined && owner !== r.id) out.push({ kind: 'code_is_old_alias', value: code, projects: [r.id, ...(ids.has(owner) ? [owner] : [])] });
   }
-  dup('duplicate_slug', r => shown.slugs[r.id]);
+  dup('duplicate_slug', r => routeToken(shown.slugs[r.id]));
+  const routeIds = new Map();
+  for (const { id } of rows) {
+    const token = routeToken(id);
+    if (!routeIds.has(token)) routeIds.set(token, []);
+    routeIds.get(token).push(id);
+  }
+  for (const { id } of rows) {
+    const value = routeToken(shown.slugs[id]);
+    const others = (routeIds.get(value) ?? []).filter(other => other !== id);
+    if (others.length) out.push({ kind: 'slug_is_project_id', value, projects: [id, ...others] });
+  }
   dup('duplicate_name', r => r.name, rows.filter(r => !Number(r.archived) && !r.deleted_at));
   return out;
 }
 
 // D1 限制單一綁定值的位元組數。逐頁綁定，完整斷言與寫入仍用同一批交易。
-function* jsonPages(rows) {
+export function* jsonPages(rows) {
   const limit = 512 * 1024, encoder = new TextEncoder();
   let page = [], bytes = 2;
   for (const row of rows) {
@@ -166,7 +202,6 @@ export function createProjectIdentity({ db, nowIso, waits }) {
       // 第一句工作區列鎖（跟建立、改名、改識別碼、開始匯入排隊）；確認快照之後專案與識別碼設定都沒變，變了就重讀重算。
       // 逐頁比對每個主鍵與值，再比總列數。建案時間決定代號推導的順序。
       const projectKeys = jsonPages(rows.map(r => ({ id: r.id, at: r.created_at })));
-      const settingKeys = jsonPages(settings);
       const stmts = [lockWorkspaceStmt(DEFAULT_WORKSPACE),
         finishingRestore ? ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, restoreRaw]) : notRestoringStmt(),
         // 別的執行個體先做完時，重讀標記。舊程式之後的寫入可能讓快照過時，不能在每次啟動時洗掉爭議來源。
@@ -177,9 +212,7 @@ export function createProjectIdentity({ db, nowIso, waits }) {
         ...Array.from(projectKeys, ([json, count]) => ensureStmt(`(SELECT COUNT(*) FROM
           (SELECT json_extract(value, '$.id') AS id, json_extract(value, '$.at') AS at FROM json_each(?)) AS snapshot
           JOIN projects p ON p.id = snapshot.id AND p.created_at = snapshot.at) = ?`, [json, count])),
-        ...Array.from(settingKeys, ([json, count]) => ensureStmt(`(SELECT COUNT(*) FROM
-          (SELECT json_extract(value, '$.key') AS key, json_extract(value, '$.value') AS value FROM json_each(?)) AS snapshot
-          JOIN app_settings s ON s.key = snapshot.key AND s.value = snapshot.value) = ?`, [json, count])),
+        ...settingSnapshotStmts(settings),
         ...Array.from(jsonPages(items), ([json]) => [`INSERT INTO app_settings (key, value) SELECT json_extract(value, '$.k'), json_extract(value, '$.v') FROM json_each(?)
           WHERE EXISTS (SELECT 1 FROM projects WHERE id = json_extract(value, '$.p')) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [json]]),
         ...seedClaimsStmts({ keepDisputes: finishingRestore && keepDisputes }),

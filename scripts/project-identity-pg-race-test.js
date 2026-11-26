@@ -90,6 +90,36 @@ try {
     assert.equal(Number((await a.get("SELECT COUNT(*) AS n FROM app_settings WHERE key >= 'pcode:' AND key < 'pcode;' AND value = 'RACE'")).n), 1, '只有一個專案用 RACE');
     assert.equal((await a.get("SELECT value FROM app_settings WHERE key = 'pcode:第二專案'")).value, 'SECO', '第二專案的代號沒改');
     console.log('✓ Postgres：直接建立與另一個連線改代號搶同一個代號，後做的等前一個做完後 409');
+
+    // Pause after checking a missing lookup. Both ordinary table writers must wait until the repair commits.
+    await a.run("UPDATE app_settings SET value = 'MAIN' WHERE key = 'pcode:第二專案'");
+    const endpoint = '/api/admin/project-identity';
+    const proposal = { projectId: '第二專案', field: 'code', replacement: 'SECO', reference: 'SECO-99' };
+    const preview = await call1(boss.token, `${endpoint}/preview`, 'POST', proposal);
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.cardReferences.find(r => r.code === 'SECO').examples[0].after, null);
+    const confirmation = { ...proposal, state: preview.body.state, resolutionState: preview.body.resolutionState, acknowledged: true };
+    const confirm = () => call1(boss.token, `${endpoint}/confirm`, 'POST', confirmation);
+    await ctl.query('SELECT pg_advisory_lock($1)', [++key]);
+    g1.pause = { re: /AS w WHERE EXISTS/, key };
+    const repair = confirm();
+    const writers = [];
+    try {
+      await until(() => lockWait('%pg_advisory_xact_lock%'), 10000, '修復已完成參照斷言');
+      writers.push(b.run("INSERT INTO cards (uid, title, project, proj_no, created_by, created_at, updated_at) VALUES ('repair-71-missing', 'Late card', '第二專案', 99, 'system', '2026-01-01', '2026-01-01')"));
+      writers.push(b.run("INSERT INTO app_settings (key, value) VALUES ('cardmoved:第二專案:99', '1')"));
+      let committed = 0;
+      for (const writer of writers) void writer.then(() => { committed++; }, () => {});
+      await until(async () => committed > 0 || (await lockWait('%INSERT INTO cards%repair-71-missing%') && await lockWait('%INSERT INTO app_settings%cardmoved:第二專案:99%')), 10000, '卡片與移卡別名的插入等待修復');
+      assert.equal(committed, 0, '不能在確認斷言以後、提交以前新增卡片或移卡別名');
+    } finally {
+      await ctl.query('SELECT pg_advisory_unlock($1)', [key]);
+      await Promise.allSettled([repair, ...writers]);
+    }
+    assert.equal((await repair).status, 200);
+    await Promise.all(writers);
+    assert.equal((await call2(boss.token, '/api/cards/SECO-99')).body.title, 'Late card');
+    console.log('✓ Postgres：修復檢查後至提交前，未出現的卡片與移卡別名不能插入');
   }
   console.log('project-identity-pg-race-test：全部通過');
 } catch (e) {
