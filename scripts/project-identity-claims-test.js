@@ -42,6 +42,24 @@ try {
     ["INSERT INTO app_settings (key, value) VALUES ('slug:a','legacy-web'), ('slug:Legacy-Web','website'), ('slug:tomb','dead'), ('pcode:a','CLSH'), ('pcode:Legacy-Web','WEBS'), ('pcode:tomb','DEAD'), ('pcodeold:CLSH','Legacy-Web'), ('pcodeold:SITE','Legacy-Web'), ('pcodeold:WEBS','Legacy-Web')", []],
     ["INSERT INTO cards (uid, title, project, proj_no, created_by, created_at, updated_at) VALUES ('fixture-c1', 'Canonical card', 'a', 1, 'system', ?, ?), ('fixture-c2', 'Historical card', 'Legacy-Web', 1, 'system', ?, ?)", [at, at, at, at]],
   ]);
+  const beforeMigration = site(db);
+  ok(await beforeMigration(null, '/api/health'));
+  const projects = ok(await beforeMigration(admin, '/api/projects')).items;
+  const legacyProject = projects.find(p => p.id === 'Legacy-Web');
+  assert.deepEqual([legacyProject?.slug, legacyProject?.code], ['website', 'WEBS']);
+  for (const [method, route, body] of [
+    ['POST', '/api/projects', { name: 'Blocked project', slug: 'blocked-project', code: 'BLCK' }],
+    ['PUT', '/api/projects/Legacy-Web/slug', { slug: 'blocked-slug' }],
+    ['PUT', '/api/projects/Legacy-Web/code', { code: 'BLCK' }],
+  ]) {
+    const r = await beforeMigration(admin, route, method, body);
+    assert.deepEqual([r.status, r.body.error?.code], [503, 'IDENTITY_NOT_READY']);
+  }
+  assert.deepEqual(ok(await beforeMigration(admin, '/api/projects')).items, projects);
+  const backup = ok(await beforeMigration(admin, '/api/admin/backup?files=0'));
+  assert.ok(backup.tables.some(t => t.name === 'projects'));
+  assert.ok(backup.tables.every(t => !['project_identity_claims', 'project_identity_claimants'].includes(t.name)));
+
   await db.close();
   db = await open();
   call = site(db);

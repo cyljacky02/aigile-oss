@@ -9,7 +9,7 @@
 // 4. 既有的衝突（重複代號、代號與他案舊代號相同、重複網址英文名、未封存專案同名）原樣保留，identityConflicts 列給平台管理員看。
 import { lockWorkspaceStmt, ensureStmt, notRestoringStmt, writeOrdered, RESTORE_STATE_KEY } from './write-order.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
-import { CLAIMS_VERSION, claimsSeeded, seedClaimsStmts, diagnoseClaims, notDisputed, routeToken } from './project-identity-claims.js';
+import { CLAIMS_VERSION, CLAIM_SCHEMA_QUERY, claimsSeeded, seedClaimsStmts, diagnoseClaims, notDisputed, routeToken } from './project-identity-claims.js';
 
 export const CODE_RE = /^[A-Z]{2,5}$/;
 export const SLUG_DEFAULT = { '預設專案': 'main', '第二專案': 'second' }; // 舊站固定 id 的專案的網址英文名（卡號前綴取它的字母）
@@ -65,8 +65,10 @@ export async function cardSeqInProject(db, projectId, no) {
 }
 
 // ---------- 交易內斷言（條件都是 EXISTS／NOT EXISTS，不會是 SQL NULL） ----------
-// 已正規化：識別碼都存進資料庫了，下面的唯一性斷言才有意義
-export const identityReadyStmt = () => ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ?)', [IDENTITY_READY_KEY]);
+// 舊標記不代表保留表已正規化；兩張表都要存在，連只改名稱的寫入也不能跳過。
+export const identityReadyStmt = () => ensureStmt(`EXISTS (SELECT 1 FROM app_settings WHERE key = ?
+  AND CASE WHEN json_valid(value) THEN CAST(json_extract(value, '$.claimsVersion') AS TEXT) END = ?)
+  AND NOT EXISTS (${CLAIM_SCHEMA_QUERY})`, [IDENTITY_READY_KEY, String(CLAIMS_VERSION)]);
 // 這個網址英文名沒被別的專案用（存的網址英文名，或別的專案的 id；含可復原期內的）
 export const slugFreeCond = (slug, id) => ({
   cond: `NOT EXISTS (SELECT 1 FROM app_settings WHERE key >= 'slug:' AND key < 'slug;' AND value = ? AND key != ?)
@@ -131,7 +133,7 @@ function* jsonPages(rows) {
 // ---------- 讀取與正規化 ----------
 export function createProjectIdentity({ db, nowIso, waits }) {
   // 讀取一律不吞錯：讀不到就丟，不會被當成「沒有資料」
-  const isNormalized = async () => !!(await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', IDENTITY_READY_KEY));
+  const isNormalized = async () => claimsSeeded((await db.get('SELECT value FROM app_settings WHERE key = ?', IDENTITY_READY_KEY))?.value);
   const markers = async () => new Map((await db.all('SELECT key, value FROM app_settings WHERE key IN (?, ?)', IDENTITY_READY_KEY, RESTORE_STATE_KEY)).map(r => [r.key, r.value]));
   async function snapshot() {
     // 一句查詢取同一時間的專案與設定，避免把並行調整前後的資料混成一份快照。

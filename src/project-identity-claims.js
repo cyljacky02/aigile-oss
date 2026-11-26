@@ -1,5 +1,14 @@
 // ADR 0006：正規化時留下全站識別碼及來源的快照。切換所有寫入之前，舊設定仍負責查找與碰撞檢查。
 export const CLAIMS_VERSION = 1;
+export const CLAIM_TABLES = ['project_identity_claims', 'project_identity_claimants'];
+export function isMissingClaimTable(error) {
+  const message = String(error?.message ?? '');
+  const table = error?.code === '42P01' ? message.match(/relation "(?:[^".]+\.)?([^".]+)" does not exist/)?.[1]
+    : message.match(/\bno such table: (?:\w+\.)?(\w+)(?=[:\s]|$)/i)?.[1];
+  return CLAIM_TABLES.includes(table);
+}
+// LIMIT 0：確認兩張表都已存在，不讀資料列。
+export const CLAIM_SCHEMA_QUERY = 'SELECT 1 FROM project_identity_claims CROSS JOIN project_identity_claimants LIMIT 0';
 export function claimsSeeded(marker) {
   try { return JSON.parse(marker)?.claimsVersion === CLAIMS_VERSION; } catch { return false; }
 }
@@ -10,7 +19,10 @@ const codeToken = value => value.replace(/[a-z]/g, c => c.toUpperCase());
 const DISPUTED = 'HAVING COUNT(DISTINCT project_id) > 1';
 export const notDisputed = namespace => `NOT EXISTS (SELECT 1 FROM project_identity_claimants
   WHERE namespace = '${namespace}' AND value = ? GROUP BY namespace, value ${DISPUTED})`;
-export const readDisputed = db => db.all(`SELECT namespace, value FROM project_identity_claimants GROUP BY namespace, value ${DISPUTED}`);
+export async function readDisputed(db) {
+  try { return await db.all(`SELECT namespace, value FROM project_identity_claimants GROUP BY namespace, value ${DISPUTED}`); }
+  catch (error) { if (isMissingClaimTable(error)) return []; throw error; }
+}
 
 function claimants(rows, shown) {
   const slug = (projectId, source, rawValue) => ({ namespace: 'slug', value: routeToken(rawValue), projectId, source, rawValue });
@@ -51,9 +63,12 @@ export function seedClaimsStmts({ keepDisputes }) {
 export async function diagnoseClaims(db, { rows, shown, marker, restoring }) {
   if (restoring) return { status: 'restoring', disputes: [] };
   if (!claimsSeeded(marker)) return { status: 'pending', disputes: [] };
-  const stored = await db.all(`SELECT c.namespace, c.value, s.project_id, s.source, s.raw_value
-    FROM project_identity_claims c LEFT JOIN project_identity_claimants s ON s.namespace = c.namespace AND s.value = c.value
-    ORDER BY c.namespace, c.value, s.project_id, s.source, s.raw_value`);
+  let stored;
+  try {
+    stored = await db.all(`SELECT c.namespace, c.value, s.project_id, s.source, s.raw_value
+      FROM project_identity_claims c LEFT JOIN project_identity_claimants s ON s.namespace = c.namespace AND s.value = c.value
+      ORDER BY c.namespace, c.value, s.project_id, s.source, s.raw_value`);
+  } catch (error) { if (isMissingClaimTable(error)) return { status: 'pending', disputes: [] }; throw error; }
   const key = (namespace, value, id, source, raw) => JSON.stringify([namespace, value, id, source, raw]);
   const expected = new Set(claimants(rows, shown).map(c => key(c.namespace, c.value, c.projectId, c.source, c.rawValue)));
   const expectedCount = expected.size, groups = new Map();

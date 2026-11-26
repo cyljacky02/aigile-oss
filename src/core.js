@@ -24,7 +24,7 @@ import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, notRestoringStmt, writeOrdered } from './write-order.js'; // 工作區寫入排序與交易內斷言（ADR 0005）
 import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS, projectForCardCode, cardSeqInProject } from './project-identity.js'; // 專案網址英文名與代號
 import { previewProjectIdentity } from './project-identity-preview.js';
-import { readDisputed, routeToken } from './project-identity-claims.js';
+import { isMissingClaimTable, readDisputed, routeToken } from './project-identity-claims.js';
 import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯
 import { registerProjectCreationRequests, cancelStmts as pcrCancelStmts, cancelNoticeStmts as pcrCancelNoticeStmts, pendingCountSql as pcrPendingCountSql, requestsTableReady as pcrTableReady, PCR_TABLE, PCR_CANCEL_CODE,
   restoreStaleCountSql as pcrRestoreStaleCountSql, restoreCheckStmts as pcrRestoreCheckStmts, directCreateAllowedCond, activeMemberCond as pcrActiveMemberCond, reviewerCond as pcrReviewerCond } from './project-creation-requests.js'; // 建立專案申請
@@ -364,8 +364,10 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     const id = randId('prj');
     const stmts = creation.stmts({ id, at: nowIso(), actor: null, beneficiary: null, method: CREATION_METHOD.FIRST_RUN, eventText: '新站第一次啟動，系統自動建立',
       spec: { name: '預設專案', visibility: 'review', slug: id, code: autoCode('', usedCodes(null), 0) } });
-    // 還原中（RESTORING）、資料庫忙（RETRY_LATER）：這次不建，下個請求再試
-    try { await writeInWorkspace([ensureStmt('NOT EXISTS (SELECT 1 FROM projects)'), ...stmts]); } catch (e) { if (!(e instanceof ApiError)) throw e; }
+    // 還原中、資料庫忙、保留表尚未升級：這次不建，下個請求再試。
+    try { await writeInWorkspace([ensureStmt('NOT EXISTS (SELECT 1 FROM projects)'), ...stmts]); } catch (e) {
+      if (!(e instanceof ApiError) && !isMissingClaimTable(e)) throw e;
+    }
   }
   // 專案代號（2～5 個英文大寫，卡片顯示 MAIN-12）與網址英文名：存在 app_settings 的 pcode:<專案>、slug:<專案>（啟動正規化後每個專案都有，
   // 見 src/project-identity.js）；還沒存的照升級前的規則推導（displayedIdentity），畫面上的值不變
@@ -1725,16 +1727,23 @@ ${ending}`;
   let identityReady;
   const migrateIdentity = () => (identityReady ??= projectIdentity.normalize().then(done => { if (!done) identityReady = undefined; return done; }, error => {
     identityReady = undefined;
-    console.error('專案識別碼正規化失敗', error);
+    if (!isMissingClaimTable(error)) console.error('專案識別碼正規化失敗', error);
     return false;
   }));
   const identityNotReady = () => new ApiError(503, 'IDENTITY_NOT_READY', '專案的網址英文名與代號還在整理，這次沒有存；請稍後再試。', { retryAfter: 5 });
   // 會動到專案名稱或識別碼命名空間的寫入：工作區列鎖 → 不在還原中 → 已正規化（沒有就 503 IDENTITY_NOT_READY，什麼都沒寫）→ 呼叫端的斷言與寫入。
   // 回 false＝呼叫端的斷言不成立
   async function writeIdentity(list) {
-    const done = await writeInWorkspace([identityReadyStmt(), ...list]);
-    if (!done && !(await projectIdentity.isNormalized())) { identityReady = undefined; throw identityNotReady(); }
-    return done;
+    try {
+      const done = await writeInWorkspace([identityReadyStmt(), ...list]);
+      if (done || await projectIdentity.isNormalized()) return done;
+    } catch (error) {
+      if (!isMissingClaimTable(error)) throw error;
+      // D1 可能在執行任何斷言之前就拒絕整批；還原中的回應仍優先。
+      if (await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'")) throw restoringError();
+    }
+    identityReady = undefined;
+    throw identityNotReady();
   }
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋

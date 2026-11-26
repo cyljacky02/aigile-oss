@@ -12,12 +12,12 @@ import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, RESTORE_STATE_KEY } from './write-order.js';
 import { IDENTITY_READY_KEY } from './project-identity.js';
+import { CLAIM_TABLES, CLAIM_SCHEMA_QUERY, isMissingClaimTable } from './project-identity-claims.js';
 import { PCR_TABLE, restoreRowProblem } from './project-creation-requests.js';
 import { isConstraintViolation } from './db-errors.js';
 
 export const BACKUP_FORMAT = 'aigile-backup';
 export const BACKUP_FORMAT_VERSION = 1;
-const CLAIM_BACKUP_TABLES = ['project_identity_claims', 'project_identity_claimants']; // 先匯入保留值，再匯入來源
 // 匯出的資料表（順序＝匯入順序）。新增資料表時一定要放進 EXPORT_TABLES 或 SKIP_TABLES（backup-test 會檢查）
 export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'project_events', 'app_settings', 'accounts', 'participants', 'project_members', 'ai_state', 'messages', 'message_recipients', 'notifications', 'dms',
   'decision_resolutions', 'cards', 'card_log', 'card_msgs', 'suggestions', 'avatars', 'avatar_proposals',
@@ -25,7 +25,7 @@ export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'pro
   'project_creation_requests', // 建立專案申請：所有狀態原樣帶（舊備份沒有這張表＝還原後是空的；收尾時檢查待審的，見 core.js 的 restoreSteps）
   'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages', // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
-  ...CLAIM_BACKUP_TABLES,
+  ...CLAIM_TABLES, // 先匯入保留值，再匯入來源
   'audit_log']; // 稽核紀錄：還原時不清掉這個站原本的，備份裡的合併進來（同一筆 id 不重複），結束匯入時再加一筆 backup.restore
 const KEEP_TABLES = ['audit_log']; // 開始匯入時不清的表（稽核紀錄只能新增）
 // 不匯出：登入用的（Token、密碼雜湊、裝置、登入碼、邀請、救援連結、登入通知、失敗次數）
@@ -55,6 +55,7 @@ const toU8 = v => (v instanceof Uint8Array ? v : v instanceof ArrayBuffer ? new 
 export function registerBackup({ route, db, ApiError, invalid, readJson, readBody, randId, nowIso, access, requireHuman, adminOf, storage, docStorage, auditLog, membership, clearCaches, restoreSteps = [] }) {
   const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '備份與匯入' }); };
   const columnsOf = async t => (await db.all(`PRAGMA table_info(${t})`)).map(c => c.name);
+  const claimsNotReady = () => new ApiError(503, 'IDENTITY_NOT_READY', '專案的網址英文名與代號還在整理，這次沒有存；請稍後再試。', { retryAfter: 5 });
   // 匯入中只認開始匯入的那位（備份的成員寫進來後，最早的人類會變成管理員，不能再用權限模組的管理員判斷）。
   // 收尾已經把登入轉到備份裡的管理員（restore_state.you）：認那位，而且只剩收尾能做（finishing）
   const holder = st => st.you || st.by;
@@ -105,8 +106,13 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     const tables = [];
     for (const t of EXPORT_TABLES) {
       if (!withFiles && FILE_TABLES.includes(t)) continue;
-      const n = (await db.get(`SELECT COUNT(*) AS n FROM ${t}${fileFilter(t, withFiles)}`))?.n || 0;
-      tables.push({ name: t, count: n });
+      try {
+        const n = (await db.get(`SELECT COUNT(*) AS n FROM ${t}${fileFilter(t, withFiles)}`))?.n || 0;
+        tables.push({ name: t, count: n });
+      } catch (e) {
+        if (!CLAIM_TABLES.includes(t) || !isMissingClaimTable(e)) throw e;
+        // 程式先部署時保留表還不存在：舊格式不列出這張表，而不是寫成空表。
+      }
     }
     const docs = withFiles && docStorage ? (await db.all('SELECT id FROM docs WHERE deleted_at IS NULL')).map(r => r.id) : [];
     return { format: BACKUP_FORMAT, formatVersion: BACKUP_FORMAT_VERSION, appVersion: APP_VERSION, exportedAt: nowIso(), includeFiles: withFiles, tables, docs,
@@ -119,7 +125,10 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     if (!EXPORT_TABLES.includes(t) || (!withFiles && FILE_TABLES.includes(t))) throw invalid('table 不在可匯出的清單');
     const after = Math.max(0, Number.parseInt(q.get('after') || '0', 10) || 0), limit = pageOf(t);
     const f = fileFilter(t, withFiles);
-    const rows = await db.all(`SELECT rowid AS __rowid, * FROM ${t}${f ? f + ' AND' : ' WHERE'} rowid > ? ORDER BY rowid LIMIT ?`, after, limit + 1);
+    const rows = await db.all(`SELECT rowid AS __rowid, * FROM ${t}${f ? f + ' AND' : ' WHERE'} rowid > ? ORDER BY rowid LIMIT ?`, after, limit + 1).catch(e => {
+      if (CLAIM_TABLES.includes(t) && isMissingClaimTable(e)) throw claimsNotReady();
+      throw e;
+    });
     const more = rows.length > limit, page = rows.slice(0, limit);
     const drop = DROP_COLS[t] || [], blobs = BLOB_COLS[t] || [];
     const out = page.filter(r => t !== 'app_settings' || settingOk(r)).map(r => {
@@ -162,8 +171,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       cur ? ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, cur.raw])
         : ensureStmt(`NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?) AND ${emptyCond}`, [RESTORE_STATE_KEY, me.id]),
       // 先清掉識別碼來源，再清保留值。收尾只採用這次匯入的爭議來源。
-      ...[...CLAIM_BACKUP_TABLES.toReversed(),
-        ...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES, ...CLAIM_BACKUP_TABLES].includes(t)),
+      ...[...CLAIM_TABLES.toReversed(),
+        ...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES, ...CLAIM_TABLES].includes(t)),
         'legacy_members'].map(t => [`DELETE FROM ${t}`, []])];
     stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
@@ -171,6 +180,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${orig.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
     stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: orig.name, code: orig.code, appVersion: body.appVersion, clearedIdentityClaims: true })]]);
     try { await db.batch(stmts); } catch (e) {
+      if (isMissingClaimTable(e)) throw claimsNotReady(); // 整批已回復，沒有清任何資料。
       if (!isAssertionFailure(e)) throw e;
       // 用新鮮資料判斷原因（只用來產生回應）
       const now = await restoring();
@@ -191,6 +201,9 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     const t = body.table;
     if (!EXPORT_TABLES.includes(t)) throw invalid('table 不在可匯入的清單');
     if (!Array.isArray(body.rows) || body.rows.length > 1000) throw invalid('rows 要是陣列，一次最多 1000 列');
+    const claimTable = CLAIM_TABLES.includes(t);
+    // PRAGMA 對不存在的表回空清單；不能把備份中的爭議來源當成未知欄位丟掉。
+    if (claimTable) await db.get(CLAIM_SCHEMA_QUERY).catch(e => { if (isMissingClaimTable(e)) throw claimsNotReady(); throw e; });
     const have = new Set(await columnsOf(t)), drop = [...(DROP_COLS[t] || []), ...(t === 'audit_log' ? ['seq'] : [])], blobs = BLOB_COLS[t] || [];
     const stmts = [];
     let inserted = 0;
@@ -222,7 +235,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     for (let i = 0; i < stmts.length; i += 100) {
       try { await db.batch([...samePhaseStmts(raw), ...stmts.slice(i, i + 100)]); } catch (e) {
         if (isAssertionFailure(e)) throw (await restoring())?.you ? finishingError() : notRestoring();
-        if ((ROW_CHECKS[t] || CLAIM_BACKUP_TABLES.includes(t)) && isConstraintViolation(e)) throw rowInvalid(t, null, ROW_INVALID_MSG.constraint);
+        if (claimTable && isMissingClaimTable(e)) throw claimsNotReady();
+        if ((ROW_CHECKS[t] || claimTable) && isConstraintViolation(e)) throw rowInvalid(t, null, ROW_INVALID_MSG.constraint);
         throw e;
       }
     }
