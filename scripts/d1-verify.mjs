@@ -384,7 +384,25 @@ try {
     is(res2, 409, 'REQUESTER_NOT_ELIGIBLE', '交易內才發現申請人不符資格');
     assert.equal(await projectsNamed(q.name), 0, '沒有建立專案');
     assert.equal((await approve(q)).body?.state, 'approved', '前提恢復後核准成功');
-    note(`注入點：${points.map(p => p[0]).join('、')}`);
+    note(`核准注入點：${points.map(p => p[0]).join('、')}`);
+
+    // 直接建立：在程式庫寫入後注入執行期錯誤，確認專案與程式庫沒有分批提交。
+    const spec = { name: 'D1 程式庫專案', repo: { url: 'https://example.com/team/project', branch: 'main' } };
+    const create = () => a.call(boss.token, '/api/projects', 'POST', spec);
+    const repoSettings = () => a.q("SELECT key, value FROM app_settings WHERE key >= 'repo:' AND key < 'repo;' ORDER BY key");
+    const settingsBefore = await repoSettings();
+    await a.fault({ re: /^INSERT INTO app_settings .* ON CONFLICT\(key\) DO UPDATE/.source, mode: 'json', times: 1 });
+    const failed = await create();
+    const repoFault = await a.faultStatus();
+    await a.fault({ re: null });
+    assert.equal(repoFault.hits, 1, '真的在寫入程式庫設定後注入錯誤');
+    assert.equal(failed.status, 500);
+    const listed = ok(await a.call(boss.token, '/api/projects'), '讀專案清單');
+    assert.ok(!listed.items.some(p => p.name === spec.name), '沒有留下部分建立的專案');
+    assert.deepEqual(await repoSettings(), settingsBefore, '程式庫設定也已回滾');
+    const retried = within('直接建立（含程式庫）', await create());
+    assert.equal(retried.status, 201);
+    assert.deepEqual(retried.body.items.find(p => p.id === retried.body.id)?.repo, spec.repo, '重試成功並立即回傳程式庫');
   });
 
   // ===== D1-07 同時核准 =====
@@ -589,6 +607,36 @@ try {
     assert.equal(ap.body?.state, 'approved', '還原後核准保留的申請：' + ap.text.slice(0, 200));
     assert.equal(await b.n('SELECT COUNT(*) AS n FROM projects WHERE name = ?', 'D1 還原保留'), 1);
     note(`備份：${Object.values(T).reduce((x, r) => x + r.length, 0)} 列；收尾取消 3 份`);
+  });
+
+  await check('D1-11', '加入申請核准／拒絕：通知寫入失敗時整批回滾，重試後只生效一次', async () => {
+    const member = await join(a, '加入申請測試者');
+    const project = ok(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 加入申請', visibility: 'review' }), '建立審核專案');
+    assert.ok(project.id);
+    const p = `/api/projects/${encodeURIComponent(project.id)}`;
+    const pending = async id => ok(await a.call(boss.token, '/api/join-requests'), '待審清單').items.some(item => item.id === id);
+    const membership = async () => ok(await a.call(boss.token, p + '/members'), '成員清單').members.find(item => item.participantId === member.id);
+    const events = async () => ok(await a.call(boss.token, p + '/events'), '專案事件').items.filter(item => item.text.includes(member.name));
+    const notices = async kind => ok(await a.call(member.token, '/api/me/notices'), '帳號通知').items.filter(item => item.kind === kind);
+    for (const action of ['reject', 'approve']) {
+      const request = ok(await a.call(member.token, p + '/join-requests', 'POST', { note: 'D1 驗證' }), '送加入申請');
+      const decide = () => a.call(boss.token, `/api/join-requests/${request.id}/${action}`, 'POST', { reason: '請再試一次', role: 'UX', readOnly: true });
+      const kind = action === 'approve' ? 'join_approved' : 'join_rejected';
+      await a.fault({ re: '^INSERT INTO account_notices ', mode: 'json' });
+      const failed = await decide();
+      assert.equal((await a.faultStatus()).hits, 1);
+      assert.equal(failed.status, 500, failed.text.slice(0, 200));
+      assert.equal(await pending(request.id), true);
+      assert.equal(await membership(), undefined);
+      assert.deepEqual(await events(), []);
+      assert.deepEqual(await notices(kind), []);
+      ok(await decide(), '重試決定');
+      assert.equal(await pending(request.id), false);
+      assert.equal((await notices(kind)).length, 1);
+    }
+    const joined = await membership();
+    assert.deepEqual([joined.role, joined.title], ['viewer', 'UX']);
+    assert.equal((await events()).filter(item => item.text.includes('核准')).length, 1);
   });
 
   if (usage.length) {

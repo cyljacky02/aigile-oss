@@ -5,7 +5,7 @@
 // 3. .dockerignore 排除 data、.aigile、node_modules、密鑰檔
 // 4. README 的快速開始是 Docker，本機第二、Cloudflare 放後面
 // 5. 打 v* 標籤自動建 amd64／arm64 映像推到 ghcr.io，標版本號與 latest；README 中英文都有「不用 clone 直接用映像」（docker run 與 compose，資料掛 volume）
-// 6. CI 在 ubuntu、windows、macos 跑全部測試（Node 22），檢查 checkout 是 LF、找得到瀏覽器；另外在 Postgres 服務跑一次全套
+// 6. CI 在 ubuntu、windows、macos 跑全部測試（Node 22），檢查 checkout 是 LF、找得到瀏覽器；另外跑 Postgres 全套與本機 D1 驗證
 // 7. CI 不在每次 push／PR 跑（平常靠本機 npm test）：只在發版（打 v* 標籤）時先跑完全套、通過才發佈映像，或手動觸發
 // 用法：node scripts/docker-files-test.js
 import fs from 'node:fs';
@@ -81,6 +81,21 @@ try {
   assert.match(ci, /findBrowser/, 'CI：找不到瀏覽器就失敗，不默默略過畫面測試');
   assert.match(ci, /npm test/);
   assert.match(ci, /test-postgres:[\s\S]*image: postgres:[\s\S]*npm ci[\s\S]*AIGILE_TEST_PG_URL: postgres:\/\/postgres:test@localhost:5432\//, 'CI：另外在 Postgres 服務跑全套（只連 CI 本機的服務）');
+  const d1Job = ci.split(/^ {2}(?=\S)/m).find(job => job.startsWith('test-d1:'));
+  assert.ok(d1Job, 'CI：有獨立的本機 D1 驗證工作');
+  assert.match(d1Job, /^    runs-on: ubuntu-latest$/m, 'CI D1：在 Linux 跑');
+  assert.match(d1Job, /^ +node-version: 24$/m, 'CI D1：使用 Node 24');
+  assert.match(d1Job, /^    timeout-minutes: [1-9]\d*$/m, 'CI D1：設定執行時限');
+  assert.match(d1Job, /^ +run: npm install --prefix "\$RUNNER_TEMP\/aigile-d1" .*\bwrangler@\d+\.\d+\.\d+$/m, 'CI D1：在 runner 的暫存區裝固定版本的 Wrangler');
+  assert.doesNotMatch(d1Job, /^ {4,8}(?:-[ \t]+)?["']?(?:continue-on-error|if)["']?[ \t]*:/m, 'CI D1：必須執行，出錯就失敗');
+  const d1Steps = d1Job.split(/^ {6}- /m).slice(1);
+  const checkout = d1Steps.find(step => /^(?: {8})?uses: actions\/checkout@/m.test(step));
+  assert.match(checkout ?? '', /^ {10}persist-credentials: false$/m, 'CI D1：checkout 不保留 GitHub 憑證');
+  const verify = d1Steps.find(step => /^(?: {8})?run: npm run verify:d1$/m.test(step));
+  assert.ok(verify, 'CI D1：執行本機驗證');
+  assert.match(verify, /^ {10}D1_VERIFY_WRANGLER: \$\{\{ runner\.temp \}\}\/aigile-d1\/node_modules\/wrangler\/bin\/wrangler\.js$/m, 'CI D1：使用指定的 Wrangler');
+  assert.match(verify, /^ {10}NODE_ENV: test$/m, 'CI D1：Miniflare 使用本機 Request.cf 預設值');
+  assert.doesNotMatch(d1Job, /\bsecrets\.|\b(?:CLOUDFLARE|CF)_[A-Z_]+|\bcloudflare\/|\bwrangler\.toml\b|--remote\b/i, 'CI D1：只用本機驗證，不帶 Cloudflare 憑證或部署設定');
   assert.match(ci, /docker compose -f docker-compose\.yml -f docker-compose\.postgres\.yml up -d --build/, 'CI：compose 連 Postgres 一起起來並檢查');
   assert.ok(!/^\s+run: npm (ci|install)\s*$/m.test(ci.split('test-postgres:')[0]), 'CI：SQLite 那組不裝套件（零相依照樣能跑）');
   const ciOn = ci.slice(ci.indexOf('\non:'), ci.indexOf('\npermissions:'));

@@ -59,10 +59,14 @@ try {
   assert.equal(scripts['cf:db:migrate'], 'node scripts/migrate.js', 'npm run cf:db:migrate -- <檔>');
   assert.equal(scripts.test, 'node scripts/run-all.js', 'npm test');
   assert.doesNotMatch(read('README.md'), /cf:db:migrate-/, 'README 不再提舊指令');
-  const one = node('scripts/run-all.js', 'bell-test');
+  const pgEnvKeys = new Set(['AIGILE_TEST_PG_URL', 'AIGILE_TEST_PG_RUN']);
+  const cliEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !pgEnvKeys.has(key.toUpperCase())));
+  const runAll = filter => spawnSync(process.execPath, ['scripts/run-all.js', filter], { cwd: root, encoding: 'utf8', env: cliEnv });
+  const one = runAll('bell-test');
   assert.equal(one.status, 0, 'run-all 帶篩選只跑那個：' + one.stdout.slice(-300));
   assert.match(one.stdout, /✓ bell-test\.js/); assert.match(one.stdout, /1\/1 通過/);
-  const none = node('scripts/run-all.js', 'no-such-test-xyz');
+  assert.doesNotMatch(one.stdout, /資料庫：Postgres/, 'run-all 的 CLI 檢查只需要 SQLite');
+  const none = runAll('no-such-test-xyz');
   assert.equal(none.status, 1, '篩不到測試算失敗（不會默默說全過）');
 
   // C12：文件數字跟程式一致

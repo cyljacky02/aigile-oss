@@ -4143,13 +4143,32 @@
     updateTodoBadge();
     if (state.page === 'inbox' || state.page === 'hub') renderWork();
   });
+  function approvalSectionHtml(id, { sectionClass, title, count, rows, hint = '', more = '' }) {
+    if (!rows.length) return '';
+    return `<section class="wsugg ${sectionClass}" aria-labelledby="${id}"><div class="wsugg-head"><span class="wdot"></span><h3 id="${id}">${title}</h3><span class="wcount ora">${count}</span>${hint ? `<span class="muted small">${hint}</span>` : ''}</div>
+      ${rows.join('')}${more}</section>`;
+  }
+  function approvalRowHtml({ rowClass, attr, id, icon, title, scope, projectId, at, details = [], lateBadgeHtml = '', actions }) {
+    const preset = scope === projectId && (projectId === '預設專案' || projectId === '第二專案');
+    const keepName = projectId != null && !preset ? ' data-nt' : '';
+    const parts = [`<span${keepName}>${esc(scope)}</span>`, ...details.filter(Boolean), `<time datetime="${esc(at)}">${agoText(at)}</time>`];
+    return `<div class="sugg-row approval-row ${rowClass}" ${attr}="${esc(id)}"><span class="lead-ic" aria-hidden="true">${icon}</span>
+      <div class="sugg-main"><b data-nt>${esc(title)}</b><span class="muted small">${lateBadgeHtml}${parts.join(' · ')}</span></div>
+      <div class="sugg-actions">${actions}</div></div>`;
+  }
+  const approvalExcerpt = text => text ? `<span data-nt>「${esc(oneLine(text, 60))}」</span>` : '';
   function pcrRevHtml() {
-    const items = work.pcrRev?.items || [];
-    if (!items.length) return '';
-    return `<section class="wsugg wpcr"><div class="wsugg-head"><span class="wdot"></span><h3>建立專案申請</h3><span class="wcount ora">${work.pcrRev.total}</span><span class="muted small">成員申請的新專案：核准後立即建立，申請人成為專案管理員</span></div>
-      ${items.map(r => `<div class="sugg-row pcr-rev-row" data-pcr-rev-row="${esc(r.id)}"><span class="lead-ic" aria-hidden="true">🗂️</span><div class="sugg-main"><b data-nt>${esc(r.name)}</b><span class="muted small"><span data-nt>${esc(r.requesterName || '')}</span> · <span>${agoText(r.createdAt)}</span> · <span data-nt>「${esc(oneLine(r.reason, 60))}」</span></span></div>
-        <div class="sugg-actions"><button type="button" class="btn small primary" data-pcr-review="${esc(r.id)}">查看並處理</button></div></div>`).join('')}
-      ${work.pcrRev.next ? `<button type="button" class="link small" data-pcr-rev-more${work.pcrRev.loading ? ' disabled' : ''}>載入更多</button>` : ''}</section>`;
+    const { items, total, next, loading } = work.pcrRev;
+    return approvalSectionHtml('approval-pcr-title', {
+      sectionClass: 'wpcr', title: '建立專案申請', count: total,
+      hint: '成員申請的新專案：核准後立即建立，申請人成為專案管理員',
+      rows: items.map(r => approvalRowHtml({
+        rowClass: 'pcr-rev-row', attr: 'data-pcr-rev-row', id: r.id, icon: '🗂️', title: r.name, scope: '工作區', at: r.createdAt,
+        details: [r.requesterName ? `<span data-nt>${esc(r.requesterName)}</span>` : '', approvalExcerpt(r.reason)],
+        actions: `<button type="button" class="btn small primary" data-pcr-review="${esc(r.id)}">查看並處理</button>`,
+      })),
+      more: next ? `<button type="button" class="link small" data-pcr-rev-more${loading ? ' disabled' : ''}>載入更多</button>` : '',
+    });
   }
   // 審核視窗：完整不可修改的內容、自動識別碼的預估值（標明預估）、衝突提示、「核准並建立」與「拒絕」（理由必填）
   async function openPcrReview(id) {
@@ -4324,17 +4343,28 @@
         ${dmg.map(({ list, last: n }) => { const k = list.length, ids = esc(list.map(x => x.notificationId).join(' '));
           return `<div class="sugg-row dm-note" id="fyi-${esc(n.notificationId)}" data-fyi="${ids}"><div class="sugg-main"><b>${n.sender.system ? '平台通知' : `${esc(n.sender.name)} 回你了`}${k > 1 ? ` <span class="pill-tag">${k} 則</span>` : ''}</b><span class="muted small">${esc(oneLine(n.sender.system ? dmGist(n.preview, true) : String(n.preview).replace(/^\[頭像提案 [^\]]+\]\s*/, '🖼 頭像提案：'), 80))} · ${k > 1 ? '最後一則 ' : ''}${agoText(n.createdAt)}</span></div>
           <div class="sugg-actions"><button type="button" class="btn small primary" data-dm-open="${esc(n.sender.participantId)}" data-dm-pj="${esc(n.project || '')}">打開私訊</button><button type="button" class="link small" data-dm-read="${ids}" title="不打開對話，直接從這裡清掉">${k > 1 ? `全部已讀（${k}）` : '已讀'}</button></div></div>`; }).join('')}</section>` : '';
-    // PLAT-381「👑 你負責的專案」：自己專案的加入申請、技能核准；管理員看到的是沒有 leader 或 leader 超過 1 天沒處理的
+    // 專案管理員先處理；工作區管理員只在沒有專案管理員或超過 1 天後看到。
     const leadPjs = [...new Set([...joins.map(j => j.project), ...skRev.map(k => k.project)])].filter(pj => projectAdminsOf(pj).includes(meId()));
-    const late = pj => !projectAdminsOf(pj).includes(meId()) && otherLeads(pj).length ? `<span class="pill-tag yellow">專案管理員 ${esc(leadNames(pj))} 還沒處理</span> ` : ''; // 管理員看到的（已超過 1 天）
-    const joinSection = joins.length || skRev.length ? `
-      <section class="wsugg wlead"><div class="wsugg-head"><span class="wdot"></span><h3>${leadPjs.length ? '👑 你管理的專案' : '🛡 專案待處理'}</h3><span class="wcount ora">${joins.length + skRev.length}</span></div>
-        <p class="muted small wlead-note">${leadPjs.length ? `你是「${esc(leadPjs.map(projName).join('、'))}」的專案管理員，這些由你處理；超過 1 天沒處理，會提醒工作區管理員。` : '專案沒有專案管理員，或專案管理員超過 1 天沒處理的，會出現在這裡；你也可以直接處理。'}</p>
-        ${joins.map(j => `<div class="sugg-row lead-row" data-join-row="${esc(j.id)}"><span class="lead-ic" aria-hidden="true">🙋</span><div class="sugg-main"><b>加入申請：${esc(j.name)}</b><span class="muted small">${late(j.project)}<span>想加入「${esc(j.projectName)}」</span> · <span>${agoText(j.createdAt)}</span>${j.note ? ` · 「${esc(oneLine(j.note, 60))}」` : ''}</span></div>
-          <div class="sugg-actions"><button type="button" class="btn small" data-lead-jno="${esc(j.id)}">${L('拒絕', 'Reject')}</button><button type="button" class="btn small primary" data-join-review="${esc(j.project)}">${L('核准', 'Approve')}</button></div></div>`).join('')}
-        ${skRev.map(k => `<div class="sugg-row lead-row" data-skrev-row="${esc(k.skillId)}"><span class="lead-ic" aria-hidden="true">🧩</span><div class="sugg-main"><b>技能待核准：${esc(k.name)}</b><span class="muted small">${late(k.project)}<span>${esc(projName(k.project))}</span> · ${k.scripts ? `${esc(L(`含腳本 ${k.scripts} 個`, `${k.scripts} script${k.scripts > 1 ? 's' : ''}`))} · ` : ''}${esc(L(`${k.uploadedBy?.name || ''}上傳`, `uploaded by ${k.uploadedBy?.name || ''}`))} · <span>${agoText(k.uploadedAt)}</span></span></div>
-          <div class="sugg-actions"><button type="button" class="btn small" data-lead-skview="${esc(k.skillId)}">${L('看內容', 'View')}</button><button type="button" class="btn small primary" data-lead-skok="${esc(k.skillId)}">${L('核准', 'Approve')}</button></div></div>`).join('')}</section>` : '';
-    return pcrSection + joinSection + dmSection + askSection + decisionSectionHtml(decideMe) + verSection + confSection + suggHtml(true);
+    const late = pj => !projectAdminsOf(pj).includes(meId()) && otherLeads(pj).length ? `<span class="pill-tag yellow">專案管理員 ${esc(leadNames(pj))} 還沒處理</span> ` : '';
+    const joinSection = approvalSectionHtml('approval-join-title', {
+      sectionClass: 'wlead', title: '加入申請', count: joins.length,
+      rows: joins.map(j => approvalRowHtml({
+        rowClass: 'lead-row', attr: 'data-join-row', id: j.id, icon: '🙋', title: j.name, scope: j.projectName, projectId: j.project, at: j.createdAt,
+        details: [approvalExcerpt(j.note)], lateBadgeHtml: late(j.project),
+        actions: `<button type="button" class="btn small" data-lead-jno="${esc(j.id)}">${L('拒絕', 'Reject')}</button><button type="button" class="btn small primary" data-join-review="${esc(j.project)}">${L('核准', 'Approve')}</button>`,
+      })),
+    });
+    const skillSection = approvalSectionHtml('approval-skill-title', {
+      sectionClass: 'wlead', title: '技能審核', count: skRev.length,
+      rows: skRev.map(k => approvalRowHtml({
+        rowClass: 'lead-row', attr: 'data-skrev-row', id: k.skillId, icon: '🧩', title: k.name, scope: projName(k.project), projectId: k.project, at: k.uploadedAt,
+        details: [k.scripts ? `<span>${esc(L(`含腳本 ${k.scripts} 個`, `${k.scripts} script${k.scripts > 1 ? 's' : ''}`))}</span>` : '',
+          k.uploadedBy?.name ? `<span>${esc(L(`${k.uploadedBy.name}上傳`, `uploaded by ${k.uploadedBy.name}`))}</span>` : ''], lateBadgeHtml: late(k.project),
+        actions: `<button type="button" class="btn small" data-lead-skview="${esc(k.skillId)}">${L('看內容', 'View')}</button><button type="button" class="btn small primary" data-lead-skok="${esc(k.skillId)}">${L('核准', 'Approve')}</button>`,
+      })),
+    });
+    const leadNote = joinSection || skillSection ? `<p class="muted small wlead-note">${leadPjs.length ? `你是「${esc(leadPjs.map(projName).join('、'))}」的專案管理員，這些由你處理；超過 1 天沒處理，會提醒工作區管理員。` : '專案沒有專案管理員，或專案管理員超過 1 天沒處理的，會出現在這裡；你也可以直接處理。'}</p>` : '';
+    return pcrSection + joinSection + skillSection + leadNote + dmSection + askSection + decisionSectionHtml(decideMe) + verSection + confSection + suggHtml(true);
   }
 
   const wide = () => matchMedia('(min-width: 900px)').matches;
@@ -10152,16 +10182,23 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const sf = slugF.check();
       if (!sf) return;
       try {
-        let r;
         const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
-        try { r = await api('/api/projects', { method: 'POST', body: { name, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review', ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
+        let result;
+        try { result = await api('/api/projects', { method: 'POST', body: {
+          name, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review',
+          ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}),
+          ...(url ? { repo: { url, branch } } : {}),
+        } }); }
         catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
-        let repoErr = '';
-        if (url) { try { await api(`/api/projects/${encodeURIComponent(r.id)}/repo`, { method: 'PUT', body: { url, branch } }); } catch (e2) { repoErr = e2.message; } }
+        const savedRepo = result.items?.find(p => p.id === result.id)?.repo;
         closeModal();
+        if (url && (savedRepo?.url !== url || savedRepo?.branch !== branch)) {
+          toast(`已新增專案「${name}」。未確認程式庫設定，請到專案設定檢查。`, 6000);
+        } else {
+          toast(`已新增專案「${name}」，目前只有你`);
+        }
         await Promise.all([loadProjectList(), loadParticipants()]);
         drawProjSwitch(); drawPerm();
-        toast(repoErr ? `已新增專案「${name}」，但程式庫沒存：${repoErr}` : `已新增專案「${name}」，目前只有你`);
       } catch (e2) { err.textContent = e2.message; }
     });
     // 送出建立專案申請：送出中停用按鈕（按兩次也只送一次）；失敗後重按沿用同一個 requestId

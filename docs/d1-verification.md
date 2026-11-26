@@ -1,13 +1,13 @@
 # 本機 D1 驗證（`npm run verify:d1`）
 
-一個指令，從**空的本機 D1** 跑完建立專案申請在 Cloudflare D1 上的關鍵資料庫行為，逐項印出 PASS／FAIL。一般的 `npm test` 只跑 SQLite（與選用的 Postgres），抓不到 D1 才有的限制與錯誤格式，所以發布候選版本前要另外跑這支。
+一個指令，從**空的本機 D1** 跑完建立專案申請在 Cloudflare D1 上的關鍵資料庫行為，逐項印出 PASS／FAIL。一般的 `npm test` 只跑 SQLite（與選用的 Postgres）。CI 會另外執行這支腳本，檢查 D1 才有的限制與錯誤格式。
 
-只碰**本機**：`wrangler d1 execute --local` 與 `wrangler dev --local`（Miniflare／workerd），資料放在系統暫存資料夾。不需要 Cloudflare 帳號或憑證，也不會連到正式的 D1。
+只用**本機 D1**：`wrangler d1 execute --local` 與 `wrangler dev --local`（Miniflare／workerd），資料放在系統暫存資料夾。不需要 Cloudflare 帳號或憑證，也不會連到正式的 D1。手動執行時也可設 `NODE_ENV=test`，讓 Miniflare 直接使用本機的 `Request.cf` 預設值。
 
 ## 執行前提
 
 - Node.js 22.13 以上（建議 24）。不需要 `npm install`。
-- `wrangler@4`：第一次經 `npx` 下載，**需要網路**；下載後留在 npx 快取，之後離線也能跑。沒有網路時，可設 `D1_VERIFY_WRANGLER` 指到已有的 `wrangler/bin/wrangler.js`。
+- `wrangler@4` 預設由 `npx` 取得，下載時**需要網路**。也可設 `D1_VERIFY_WRANGLER` 指到已有的 `wrangler/bin/wrangler.js`，直接使用該版本。
 - `generated/`（`worker.js` 會打包）：沒有的話腳本自動跑 `node scripts/releases.mjs` 產生（gitignore，跟 `npm run deploy` 前一樣）。
 - 約 1 分鐘（第一次下載 wrangler 另計）。
 
@@ -25,6 +25,12 @@ npm run verify:d1 -- --keep       # 保留暫存資料夾（本機 D1 檔、wran
 - `d1-sqlite-limits-test`：用 node:sqlite 開一個套上 D1 限制（`src/db-d1.js` 的 `D1_SQLITE_LIMITS`，數字是在本機 D1 實測的）的資料庫，跑建立專案與申請的主要流程。
 - `d1-verify-guard-test`：驗證腳本的「只碰本機」防護。
 
+## CI
+
+[CI 的 `test-d1` 工作](../.github/workflows/ci.yml)在 Ubuntu 上用 Node.js 24 執行 `npm run verify:d1`，上限 10 分鐘。它從 npm 下載固定版本的 `wrangler@4.168.0` 到 runner 的暫存資料夾，並用 `D1_VERIFY_WRANGLER` 指定該版本。驗證步驟設 `NODE_ENV=test`，讓 Miniflare 直接用本機的 `Request.cf` 預設值，省去向 Cloudflare 取得範例資料。安裝或初始化失敗，或任何驗證項目未通過，都會讓 CI 失敗。
+
+這項工作在 CI 手動觸發或發版流程呼叫時執行。發佈映像要等整個 CI（含本機 D1 驗證）通過。
+
 ## 怎麼驗證
 
 1. **資料庫升級**用 `scripts/migrate.js` 的同一個純函式 `d1Steps` 產生 SQL，經 `wrangler d1 execute --local` 套用（不執行 `migrate.js` 本身：它預設 `--remote`）。
@@ -38,11 +44,12 @@ npm run verify:d1 -- --keep       # 保留暫存資料夾（本機 D1 檔、wran
 | D1-03 部分唯一索引 | 同一申請人同名待審：HTTP 回 `DUPLICATE_PENDING_REQUEST`；6 個同時送出只有 1 份成功；直接寫入時 D1 的錯誤原文被 `isUniqueConstraintViolation` 認成 `idx_pcr_pending_name`；已結束的同名不擋 |
 | D1-04 CHECK 約束 | 12 種不一致的 INSERT、1 種不一致的 UPDATE 被 CHECK 擋下；五種狀態的合法列都寫得進去 |
 | D1-05 生命週期 | 送出（通知審核人）、核准（專案、唯一的專案管理員、識別碼、看板狀態、`project.create` 稽核、通知）、拒絕（稽核）、撤回（再撤回回 409，證明 D1 的斷言錯誤被認出）、移出成員取消、政策切換取消（每位申請人一則通知、稽核記數） |
-| D1-06 整批回滾 | 同一批寫兩次同一鍵 → 第一句也回滾；`ensureStmt` 斷言失敗的 D1 錯誤被 `isNotNullViolation(e, 'app_settings')` 認出；核准那一批在專案、狀態、成員、稽核、申請、通知每一句之後各注入一次執行期失敗 → 5xx、什麼都不留、重試成功；核准前一刻政策被切走或申請人被移出 → 交易內發現（409），不建立 |
+| D1-06 整批回滾 | 同一批寫兩次同一鍵 → 第一句也回滾；`ensureStmt` 斷言失敗的 D1 錯誤被 `isNotNullViolation(e, 'app_settings')` 認出；核准那一批在專案、狀態、成員、稽核、申請、通知每一句之後各注入一次執行期失敗 → 5xx、什麼都不留、重試成功；核准前一刻政策被切走或申請人被移出 → 交易內發現（409），不建立。直接建立時，在同一批寫入程式庫設定後注入失敗 → 專案與程式庫設定都回滾，重試成功並立即回傳程式庫 |
 | D1-07 同時核准 | 兩位審核人 10 個請求同時核准同一份：全部 200、只有 1 個真的建立、1 個專案、1 筆稽核、1 筆成員資格、1 則通知；核准與拒絕同時（3 次）：結局一致 |
 | D1-08 識別碼 | 名稱、網址英文名、代號衝突（直接建立與核准都只說欄位）；自動代號不重複；舊資料（沒存識別碼、既有的網址英文名衝突、舊代號別名）→ 第一次寫入 503 `IDENTITY_NOT_READY`、下一次先正規化再成功；值存進資料庫、既有衝突原樣保留並在診斷列出。保留表拒絕重複宣稱，診斷列出各個舊來源及快照是否過時 |
 | D1-09 D1 限制 | 120 位申請人、180 份待審、5 位審核人：送出通知、審核清單、通知、稽核清單、政策切走一次取消全部、停用帳號——每個請求單句 ≤ 100 個參數、≤ 100,000 位元組，每次 Worker 執行的查詢數 ≤ 50（免費方案上限；付費 1000） |
 | D1-10 備份還原 | 匯出 → 改成「停用、移出、申請人不存在、拿掉識別碼」的備份 → 匯入全新的 D1 → 收尾取消 3 份（`account_disabled`、`workspace_member_removed`、`restore_invalid`）、保留有效的、重新正規化、`backup.restore` 稽核記數；沒有建立專案、沒有通知。保留表寫入後注入失敗，確認整批回復並重試成功。還原後可核准 |
+| D1-11 加入申請 | 專案加入申請的拒絕／核准批次中，通知寫入後注入失敗：仍待審、沒有成員資格、異動紀錄或通知；重試後只生效一次 |
 
 ## 預期輸出
 
@@ -63,7 +70,7 @@ D1 用量（每個請求＝一次 Worker 執行；查詢數裡 db.batch 整批�
   …
   全部量到的請求：單句最多 29 個參數（上限 100）、單句最長 1021 位元組（上限 100000）
 
-10/10 PASS
+11/11 PASS
 D1 驗證：全部通過（本機 D1；正式 D1 的差異見 docs/d1-verification.md）
 ```
 
@@ -97,7 +104,7 @@ FAIL 時印出第一個沒過的斷言（例：`FAIL  D1-08 … 直接建立：H
 
 ## 已知限制（本機 D1 與正式 D1 的差異）
 
-本機通過**不等於**正式 D1 通過；下面這些只有在正式（或測試用的）Cloudflare 帳號上才能確認（#50）：
+CI 和開發機都使用 Miniflare／workerd 的本機 D1。正式 D1 的行為仍要在正式（或測試用的）Cloudflare 帳號上人工驗收（#50）。
 
 - **交易與並行**：本機是一個 workerd 程序裡模擬的 D1，`env.DB.batch()` 在本機確實整批回滾、寫入一次一個。正式 D1 是遠端的單一主要資料庫，請求可能來自不同地點的多個 Worker 執行個體；官方說 batch 是交易，但跨執行個體的同時核准、核准與政策切換交錯在正式 D1 上沒驗證。
 - **每次執行的查詢數**（免費 50、付費 1000）本機不會擋；腳本是自己數的（`get`／`all`／`run` 各一次、`db.batch` 整批一次），而且只數到回應送出為止，`waitUntil` 的背景工作（門鈴、抽字）沒算進去。還原收尾 38 次、新執行個體的第一個請求 35 次，離免費方案的 50 次不遠。

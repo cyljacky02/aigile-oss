@@ -4,6 +4,7 @@
 // 清除只刪這些（含它們的通知、收件人、卡片紀錄）；示範專案裡如果有你們自己發的訊息或建的卡，專案保留、只刪示範的部分
 // 內容是虛構的通用情境（活動報名網站），不含任何真實人名；示範成員不能登入（沒有密碼、登入碼已過期）
 import { ensureStmt } from './write-order.js';
+import { addClosedJoinSettingsStmts, removeJoinSettingsStmts } from './join.js';
 
 export const DEMO_KEY = 'demo_data';
 const TAG = 'demo:';
@@ -149,8 +150,7 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
       if (m.cardOf) stmts.push(['INSERT INTO card_msgs (card_seq, message_id) SELECT seq, ? FROM cards WHERE uid = ?', [m.id, m.cardOf.uid]]);
     }
     // 示範專案不開放申請：新註冊的人申請清單裡不會出現它
-    let js = {}; try { js = JSON.parse((await db.get("SELECT value FROM app_settings WHERE key = 'join_settings'"))?.value || '{}') || {}; } catch {}
-    stmts.push(["INSERT INTO app_settings (key, value) VALUES ('join_settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify({ ...js, [pj]: { open: false, note: '' } })]]);
+    stmts.push(...await addClosedJoinSettingsStmts(db, pj));
     const mark = { project: pj, projectName: pname, people: people.map(p => p.id), addedMe: addedMe ? me.id : null, by: me.id, at: nowIso() };
     stmts.push(['INSERT INTO app_settings (key, value) VALUES (?, ?)', [DEMO_KEY, JSON.stringify(mark)]]);
     if (!(await identity.write(stmts))) return null;
@@ -194,15 +194,16 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
         ['DELETE FROM projects WHERE id = ?', [m.project]], ['DELETE FROM project_events WHERE project_id = ?', [m.project]],
         ['DELETE FROM app_settings WHERE key IN (?, ?, ?)', ['slug:' + m.project, 'pcode:' + m.project, 'pnomax:' + m.project]],
         ["DELETE FROM app_settings WHERE key >= 'pcodeold:' AND key < 'pcodeold;' AND value = ?", [m.project]]]; // 改過代號的舊代號也放掉
-      // 誰被加進示範專案（含你）都移出
-      const fallback = (await db.get('SELECT id FROM projects WHERE id != ? AND archived = 0 ORDER BY created_at, id LIMIT 1', m.project))?.id || '';
-      for (const p of await membership.fetchMembersOf(m.project)) {
-        const left = p.projects.filter(x => x !== m.project);
-        rm.push(...membership.setProjectsStmts(p.id, (left.length ? left : [fallback]).filter(Boolean), null)); // 至少留一個專案
-      }
-      let js = {}; try { js = JSON.parse((await db.get("SELECT value FROM app_settings WHERE key = 'join_settings'"))?.value || '{}') || {}; } catch {}
-      if (js[m.project]) { delete js[m.project]; rm.push(["UPDATE app_settings SET value = ? WHERE key = 'join_settings'", [JSON.stringify(js)]]); }
-      if (!(await identity.release(rm))) keptProject = true; // 剛好有人在示範專案留了資料：保留專案
+      // 只移出示範專案，避免蓋掉等鎖期間核准的其他專案成員資格。
+      // 原本只在示範專案的人改到第一個未封存專案，兩個判斷都用交易內的資料。
+      rm.push([`INSERT OR IGNORE INTO project_members (project_id, participant_id, role)
+        SELECT fallback.id, m.participant_id, 'member' FROM project_members m
+        CROSS JOIN (SELECT id FROM projects WHERE id != ? AND archived = 0 AND deleted_at IS NULL ORDER BY created_at, id LIMIT 1) fallback
+        WHERE m.project_id = ? AND NOT EXISTS (SELECT 1 FROM project_members o WHERE o.participant_id = m.participant_id AND o.project_id != m.project_id)`,
+        [m.project, m.project]],
+      ['DELETE FROM project_members WHERE project_id = ?', [m.project]],
+      ['DELETE FROM join_requests WHERE project = ?', [m.project]]);
+      if (!(await identity.release([...rm, ...await removeJoinSettingsStmts(db, m.project)]))) keptProject = true; // 前提已改變：保留專案
     }
     await afterChange?.();
     return { cleared: true, keptProject, projectName: m.projectName };
