@@ -98,11 +98,16 @@ try {
     row('pcr_ai', { requester_id: ai.participantId }), // 申請人不是人類
     row('pcr_nows_disabled', { workspace_id: 'ws_gone', requester_id: lee.id }), // 關聯無效又停用：先看關聯 → restore_invalid
     row('pcr_approved_gone', { state: 'approved', ended_at: at, ended_by: boss.id, project_id: 'p_gone' }), // 已核准、專案找不到：不重建、不取消
-    row('pcr_rejected', { state: 'rejected', ended_at: at, ended_by: boss.id, ended_by_account_id: undefined, reject_reason: '再想想' }), // 017 之前的備份沒有帳號欄位
+    row('pcr_rejected', { state: 'rejected', ended_at: at, ended_by: boss.id, ended_by_account_id: undefined, reject_reason: '再想想' }), // 018 之前的備份沒有帳號欄位
     row('pcr_account_rejected', { state: 'rejected', ended_at: at, ended_by_account_id: accountOf(boss.id).id, reject_reason: '再想想' }),
     row('pcr_cancelled', { state: 'cancelled', ended_at: at, cancel_code: 'workspace_member_left' }),
     row('pcr_withdrawn_ghost', { requester_id: 'p_ghost', state: 'withdrawn', ended_at: at, ended_by: 'p_ghost' }), // 終止的申請就算關聯無效也不動
   );
+  const legacyAudit = T.audit_log.find(r => r.actor_id === boss.id);
+  assert.ok(legacyAudit);
+  for (const r of T.audit_log) delete r.actor_account_id; // 備份在 018 前匯出
+  T.audit_log.push({ ...legacyAudit, id: 'aud_account_review', actor_id: null, actor_kind: 'account', actor_account_id: accountOf(boss.id).id,
+    action: 'project_creation_request.reject', scope_kind: 'workspace', workspace_id: 'default', project_id: null, project_name: null });
   const expectPending = [sub.chen.id, sub.hu.id];
   const expectCancelled = { [sub.wang.id]: 'account_disabled', [sub.lee.id]: 'account_disabled', [sub.zhang.id]: 'workspace_member_removed',
     pcr_nows: 'restore_invalid', pcr_ghost: 'restore_invalid', pcr_ai: 'restore_invalid', pcr_nows_disabled: 'restore_invalid' };
@@ -141,6 +146,11 @@ try {
     assert.equal(r.cancelledProjectCreationRequests, CANCELLED, '收尾回應：因還原而取消的數量');
     await checkOutcome(B, '1');
     await auditOk(B, '1', CANCELLED);
+    const actors = await B.db.all('SELECT id, actor_id, actor_account_id, actor_kind FROM audit_log WHERE id IN (?, ?)', 'aud_account_review', legacyAudit.id);
+    assert.deepEqual(Object.fromEntries(actors.map(r => [r.id, [r.actor_id, r.actor_account_id, r.actor_kind]])), {
+      aud_account_review: [null, accountOf(boss.id).id, 'account'],
+      [legacyAudit.id]: [boss.id, null, legacyAudit.actor_kind],
+    });
     // 還原後：仍待審的申請人照樣是有效的申請人（政策仍是 approval）
     assert.equal((await B.db.get("SELECT create_projects FROM workspaces WHERE id = 'default'")).create_projects, 'approval', '政策照備份');
     // 「要你處理」：審核人（登入已改掛到備份裡的平台管理員）只看到仍有效的待審申請，而且每一份都能核准並建立專案

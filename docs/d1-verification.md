@@ -39,7 +39,7 @@ npm run verify:d1 -- --keep       # 保留暫存資料夾（本機 D1 檔、wran
 
 | 項目 | 驗證什麼 |
 |---|---|
-| D1-01 資料庫升級 | 空的 D1 走全新路線（`schema.sql`＋標記全部升級）；再模擬 017 之前的資料庫，確認 `017_account_review_actors.sql` 保留舊審核紀錄、檢查審核身分，且欄位與索引跟全新的一樣；重跑沒有要套的 |
+| D1-01 資料庫升級 | 空的 D1 走全新路線（`schema.sql`＋標記全部升級）；再模擬 018 之前的資料庫，確認 `018_account_review_actors.sql` 保留舊審核紀錄、欄位與索引跟全新的一樣，兩種資料庫都記錄帳號審核與稽核，並拒絕同時填入兩種身分；重跑沒有要套的 |
 | D1-02 Worker 啟動 | `worker.js` 在本機 D1 上啟動：預設管理員改帳密、再驗證、註冊、升工作區管理員、政策設成 approval |
 | D1-03 部分唯一索引 | 同一申請人同名待審：HTTP 回 `DUPLICATE_PENDING_REQUEST`；6 個同時送出只有 1 份成功；直接寫入時 D1 的錯誤原文被 `isUniqueConstraintViolation` 認成 `idx_pcr_pending_name`；已結束的同名不擋 |
 | D1-04 CHECK 約束 | 12 種不一致的 INSERT、1 種不一致的 UPDATE 被 CHECK 擋下；五種狀態的合法列都寫得進去 |

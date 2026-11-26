@@ -59,15 +59,17 @@ export const directCreateCond = id => ({
 export const reviewerCond = (id, workspaceId = DEFAULT_WORKSPACE) => ({
   cond: `EXISTS (SELECT 1 FROM participants p WHERE p.id = ? AND p.kind = 'human' AND p.status = 'active'
     AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.status != 'active')
-    AND ((p.workspace_role = 'admin' AND p.workspace_id = ? AND p.workspace_status = 'active')
-      OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.platform_role = 'admin' AND a.status = 'active')))`, args: [id, workspaceId] });
+    AND p.workspace_id = ? AND p.workspace_status = 'active'
+    AND (p.workspace_role = 'admin' OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.platform_role = 'admin' AND a.status = 'active')))`, args: [id, workspaceId] });
 // 現在能直接建立專案（直接建立在交易內斷言）：審核人（工作區管理員或平台管理員），或政策是「所有成員」時的有效人類成員
 export const directCreateAllowedCond = (id, workspaceId = DEFAULT_WORKSPACE) => {
   const admin = reviewerCond(id, workspaceId), policy = policyCond(workspaceId, CREATE_PROJECTS.MEMBERS), member = activeMemberCond(id, workspaceId);
   return { cond: `(${admin.cond} OR (${policy.cond} AND ${member.cond}))`, args: [...admin.args, ...policy.args, ...member.args] };
 };
-const platformReviewerCond = accountId => ({
-  cond: "EXISTS (SELECT 1 FROM accounts WHERE id = ? AND platform_role = 'admin' AND status = 'active')", args: [accountId],
+const reviewMembershipWhere = "account_id = ? AND workspace_id = ? AND kind = 'human' AND status = 'active' AND workspace_status = 'active'";
+const platformReviewerCond = (accountId, scope) => ({
+  cond: `EXISTS (SELECT 1 FROM accounts WHERE id = ? AND platform_role = 'admin' AND status = 'active')
+    AND NOT EXISTS (SELECT 1 FROM participants WHERE ${reviewMembershipWhere})`, args: [accountId, accountId, scope],
 });
 // 申請仍待審核
 export const pendingCond = (id, workspaceId = DEFAULT_WORKSPACE) => ({ cond: `EXISTS (SELECT 1 FROM ${PCR_TABLE} WHERE id = ? AND workspace_id = ? AND state = 'pending')`, args: [id, workspaceId] });
@@ -220,14 +222,14 @@ export function registerProjectCreationRequests(d) {
   } };
 
   // 可見範圍：申請人本人（仍是有效的人類工作區成員），或這個工作區的審核人。其他人、AI 都看不到（呼叫端回 404）
-  const visibleTo = (v, me, row) => !!row && row.workspace_id === workspaceId
+  const visibleTo = (v, me, row) => !!row && row.workspace_id === workspaceId && me.workspace_id === workspaceId
     && (v.can(me, 'see_own_project_creation_requests', { target: { id: row.requester_id } }) || v.can(me, 'review_project_creation_requests', 'workspace'));
   // 輸出。結果專案：依呼叫者現行的專案權限決定給不給連結；看不到或已不存在只說「無法前往」
   function view(v, me, r, selected = null) {
     let project = null;
     if (r.project_id) {
       const p = selected ? selected.projects.get(r.project_id) : projectInfo(r.project_id);
-      project = p && (selected || v.can(me, 'discover_project', { project: p.id })) ? { id: p.id, name: p.name, available: true } : { available: false };
+      project = p && (selected?.canReview || v.can(me, 'discover_project', { project: p.id })) ? { id: p.id, name: p.name, available: true } : { available: false };
     }
     let statuses = null;
     try { statuses = r.statuses_json ? JSON.parse(r.statuses_json) : null; } catch {}
@@ -240,21 +242,24 @@ export function registerProjectCreationRequests(d) {
   }
   const byId = (id, scope = workspaceId) => db.get(`SELECT * FROM ${PCR_TABLE} WHERE id = ? AND workspace_id = ?`, String(id), scope);
   const requesterIn = (id, scope) => db.get('SELECT id, name FROM participants WHERE id = ? AND workspace_id = ?', id, scope);
-  async function reviewScope(me) {
-    if (!resolveReviewWorkspace || me.kind !== 'human' || !me.account_id) return null;
+  async function reviewContext(me) {
+    if (me.kind !== 'human' || !me.account_id) throw notFound();
     const account = await db.get('SELECT status, platform_role FROM accounts WHERE id = ?', me.account_id);
     if (account?.status !== 'active') throw new ApiError(401, 'INVALID_TOKEN', 'Token 不存在、已重設或已撤銷');
-    const selected = await resolveReviewWorkspace({ accountId: me.account_id });
-    if (selected == null || selected === workspaceId) return null;
-    if (account.platform_role !== 'admin' || !(await db.get('SELECT id FROM workspaces WHERE id = ?', selected))) throw notFound();
-    return selected;
+    // 只傳伺服器驗證過的識別資料，讓測試區分同一帳號的裝置。
+    const scope = (await resolveReviewWorkspace?.({ accountId: me.account_id, participantId: me.id, authKind: me.authKind, deviceId: me.deviceId })) ?? workspaceId;
+    if (scope !== workspaceId && !(await db.get('SELECT id FROM workspaces WHERE id = ?', scope))) throw notFound();
+    const member = await db.get(`SELECT id, name, kind, status, workspace_id, workspace_status, workspace_role FROM participants WHERE ${reviewMembershipWhere} ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, id LIMIT 1`,
+      me.account_id, scope, me.id);
+    const canReview = member?.workspace_role === 'admin' || account.platform_role === 'admin';
+    return { scope, member, canReview, selected: scope !== workspaceId || !member };
   }
-  async function selectedView(scope, rows) {
+  async function selectedView({ scope, canReview }, rows) {
     const people = await db.all('SELECT id, name FROM participants WHERE workspace_id = ? AND id IN (SELECT value FROM json_each(?))',
       scope, JSON.stringify(rows.map(r => r.requester_id)));
     const projects = await db.all('SELECT id, name FROM projects WHERE workspace_id = ? AND deleted_at IS NULL AND id IN (SELECT value FROM json_each(?))',
       scope, JSON.stringify(rows.map(r => r.project_id).filter(Boolean)));
-    return { people: new Map(people.map(p => [p.id, p])), projects: new Map(projects.map(p => [p.id, p])) };
+    return { canReview, people: new Map(people.map(p => [p.id, p])), projects: new Map(projects.map(p => [p.id, p])) };
   }
   const byRequestId = (requesterId, requestId) => db.get(`SELECT * FROM ${PCR_TABLE} WHERE workspace_id = ? AND requester_id = ? AND request_id = ?`, workspaceId, requesterId, requestId);
   // 提交後：叫申請人與目前的審核人重新抓取（不帶內容）。收件人照改完之後的成員資料
@@ -287,6 +292,7 @@ export function registerProjectCreationRequests(d) {
   // 送出申請：201；冪等重送 200；同名待審 409（資料庫的部分唯一索引）
   route('POST', '/api/project-creation-requests', guarded(async ({ ctx, me, req }) => {
     requireHuman(me);
+    if (me.workspace_id !== workspaceId) throw new ApiError(403, 'FORBIDDEN', '只有工作區成員能申請建立專案。');
     const c = await readContent(await readJson(req));
     const prior = await byRequestId(me.id, c.requestId);
     if (prior) return replay(await access.load(ctx), me, prior, c);
@@ -339,13 +345,15 @@ export function registerProjectCreationRequests(d) {
   // scope=review＝審核人看這個工作區全部的申請，另外回準確的待審總數 pendingTotal（不用載入的筆數推算）
   const SCOPES = {
     mine: async (ctx, me) => {
+      if (me.workspace_id !== workspaceId) throw notFound();
       const v = await access.check(ctx, me, 'see_own_project_creation_requests', { target: me });
-      return { v, where: 'workspace_id = ? AND requester_id = ?', args: [workspaceId, me.id] };
+      return { v, member: me, scope: workspaceId, where: 'workspace_id = ? AND requester_id = ?', args: [workspaceId, me.id] };
     },
     review: async (ctx, me) => {
-      const selected = await reviewScope(me);
-      const v = selected ? null : await access.check(ctx, me, 'review_project_creation_requests', 'workspace');
-      return { v, selected, where: 'workspace_id = ?', args: [selected ?? workspaceId], pendingTotal: true };
+      const review = await reviewContext(me);
+      if (!review.canReview) throw notFound();
+      const v = review.selected ? null : await access.load(ctx, { fresh: true });
+      return { ...review, v, where: 'workspace_id = ?', args: [review.scope], pendingTotal: true };
     },
   };
   route('GET', '/api/project-creation-requests', guarded(async ({ ctx, me, url }) => {
@@ -361,27 +369,27 @@ export function registerProjectCreationRequests(d) {
     const take = Math.min(limit, PCR_PAGE.MAX);
     const cur = q.get('cursor') ? decodeCursor(q.get('cursor')) : null;
     if (q.get('cursor') && !cur) throw invalid('cursor 不對（請用上一頁回傳的 nextCursor）');
-    const { v, selected, where, args, pendingTotal } = await scope(ctx, me);
+    const list = await scope(ctx, me);
+    const { v, member, selected, where, args, pendingTotal } = list;
     if (!selected) await loadProjects();
     const rows = await db.all(`SELECT * FROM ${PCR_TABLE} WHERE ${where}${state ? ' AND state = ?' : ''}${cur ? ' AND (created_at < ? OR (created_at = ? AND id < ?))' : ''}
       ORDER BY created_at DESC, id DESC LIMIT ?`, ...args, ...(state ? [state] : []), ...(cur ? [cur[0], cur[0], cur[1]] : []), take + 1);
     const page = rows.slice(0, take);
-    const data = selected ? await selectedView(selected, page) : null;
-    const out = { items: page.map(r => view(v, me, r, data)), nextCursor: rows.length > take ? encodeCursor(page[page.length - 1]) : null };
-    if (pendingTotal) { const [sql, a] = pendingCountSql({ workspaceId: selected ?? workspaceId }); out.pendingTotal = Number(Object.values(await db.get(sql, ...a))[0]) || 0; }
+    const data = selected ? await selectedView(list, page) : null;
+    const out = { items: page.map(r => view(v, member, r, data)), nextCursor: rows.length > take ? encodeCursor(page[page.length - 1]) : null };
+    if (pendingTotal) { const [sql, a] = pendingCountSql({ workspaceId: list.scope }); out.pendingTotal = Number(Object.values(await db.get(sql, ...a))[0]) || 0; }
     return out;
   }));
 
   // 單筆：申請人本人或審核人；其他人（含 AI）一律 404。
   // 審核人另外得到 review：自己能不能核准或拒絕；待審核的再加自動網址英文名與代號的預估值、目前衝突的欄位（只說哪個欄位，不透露被哪個專案占用）
   route('GET', '/api/project-creation-requests/:id', guarded(async ({ ctx, me, params }) => {
-    const { row, v, selected, scope } = await reviewTarget(ctx, me, params.id);
-    if (!selected) await loadProjects();
-    const out = view(v, me, row, selected ? await selectedView(scope, [row]) : null);
-    if (selected || v.can(me, 'review_project_creation_requests', 'workspace')) {
+    const review = await reviewTarget(me, params.id);
+    const { row, canReview, scope } = review;
+    const out = await reviewedResult(ctx, row, review);
+    if (canReview) {
       const pending = row.state === PCR_STATE.PENDING;
-      out.review = { canApprove: pending && (selected !== null || v.can(me, 'approve_project_creation_request', 'workspace')),
-        canReject: pending && (selected !== null || v.can(me, 'reject_project_creation_request', 'workspace')) };
+      out.review = { canApprove: pending, canReject: pending };
       if (pending && creation) {
         const p = await creation.preview(specOf(row), scope);
         Object.assign(out.review, { preview: { slug: p.slug, code: p.code, slugEstimated: p.slugEstimated, codeEstimated: p.codeEstimated }, conflicts: p.conflicts });
@@ -405,31 +413,26 @@ export function registerProjectCreationRequests(d) {
   // 另一位審核人剛好先核准了（不是錯誤：回原本的結果）
   class ApprovedMeanwhile { constructor(row) { this.row = row; } }
   const holds = c => holdsNow(db, c);
-  async function reviewTarget(ctx, me, id) {
-    const selected = await reviewScope(me);
-    const scope = selected ?? workspaceId;
-    const row = await byId(id, scope);
-    const v = selected ? null : await access.load(ctx, { fresh: true });
-    if (!row || (!selected && !visibleTo(v, me, row))) throw notFound();
-    return { row, v, selected, scope };
+  async function reviewTarget(me, id) {
+    const review = await reviewContext(me);
+    if (!review.member && !review.canReview) throw notFound();
+    const row = await byId(id, review.scope);
+    if (!row || (!review.canReview && review.member?.id !== row.requester_id)) throw notFound();
+    return { ...review, row };
   }
-  const reviewMembershipWhere = `account_id = ? AND workspace_id = ? AND kind = 'human' AND status = 'active' AND workspace_status = 'active'`;
-  async function reviewer(me, scope, selected) {
-    if (!selected && me.workspace_id === scope && me.workspace_status === 'active') {
-      return { actor: me, decision: { by: me.id }, allowed: reviewerCond(me.id, scope), lock: [] };
+  function reviewer(me, { scope, member }) {
+    const accountId = me.account_id;
+    const actor = member ?? { kind: 'account', id: accountId, name: me.name };
+    const decision = member ? { by: member.id } : { accountId };
+    const role = member ? reviewerCond(member.id, scope) : platformReviewerCond(accountId, scope);
+    const allowed = { cond: `EXISTS (SELECT 1 FROM workspaces WHERE id = ?)
+      AND EXISTS (SELECT 1 FROM accounts WHERE id = ? AND status = 'active') AND (${role.cond})`, args: [scope, accountId, ...role.args] };
+    if (member) {
+      allowed.cond += ' AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND account_id = ?)';
+      allowed.args.push(member.id, accountId);
     }
-    const allowed = platformReviewerCond(me.account_id);
-    const member = await db.get(`SELECT id, name, kind FROM participants WHERE ${reviewMembershipWhere} ORDER BY id LIMIT 1`, me.account_id, scope);
-    const actor = member ?? { kind: 'account', id: me.account_id, name: me.name };
-    const decision = member ? { by: member.id } : { accountId: me.account_id };
     // 工作區列先鎖，再跟平台角色／帳號狀態的異動在 accounts 列上排序。
-    const lock = [
-      ensureStmt('EXISTS (SELECT 1 FROM workspaces WHERE id = ?)', [scope]),
-      ['UPDATE accounts SET status = status WHERE id = ?', [me.account_id]],
-      member ? ensureStmt(`EXISTS (SELECT 1 FROM participants WHERE ${reviewMembershipWhere} AND id = ?)`, [me.account_id, scope, member.id])
-        : ensureStmt(`NOT EXISTS (SELECT 1 FROM participants WHERE ${reviewMembershipWhere})`, [me.account_id, scope]),
-    ];
-    return { actor, decision, allowed, lock };
+    return { actor, decision, allowed, lock: ['UPDATE accounts SET status = status WHERE id = ?', [accountId]] };
   }
   function specOf(row) {
     let statuses = null;
@@ -437,15 +440,16 @@ export function registerProjectCreationRequests(d) {
     return { name: row.name, visibility: row.visibility, slug: row.slug ?? null, code: row.code ?? null, statuses };
   }
   // 呼叫者還能不能審核（新鮮資料，不用快取）：不能→還看得到（是申請人本人）403、看不到 404
-  async function callerBlocked(me, row, scope, allowed) {
+  async function callerBlocked(accountId, row, scope, allowed) {
     if (await holds(allowed)) return null;
-    const own = !!row && row.requester_id === me.id && await holds(activeMemberCond(me.id, scope));
+    const own = row && await db.get(`SELECT 1 AS x FROM participants WHERE ${reviewMembershipWhere} AND id = ?
+      AND EXISTS (SELECT 1 FROM accounts WHERE id = ? AND status = 'active')`, accountId, scope, row.requester_id, accountId);
     return own ? notReviewer() : notFound();
   }
   // 交易前與交易失敗後用新鮮資料說明失敗原因；保證仍靠交易內的斷言。
   async function approvalBlocked(me, id, scope, allowed) {
     const now = await byId(id, scope);
-    const who = await callerBlocked(me, now, scope, allowed);
+    const who = await callerBlocked(me.account_id, now, scope, allowed);
     if (who) return who;
     if (!now) return notFound();
     if (now.state === PCR_STATE.APPROVED) return new ApprovedMeanwhile(now);
@@ -463,12 +467,13 @@ export function registerProjectCreationRequests(d) {
     return blocked;
   }
   // 已核准：回原本的結果（200，不再寫任何東西）。結果專案依呼叫者現行的專案權限（專案後來封存、刪除、清除也不重建）
-  async function reviewedResult(ctx, me, row, selected) {
-    if (selected) return view(null, me, row, await selectedView(selected, [row]));
+  async function reviewedResult(ctx, row, review) {
+    const { member, selected, canReview } = review;
+    if (selected && canReview) return view(null, member, row, await selectedView(review, [row]));
     await loadProjects(true); // 專案可能是別份程式剛建的
-    return view(await access.load(ctx, { fresh: true }), me, row);
+    return view(await access.load(ctx, { fresh: true }), member, row, selected ? await selectedView(review, [row]) : null);
   }
-  const approvedResult = async (ctx, me, row, selected, duplicate) => ({ __status: 200, duplicate, ...await reviewedResult(ctx, me, row, selected) });
+  const approvedResult = async (ctx, row, review, duplicate) => ({ __status: 200, duplicate, ...await reviewedResult(ctx, row, review) });
   const notice = (requesterId, kind, row) => ['INSERT INTO account_notices (id, participant_id, kind, detail, created_at) VALUES (?,?,?,?,?)',
     [randId('ntc'), requesterId, kind, JSON.stringify({ n: String(row.name).slice(0, 40) }), Date.now()]];
 
@@ -477,46 +482,48 @@ export function registerProjectCreationRequests(d) {
   // → 專案、申請人的專案管理員身分、project.create 稽核（必要：稽核還沒就緒 503）、申請轉為已核准、給申請人的通知。審核人不成為專案成員。
   // 自動產生的識別碼因競態被用掉：建立模組重算重試（每次整批重新斷言 (a)–(e)）
   route('POST', '/api/project-creation-requests/:id/approve', guarded(async ({ ctx, me, params }) => {
-    const { row, v, selected, scope } = await reviewTarget(ctx, me, params.id);
-    if (!selected && !v.can(me, 'approve_project_creation_request', 'workspace')) throw notReviewer();
+    const review = await reviewTarget(me, params.id);
+    const { row, scope, canReview } = review;
+    if (!canReview) throw notReviewer();
     // 冪等：合法的審核人對已核准的申請再核准，回原本的結果（不重新檢查政策或申請人資格）
-    if (row.state === PCR_STATE.APPROVED) return approvedResult(ctx, me, row, selected, true);
+    if (row.state === PCR_STATE.APPROVED) return approvedResult(ctx, row, review, true);
     if (row.state !== PCR_STATE.PENDING) throw ended(row);
-    const { actor, decision, allowed, lock } = await reviewer(me, scope, selected);
+    const { actor, decision, allowed, lock } = reviewer(me, review);
     try {
       const why = await approvalBlocked(me, row.id, scope, allowed);
       if (why) throw why;
       const requester = await requesterIn(row.requester_id, scope);
       if (!requester) throw requesterGone();
       await creation.create({ actor, beneficiary: requester, method: CREATION_METHOD.APPROVED_REQUEST, requestId: row.id, spec: specOf(row), workspaceId: scope,
-        guards: [...lock, ensure(pendingCond(row.id, scope)), ensure(allowed), ensure(activeMemberCond(row.requester_id, scope)), ensure(policyCond(scope))],
+        guards: [lock, ensure(pendingCond(row.id, scope)), ensure(allowed), ensure(activeMemberCond(row.requester_id, scope)), ensure(policyCond(scope))],
         extra: ({ id, at }) => [...transitionStmts({ id: row.id, to: PCR_STATE.APPROVED, at, ...decision, workspaceId: scope, projectId: id }), notice(row.requester_id, PCR_NOTICE_APPROVED, row)],
         explain: () => approvalBlocked(me, row.id, scope, allowed) });
     } catch (e) {
-      if (e instanceof ApprovedMeanwhile) return approvedResult(ctx, me, e.row, selected, true);
+      if (e instanceof ApprovedMeanwhile) return approvedResult(ctx, e.row, review, true);
       if (e instanceof ApiError && TAKEN[e.code]) {
         // 另一位審核人可能剛核准了同一份申請。只在呼叫者仍有權審核時回原結果。
         const now = await byId(row.id, scope);
-        const why = await callerBlocked(me, now, scope, allowed);
+        const why = await callerBlocked(me.account_id, now, scope, allowed);
         if (why) throw why;
-        if (now?.state === PCR_STATE.APPROVED) return approvedResult(ctx, me, now, selected, true);
+        if (now?.state === PCR_STATE.APPROVED) return approvedResult(ctx, now, review, true);
         throw taken(e);
       }
       throw e;
     }
     pokeLater(row.requester_id, scope);
-    return approvedResult(ctx, me, await byId(row.id, scope), selected, false);
+    return approvedResult(ctx, await byId(row.id, scope), review, false);
   }));
 
   // 拒絕：理由必填（1～200 字）。同一批（第一句工作區列鎖）斷言仍待審核、審核人仍有管理權 → 申請轉為已拒絕、
   // project_creation_request.reject 稽核（必要：稽核還沒就緒 503）、給申請人的通知
   route('POST', '/api/project-creation-requests/:id/reject', guarded(async ({ ctx, me, params, req }) => {
-    const { row, v, selected, scope } = await reviewTarget(ctx, me, params.id);
-    if (!selected && !v.can(me, 'reject_project_creation_request', 'workspace')) throw notReviewer();
+    const review = await reviewTarget(me, params.id);
+    const { row, scope, canReview } = review;
+    if (!canReview) throw notReviewer();
     const reason = String((await readJson(req)).reason ?? '').trim();
     if (!reason || reason.length > PCR_REASON_MAX) throw invalid(`拒絕理由為必填，最多 ${PCR_REASON_MAX} 字`);
     if (row.state !== PCR_STATE.PENDING) throw ended(row);
-    const { actor, decision, allowed, lock } = await reviewer(me, scope, selected);
+    const { actor, decision, allowed, lock } = reviewer(me, review);
     const requester = await requesterIn(row.requester_id, scope);
     // 不讓其他工作區的成員 id 成為這個工作區的稽核對象或通知收件人。
     if (!requester) throw notFound();
@@ -525,20 +532,20 @@ export function registerProjectCreationRequests(d) {
       target: { kind: 'participant', ...who }, detail: { requestId: row.id, requester: who } });
     if (!audit) throw auditNotReady();
     const done = await writeInWorkspace([
-      ...lock, ensure(allowed),
+      lock, ensure(allowed),
       ensureStmt('EXISTS (SELECT 1 FROM participants WHERE id = ? AND workspace_id = ?)', [requester.id, scope]),
       ...transitionStmts({ id: row.id, to: PCR_STATE.REJECTED, at: nowIso(), ...decision, workspaceId: scope, rejectReason: reason }),
       audit, notice(row.requester_id, PCR_NOTICE_REJECTED, row),
     ], scope);
     if (!done) {
       const now = await byId(row.id, scope);
-      const why = await callerBlocked(me, now, scope, allowed);
+      const why = await callerBlocked(me.account_id, now, scope, allowed);
       if (why) throw why;
       if (now && now.state !== PCR_STATE.PENDING) throw ended(now);
       throw conflict();
     }
     pokeLater(row.requester_id, scope);
-    return reviewedResult(ctx, me, await byId(row.id, scope), selected);
+    return reviewedResult(ctx, await byId(row.id, scope), review);
   }));
 
   // 撤回：申請人本人；交易內斷言仍待審核、操作者仍是有效成員。不通知任何人、不寫稽核（歷史在申請本身）

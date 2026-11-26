@@ -1,6 +1,7 @@
 -- ADR 0007: retain participant history; review decisions have exactly one actor.
--- Rebuild the table to replace its state CHECK on SQLite, PostgreSQL and D1.
-CREATE TABLE IF NOT EXISTS project_creation_requests_017 (
+-- Rebuild the table to replace its state CHECK on SQLite and D1.
+-- Keep the PostgreSQL override in migrations/pg/ in sync.
+CREATE TABLE IF NOT EXISTS project_creation_requests_018 (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
   requester_id TEXT NOT NULL,
@@ -30,14 +31,14 @@ CREATE TABLE IF NOT EXISTS project_creation_requests_017 (
       AND cancel_code IN ('policy_changed', 'workspace_member_removed', 'workspace_member_left', 'account_disabled', 'restore_invalid'))
   )
 );
-INSERT INTO project_creation_requests_017 (id, workspace_id, requester_id, request_id, name, reason, visibility, slug, code, statuses_json, state, created_at, ended_at, ended_by, reject_reason, cancel_code, project_id)
+INSERT INTO project_creation_requests_018 (id, workspace_id, requester_id, request_id, name, reason, visibility, slug, code, statuses_json, state, created_at, ended_at, ended_by, reject_reason, cancel_code, project_id)
 SELECT id, workspace_id, requester_id, request_id, name, reason, visibility, slug, code, statuses_json, state, created_at, ended_at, ended_by, reject_reason, cancel_code, project_id
 FROM project_creation_requests;
 DROP TABLE project_creation_requests;
-ALTER TABLE project_creation_requests_017 RENAME TO project_creation_requests;
+ALTER TABLE project_creation_requests_018 RENAME TO project_creation_requests;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pcr_request ON project_creation_requests (workspace_id, requester_id, request_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pcr_pending_name ON project_creation_requests (workspace_id, requester_id, name) WHERE state = 'pending';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pcr_project ON project_creation_requests (project_id) WHERE project_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_pcr_state ON project_creation_requests (workspace_id, state, created_at);
 CREATE INDEX IF NOT EXISTS idx_pcr_requester ON project_creation_requests (workspace_id, requester_id, created_at);
-ALTER TABLE audit_log ADD COLUMN actor_account_id TEXT;
+ALTER TABLE audit_log ADD COLUMN actor_account_id TEXT CHECK (actor_account_id IS NULL OR (actor_id IS NULL AND actor_kind = 'account'));

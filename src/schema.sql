@@ -560,7 +560,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   target_name TEXT,                    -- 寫入當時的名字
   count INTEGER,                       -- 摘要數字（例：清除了幾則訊息）
   detail TEXT,                         -- 細節 JSON；不放訊息原文
-  actor_account_id TEXT                -- 審核人的帳號（ADR 0007）；不佔用 actor_id
+  actor_account_id TEXT CHECK (actor_account_id IS NULL OR (actor_id IS NULL AND actor_kind = 'account')) -- 審核人的帳號（ADR 0007）
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log (at);
 CREATE INDEX IF NOT EXISTS idx_audit_log_workspace ON audit_log (workspace_id, seq);

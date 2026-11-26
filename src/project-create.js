@@ -44,11 +44,11 @@ const IDENTITY_TRIES = 3; // 自動產生的值最多試幾次
 
 // deps：
 //   db、randId、nowIso、ApiError、auditLog、membership、projEvent
-//   nameFreeCond(name, id) → { cond, args }：沒有別的未封存、未刪除專案用這個名稱
+//   nameFreeCond(name, id, workspaceId) → { cond, args }：沒有別的未封存、未刪除專案用這個名稱
 //   write(stmts) → true｜false：工作區列鎖 → 不在還原中 → 已正規化 → stmts；斷言不成立回 false（core.js 的 writeIdentity）
 //   names：讀現況、產生候選值與友善的錯誤（core.js 的專案快取與識別碼規則）
-//     refresh()、nameInUse(name)、usedSlugs() → Set、autoSlug(name, used)、autoCode(slug)、
-//     checkCode(code, actor)（被用掉丟 CODE_TAKEN）、slugTaken(slug, used) → ApiError、nameWriteFailed(id, name) → ApiError、afterWrite()
+//     refresh()、nameInUse(name, workspaceId)、usedSlugs() → Set、autoSlug(name, used)、autoCode(slug)、
+//     checkCode(code, actor)（被用掉丟 CODE_TAKEN）、slugTaken(slug, used) → ApiError、nameWriteFailed(id, name, workspaceId) → ApiError、afterWrite()
 export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, membership, projEvent, nameFreeCond, write, names }) {
   const auditNotReady = () => new ApiError(503, 'AUDIT_NOT_READY', '稽核紀錄還沒準備好（資料庫還沒升級），這次沒有建立；請稍後再試。', { retryAfter: 5 });
 

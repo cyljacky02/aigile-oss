@@ -213,7 +213,7 @@ export function createAccess(deps) {
   const memberProjectsOf = deps.memberProjectsOf || projectsOf;
   // 平台管理員（啟用中的人類）；實際的工作區管理權＝工作區管理員或平台管理員（隱含）
   const isPlatformAdmin = p => !!p && p.kind === 'human' && p.status === 'active' && !!deps.isPlatformAdmin?.(p);
-  const adminInWorkspace = p => hasWorkspaceAdminRights(p, deps.isPlatformAdmin);
+  const adminInWorkspace = deps.adminInWorkspace ?? (p => hasWorkspaceAdminRights(p, deps.isPlatformAdmin));
   // 隱含權限不算成員：工作區管理員（含平台管理員）在沒加入、也沒有職稱的專案不列為成員（名單、人數、團隊狀態、@所有人都不算）
   // （只有職稱不算成員：職稱不帶權限，也不帶成員資格）
   const implicitOnly = (p, pj) => !!pj && adminInWorkspace(p) && !memberProjectsOf(p).includes(pj);
