@@ -116,13 +116,14 @@ try {
   }
 
   // 5) 斷言失敗後用新鮮資料判斷原因：擋下它的同名專案剛好又改名了（判斷不出原因）→ 一般的 409 CONFLICT，什麼都沒建
+  // （兩個建立指定不同的網址英文名：只有名稱衝突。自動產生的網址英文名剛好被搬走會重算重試，見 project-identity-test.js）
   {
     let r2 = null;
     before = { re: CREATE, run: async () => {
-      r2 = await create('辛案');
+      r2 = await call(boss.token, '/api/projects', 'POST', { name: '辛案', slug: 'xin-b' });
       after = { re: CREATE, run: async () => { await db.run('UPDATE projects SET name = ? WHERE id = ?', '辛案二', r2.body.id); } };
     } };
-    const r1 = await create('辛案');
+    const r1 = await call(boss.token, '/api/projects', 'POST', { name: '辛案', slug: 'xin-a' });
     assert.equal(r2.status, 201, '先做完的建立：' + JSON.stringify(r2.body).slice(0, 200));
     assert.equal(after, null, '第一個建立的寫入失敗後才改名');
     assert.equal(r1.status, 409, '後做的建立要擋下：' + JSON.stringify(r1.body).slice(0, 200));

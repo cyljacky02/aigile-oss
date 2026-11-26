@@ -11,6 +11,7 @@ import { APP_VERSION, cmpVersion } from './version.js';
 import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, RESTORE_STATE_KEY } from './write-order.js';
+import { IDENTITY_READY_KEY } from './project-identity.js';
 
 export const BACKUP_FORMAT = 'aigile-backup';
 export const BACKUP_FORMAT_VERSION = 1;
@@ -28,7 +29,8 @@ const FILE_TABLES = ['docs', 'files', 'kb_chunks']; // 不含附件時整張不�
 const BLOB_COLS = { avatars: ['data'], avatar_proposals: ['data'], file_chunks: ['data'] };
 const DROP_COLS = { participants: ['token', 'token_expires_at'] }; // 匯入時換新：Token 隨機、已過期
 // app_settings 不帶的：AI 接入連結（一次性密鑰的雜湊）、預設管理員要改帳密的標記、快取用的版本（成員、訊息刪除）、匯入中的標記、更新檢查的快取
-const skipSetting = k => k.startsWith('olink:') || k.startsWith('must_change_cred:') || k.startsWith('relogin:') || ['people_ver', 'msg_ver', 'restore_state', 'update_check'].includes(k);
+// IDENTITY_READY_KEY：專案識別碼「已正規化」是這個站自己的狀態，不跟著搬（還原收尾一定重新正規化，舊備份或動過的備份都不會因為帶了標記而跳過）
+const skipSetting = k => k.startsWith('olink:') || k.startsWith('must_change_cred:') || k.startsWith('relogin:') || ['people_ver', 'msg_ver', 'restore_state', 'update_check', IDENTITY_READY_KEY].includes(k);
 // 每頁幾列：一般 500；大欄位的表少一點（技能一列最多 1 MB、file_chunks 一列 512 KB、頭像是圖片）
 const PAGES = { file_chunks: 1, skills: 4, avatar_proposals: 5, avatars: 20, kb_pages: 50 }; // 知識頁一頁最多 2 萬字
 const pageOf = t => PAGES[t] || 500;
