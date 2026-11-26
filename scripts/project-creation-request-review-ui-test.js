@@ -92,6 +92,13 @@ try {
   assert.deepEqual([g.state, g.rejectReason], ['rejected', '名稱跟現有專案重複，請改名再申請']);
   await until(() => js("!document.querySelector('.wpcr')"), 8000, '沒有待審的了：這一類不顯示');
 
+  // ---------- 稽核紀錄：核准建立與拒絕都有紀錄 ----------
+  await login(boss.token, '/admin/auditlog');
+  await until(() => js("/拒絕建立專案申請/.test(document.querySelector('.alog-table')?.innerText || '')"), 15000, '稽核紀錄有拒絕');
+  const alog = await js("document.querySelector('.alog-table').innerText");
+  assert.match(alog, /拒絕建立專案申請[\s\S]*申請人 陳大文/, '拒絕的紀錄與申請人');
+  assert.match(alog, /核准申請後建立/, '核准建立的 project.create');
+
   // ---------- 審核權失效：清掉已載入的審核資料 ----------
   const delta = await submit('Delta');
   await login(ann.token, '/cross/inbox');

@@ -9364,6 +9364,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     'workspace_policy.update': ['修改工作區政策', 'Changed workspace policy'], 'recovery_window.update': ['修改可復原期', 'Changed recovery window'],
     'message.delete': ['刪除訊息', 'Deleted message'], 'message.restore': ['復原訊息', 'Restored message'], 'message.purge': ['永久清除訊息', 'Purged messages'],
     'project_messages.clear': ['清空專案訊息', 'Cleared project messages'], 'project_messages.restore': ['復原清空的專案訊息', 'Restored cleared project messages'],
+    'project_creation_request.reject': ['拒絕建立專案申請', 'Rejected project request'], // #45
     'project.create': ['建立專案', 'Created project'], 'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
   };
   const alogAction = k => (ALOG_ACTIONS[k] ? L(...ALOG_ACTIONS[k]) : k);
@@ -9408,6 +9409,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const vis = { open: ['開放', 'open'], review: ['審核', 'review'], private: ['私人', 'private'] }[d.visibility];
       if (vis) out.push(L(`可見度：${vis[0]}`, `Visibility: ${vis[1]}`));
     }
+    if (e.action === 'project_creation_request.reject' && d.requester?.name) out.push(L(`申請人 ${d.requester.name}`, `Requested by ${d.requester.name}`)); // #45
     if (d.revokedAiTokens) out.push(L(`作廢 ${d.revokedAiTokens} 個 AI 的 Token`, `Revoked ${d.revokedAiTokens} AI token(s)`));
     if (e.action === 'backup.restore') out.push(L(`備份版本 ${d.appVersion || '?'}；${d.humans ?? 0} 位人類、${d.ais ?? 0} 個 AI`, `Backup version ${d.appVersion || '?'}; ${d.humans ?? 0} human(s), ${d.ais ?? 0} AI(s)`));
     if (d.counts) out.push(L(`訊息 ${d.counts.messages ?? 0}、卡片 ${d.counts.cards ?? 0}、文件 ${d.counts.docs ?? 0}`, `${d.counts.messages ?? 0} messages, ${d.counts.cards ?? 0} cards, ${d.counts.docs ?? 0} docs`));

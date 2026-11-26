@@ -3835,6 +3835,7 @@ window.AIGILE_EN = {
     "申請指定的網址英文名已經有專案在用，這份申請暫時不能核准；可以附理由拒絕，或等申請人撤回重提。": "The URL name in the request is already used by a project, so this request can't be approved for now. You can reject it with a reason, or wait for the requester to withdraw and resubmit.",
     "申請指定的專案代號已經有專案在用（或是舊代號），這份申請暫時不能核准；可以附理由拒絕，或等申請人撤回重提。": "The project code in the request is already used by a project (or is an old code), so this request can't be approved for now. You can reject it with a reason, or wait for the requester to withdraw and resubmit.",
     "{0} 申請建立「{1}」": "{0} requested \"{1}\"",
+    "拒絕建立專案申請": "Rejected project request",
     "你的建立專案申請「{0}」已核准，專案已建立 · {1}。": "Your project request \"{0}\" was approved and the project was created · {1}.",
     "你的建立專案申請「{0}」沒有核准 · {1}。": "Your project request \"{0}\" was not approved · {1}.",
     "你是這個專案的專案管理員；在「我的建立專案申請」可以進入專案。": "You're the project admin of this project; open it from \"My project requests\".",
