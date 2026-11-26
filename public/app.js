@@ -1819,7 +1819,7 @@
     for (const { list, last: n } of dmGroups((work.notes || []).filter(x => x.dm))) items.push({ p: n.project ?? null, kind: n.sender?.system ? '通知' : '私訊', title: (n.sender?.system ? `平台通知：${oneLine(dmGist(n.preview, true), 60)}` : `${n.sender?.name || ''} 回你了`) + (list.length > 1 ? `（${list.length} 則）` : ''), key: 'n:' + n.notificationId }); // PLAT-388 E：連發的合併成一項
     for (const j of (work.joins || []).filter(j => dueForMe(j.project, j.createdAt))) items.push({ p: myProjects().includes(j.project) ? j.project : null, kind: '申請', title: `${j.name} 申請加入${j.projectName}`, key: 'j:' + j.id }); // PLAT-381 先給 leader
     for (const k of (work.skillRev || []).filter(k => dueForMe(k.project, k.uploadedAt))) items.push({ p: myProjects().includes(k.project) ? k.project : null, kind: '核准', title: `技能待核准：${k.name} v${k.version}`, key: 'k:' + k.skillId }); // PLAT-381
-    for (const r of work.pcrRev?.items || []) items.push({ p: null, kind: '建立專案', title: `${r.requesterName || ''} 申請建立「${r.name}」`, key: 'r:' + r.id }); // 建立專案申請（#45）：工作區層，不屬於任何專案
+    for (const r of work.pcrRev?.items || []) items.push({ p: null, ws: true, kind: '建立專案', title: `${r.requesterName || ''} 申請建立「${r.name}」`, key: 'r:' + r.id }); // 建立專案申請（#45）：工作區層，不屬於任何專案（「要你處理」分在「工作區」）
     return items.filter(x => !x.p || myProjects().includes(x.p));
   }
   const todoInView = (x, v = projectView()) => v === 'hub' || (v === 'cross' ? !x.p : x.p === v);
@@ -1836,7 +1836,7 @@
   }
   function todoByView() {
     const items = todoItems();
-    const n = { hub: items.length, cross: items.filter(x => !x.p).length };
+    const n = { hub: items.length + pcrRevHidden(), cross: items.filter(x => !x.p).length + pcrRevHidden() }; // 建立專案申請：還沒載入的也算（待審總數）
     for (const p of myProjects()) n[p] = items.filter(x => x.p === p).length;
     return n;
   }
@@ -4115,25 +4115,41 @@
   });
   // ---------- 建立專案申請的審核（#45）：「要你處理」的「建立專案申請」一類 ----------
   // 只有審核人（capability canReviewProjectCreationRequests）讀；待審總數用伺服器的 pendingTotal。失去審核權（capability 沒了、API 403／404）就清掉已載入的資料
-  work.pcrRev = { items: [], total: 0 };
+  work.pcrRev = { items: [], total: 0, next: null, loading: false };
+  const PCR_REV_PAGE = 50; // 一頁幾份；更多的按「載入更多」
+  // 已有待審總數、但還沒載入的份數（「要你處理」的數字用總數，不用載入的筆數）
+  const pcrRevHidden = () => Math.max(0, (work.pcrRev?.total || 0) - (work.pcrRev?.items || []).length);
   const canReviewPcr = () => state.me?.memberType === 'human' && !!state.projMeta.canReviewProjectCreationRequests;
   function clearPcrRev() {
-    work.pcrRev = { items: [], total: 0 };
+    work.pcrRev = { items: [], total: 0, next: null, loading: false };
     if (document.querySelector('#modal-root #pcr-rv')) closeModal();
   }
-  async function loadPcrRev() {
+  // more：載入下一頁（接在後面）；否則從頭重讀，份數照目前載入的（最多 100，即時更新不會把已載入的縮回第一頁）
+  async function loadPcrRev(more = false) {
     if (!canReviewPcr()) return clearPcrRev();
+    const cur = work.pcrRev;
+    if (more && (!cur.next || cur.loading)) return;
+    const limit = more ? PCR_REV_PAGE : Math.min(100, Math.max(PCR_REV_PAGE, cur.items.length));
+    cur.loading = true;
     try {
-      const d = await api('/api/project-creation-requests?scope=review&state=pending&limit=100');
-      work.pcrRev = { items: d.items || [], total: d.pendingTotal ?? (d.items || []).length };
-    } catch (err) { if (err.status === 403 || err.status === 404) clearPcrRev(); }
+      const d = await api(`/api/project-creation-requests?scope=review&state=pending&limit=${limit}${more ? `&cursor=${encodeURIComponent(cur.next)}` : ''}`);
+      const items = more ? [...cur.items, ...(d.items || []).filter(x => !cur.items.some(y => y.id === x.id))] : d.items || [];
+      work.pcrRev = { items, total: d.pendingTotal ?? items.length, next: d.nextCursor || null, loading: false };
+    } catch (err) { cur.loading = false; if (err.status === 403 || err.status === 404) clearPcrRev(); }
   }
+  document.addEventListener('click', async e => {
+    if (!e.target.closest?.('[data-pcr-rev-more]')) return;
+    await loadPcrRev(true);
+    updateTodoBadge();
+    if (state.page === 'inbox' || state.page === 'hub') renderWork();
+  });
   function pcrRevHtml() {
     const items = work.pcrRev?.items || [];
     if (!items.length) return '';
     return `<section class="wsugg wpcr"><div class="wsugg-head"><span class="wdot"></span><h3>建立專案申請</h3><span class="wcount ora">${work.pcrRev.total}</span><span class="muted small">成員申請的新專案：核准後立即建立，申請人成為專案管理員</span></div>
       ${items.map(r => `<div class="sugg-row pcr-rev-row" data-pcr-rev-row="${esc(r.id)}"><span class="lead-ic" aria-hidden="true">🗂️</span><div class="sugg-main"><b data-nt>${esc(r.name)}</b><span class="muted small"><span data-nt>${esc(r.requesterName || '')}</span> · <span>${agoText(r.createdAt)}</span> · <span data-nt>「${esc(oneLine(r.reason, 60))}」</span></span></div>
-        <div class="sugg-actions"><button type="button" class="btn small primary" data-pcr-review="${esc(r.id)}">查看並處理</button></div></div>`).join('')}</section>`;
+        <div class="sugg-actions"><button type="button" class="btn small primary" data-pcr-review="${esc(r.id)}">查看並處理</button></div></div>`).join('')}
+      ${work.pcrRev.next ? `<button type="button" class="link small" data-pcr-rev-more${work.pcrRev.loading ? ' disabled' : ''}>載入更多</button>` : ''}</section>`;
   }
   // 審核視窗：完整不可修改的內容、自動識別碼的預估值（標明預估）、衝突提示、「核准並建立」與「拒絕」（理由必填）
   async function openPcrReview(id) {
@@ -4209,12 +4225,12 @@
   });
   const hubTodoItems = () => todoItems(); // 跟數字同一個來源
   function hubTodoHtml(inModal = false) {
-    const items = hubTodoItems();
-    const groups = [...myProjects(), null].map(p => [p, items.filter(x => x.p === p)]).filter(([, l]) => l.length);
+    const items = hubTodoItems(), total = items.length + pcrRevHidden(); // 數字是總數（建立專案申請還沒載入的也算）
+    const groups = [...myProjects().map(p => [p, items.filter(x => x.p === p)]), [null, items.filter(x => !x.p && !x.ws)], ['ws', items.filter(x => x.ws)]].filter(([, l]) => l.length); // ws＝工作區層（建立專案申請）
     const cls = { 決策: 'dec', 需確認: 'ask', 建議: 'sg', 驗收: 'ver', 回覆: 'ask', 私訊: 'sg', 通知: 'sg', 申請: 'ver', 核准: 'ver', 建立專案: 'ver' };
-    return `${inModal ? '' : `<div class="ht-head"><h3>要你處理</h3>${items.length ? `<span class="ps-count">${items.length}</span>` : ''}<span class="grow"></span><span class="muted small">各專案彙總</span></div>`}
-      ${groups.length ? groups.map(([p, l]) => `<div class="ht-group">${esc(p ? projName(p) : '跨專案頻道')}</div>
-        ${l.map(x => `<button type="button" class="ht-row" data-hub-todo="${esc(x.key)}" data-hub-proj="${esc(p || 'cross')}"><span class="ht-tag ${cls[x.kind]}">${x.kind}</span><span class="ht-title">${esc(x.title)}</span><span class="ht-go" aria-hidden="true">›</span></button>`).join('')}`).join('')
+    return `${inModal ? '' : `<div class="ht-head"><h3>要你處理</h3>${total ? `<span class="ps-count">${total}</span>` : ''}<span class="grow"></span><span class="muted small">各專案彙總</span></div>`}
+      ${groups.length ? groups.map(([p, l]) => `<div class="ht-group">${esc(p === 'ws' ? '工作區' : p ? projName(p) : '跨專案頻道')}</div>
+        ${l.map(x => `<button type="button" class="ht-row" data-hub-todo="${esc(x.key)}" data-hub-proj="${esc(p && p !== 'ws' ? p : 'cross')}"><span class="ht-tag ${cls[x.kind]}">${x.kind}</span><span class="ht-title">${esc(x.title)}</span><span class="ht-go" aria-hidden="true">›</span></button>`).join('')}${p === 'ws' && pcrRevHidden() ? `<p class="muted small ht-more">還有 ${pcrRevHidden()} 份建立專案申請，在「要你處理」按「載入更多」</p>` : ''}`).join('')
         : '<p class="muted small ht-empty">目前沒有要你處理的事。</p>'}
       <p class="muted small ht-note">點一項＝進那個專案的「要你處理」並打開那一項；選項、回覆都在專案裡做，這裡只列、不在這裡決定。</p>`;
   }
@@ -9865,14 +9881,12 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       ${perm.gs && !perm.gs.error ? wsRecHtml(perm.gsRec) : ''}</div>`;
   }
   // 誰可以建立專案：所有成員／成員申請，管理員核准／只有工作區管理員（點了就存；從「成員申請」切走先確認，見 createProjectsChange）。
-  // 「成員申請」只在伺服器說能選（createProjectsOptions；暫時的啟用控制，#48 開放）或目前就是它時列出來
   function createProjectsHtml() {
     const gs = perm.gs;
     if (!gs || gs.error || !gs.createProjects) return '';
-    const approvalShown = gs.createProjects === 'approval' || (gs.createProjectsOptions || []).includes('approval');
     const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-cp" value="${v}" data-pp="createprojects"${gs.createProjects === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
     return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
-      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${approvalShown ? opt('approval', '成員申請，管理員核准', '一般成員送建立專案申請，工作區管理員或平台管理員核准後建立') : ''}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('approval', '成員申請，管理員核准', '一般成員送建立專案申請，工作區管理員或平台管理員核准後建立')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
   }
   // 切換「誰可以建立專案」（#46）：從「成員申請」切走會取消所有待審的建立專案申請——先讀預估數量、跳確認；
   // 存好後的提示用儲存回應的實際數字（預覽之後可能又有人送出）。取消就不存，單選項回到原本的值

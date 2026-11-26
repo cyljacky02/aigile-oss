@@ -90,8 +90,6 @@ const handle = createApp({
     supabaseTopic: process.env.SUPABASE_TOPIC,
     updateCheck: process.env.UPDATE_CHECK ?? (process.env.AIGILE_TEST_PROJECTS === '1' ? '0' : undefined), // 管理頁查新版本；設 0 關掉（測試模式不連 GitHub）
     feedbackRepo: process.env.FEEDBACK_REPO,
-    // 暫時的啟用控制（#44 加、#48 移除）：設 1 才能把「誰可以建立專案」設成「成員申請，管理員核准」。整個流程還沒做完，只給開發與測試用
-    unreleasedProjectCreationRequests: process.env.AIGILE_UNRELEASED_PROJECT_CREATION_REQUESTS,
   },
 });
 

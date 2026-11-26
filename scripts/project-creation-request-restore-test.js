@@ -17,9 +17,11 @@ import { dbStorage } from '../src/storage-db.js';
 import { openTestDb } from './test-db.js';
 import { appCaller } from './test-call.js';
 import { adminSession } from './test-admin.js';
+import { loadI18n, HAN_OR_FULLWIDTH } from './test-i18n.js';
+const EN = loadI18n('en'); // 英文介面顯示錯誤用的同一支（BACKUP_ROW_INVALID 的說明整句要翻得出來）
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pcrr-'));
-const CONFIG = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000', unreleasedProjectCreationRequests: '1' }; // 暫時的啟用控制（#48 移除）
+const CONFIG = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' };
 const opened = [];
 const ok = (r, label) => { assert.ok(r.status < 400, `${label}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r.body; };
 // 一個站：fail(規則) 讓下一次符合的寫入整批丟錯（資料庫照交易規則什麼都不寫）
@@ -214,6 +216,8 @@ try {
       const r = await E.call(me.token, '/api/admin/restore/rows', 'POST', { table: 'project_creation_requests', rows: [].concat(rows) });
       assert.deepEqual([r.status, r.body?.error?.code], [400, 'BACKUP_ROW_INVALID'], `${why}：明確的格式錯誤：${r.status} ${JSON.stringify(r.body)}`);
       assert.ok(String(r.body.error.message).includes('project_creation_requests'), `${why}：錯誤說明是哪張表：${r.body.error.message}`);
+      const inEnglish = EN.err(r.body.error.code, r.body.error.message);
+      assert.ok(!HAN_OR_FULLWIDTH.test(inEnglish), `${why}：英文介面整句都是英文（含哪裡不合法）：${inEnglish}`);
       assert.equal(await n(E.db, 'SELECT COUNT(*) AS n FROM project_creation_requests'), 0, `${why}：什麼都沒寫`);
     }
     ok(await E.call(me.token, '/api/admin/restore/rows', 'POST', { table: 'project_creation_requests', rows: [good] }), '合法的列照常匯入');

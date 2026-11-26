@@ -24,7 +24,7 @@ import { cancelStmts } from '../src/project-creation-requests.js';
 import { lockWorkspaceStmt } from '../src/write-order.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-pcrrev-'));
-const CONFIG = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000', unreleasedProjectCreationRequests: '1' }; // 暫時的啟用控制（#48 移除）
+const CONFIG = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' };
 const code = r => r.body?.error?.code;
 const ok = (r, label) => { assert.ok(r.status < 400, `${label}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r.body; };
 const is = (r, status, errCode, label) => { assert.equal(r.status, status, `${label}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); if (errCode) assert.equal(code(r), errCode, label); return r.body; };
@@ -205,7 +205,8 @@ try {
     is(await approve(ann, w.id), 409, 'REQUEST_NOT_PENDING', '已撤回不能核准');
     const cx = await submit(wang, { name: '要取消' });
     await db.batch([lockWorkspaceStmt('default'), ...cancelStmts({ requesterId: wang.id, cancelCode: 'policy_changed', at: new Date().toISOString() })]);
-    is(await approve(ann, cx.id), 409, 'REQUEST_NOT_PENDING', '已取消不能核准');
+    const cxErr = is(await approve(ann, cx.id), 409, 'REQUEST_NOT_PENDING', '已取消不能核准');
+    assert.deepEqual([cxErr.error.state, cxErr.error.cancelCode], ['cancelled', 'policy_changed'], '錯誤帶目前的狀態與取消原因（分得出政策已改變）：' + JSON.stringify(cxErr));
     is(await reject(ann, cx.id), 409, 'REQUEST_NOT_PENDING', '已取消不能拒絕');
   }
 

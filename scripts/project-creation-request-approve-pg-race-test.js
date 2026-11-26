@@ -5,7 +5,10 @@
 //   3. 核准與撤回：撤回 409
 //   4. 審核人被降級與核准：降級先完成，核准的交易內斷言擋下（看不到了 → 404），沒有專案
 //   5. 直接建立與核准搶同一個指定代號：核准 409 CODE_TAKEN（指出欄位、不透露占用者），申請維持待審核
-// 申請與政策切換、移出、停用的交錯在 project-creation-request-pg-race-test.js（#46）。
+//   6. 核准 vs 政策切換（#48）：核准先完成 → 申請已核准、專案存在，政策切換只取消剩下的；政策切換先完成 → 核准 409（申請已取消 policy_changed），沒有專案
+//   7. 核准 vs 停用申請人（#48）：停用先完成 → 核准 409（account_disabled）、沒有專案；核准先完成 → 停用取消 0 份、專案留著
+//   8. 核准 vs 移出申請人（#48）：移出先完成 → 核准 409（workspace_member_removed）、沒有專案；核准先完成 → 移出取消 0 份
+// 申請與政策切換、移出、停用的交錯（沒有核准的）在 project-creation-request-pg-race-test.js（#46）。
 // 只有 Postgres 會有兩個寫入交易同時進行；沒設 AIGILE_TEST_PG_URL 就略過。用法：AIGILE_TEST_PG_URL=… node scripts/project-creation-request-approve-pg-race-test.js
 import './test-home.mjs';
 import fs from 'node:fs';
@@ -56,7 +59,7 @@ const show = r => `${r.status} ${JSON.stringify(r.body).slice(0, 240)}`;
 
 try {
   const a = await open('switch.db'), b = await open('switch.db'); // 同一個 schema、不同的連線池
-  const config = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000', unreleasedProjectCreationRequests: '1' };
+  const config = { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' };
   const g1 = gated(a);
   const mk = db => { const app = createApp({ db, storage: dbStorage(a), docText: '', config });
     return async (token, p, method = 'GET', body) => { const r = await app(new Request('http://localhost' + encodeURI(p), { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined }), 'http://localhost'); return { status: r.status, body: await r.json().catch(() => ({})) }; }; };
@@ -136,6 +139,109 @@ try {
     assert.equal(await state(q.id), 'pending');
     assert.equal(await count('SELECT COUNT(*) AS n FROM projects WHERE name = ?', q.name), 0, '沒有建立專案');
     console.log('✓ Postgres：審核人被降級與核准同時進行，降級先完成，核准被交易內斷言擋下');
+  }
+
+  // ---------- #48：核准 vs 政策切換、停用申請人、移出申請人（兩個順序） ----------
+  const POLICY = /^UPDATE workspaces SET create_projects/, DISABLE = /SET status = 'disabled'/, REMOVE = /SET workspace_status = 'removed'/;
+  const policy = (call, value) => call(boss.token, '/api/workspace/settings', 'PUT', { createProjects: value });
+  const row = id => a.get('SELECT state, cancel_code, project_id FROM project_creation_requests WHERE id = ?', id);
+  const projectsNamed = name => count('SELECT COUNT(*) AS n FROM projects WHERE name = ?', name);
+  // 核准成功：申請已核准、剛好一個專案，申請人是它的專案管理員
+  const approvedOnce = async (q, r, who) => {
+    assert.equal(r.status, 200, show(r));
+    const x = await row(q.id);
+    assert.deepEqual([x.state, x.project_id], ['approved', r.body.project.id], '申請已核准、記下專案');
+    assert.equal(await projectsNamed(q.name), 1, '剛好一個專案');
+    const members = await a.all('SELECT participant_id, role FROM project_members WHERE project_id = ?', r.body.project.id);
+    assert.deepEqual(members.map(m => [m.participant_id, m.role]), [[who.id, 'admin']], '申請人是新專案唯一的專案管理員');
+  };
+  // 核准被擋：409、申請已取消（原因）、沒有專案
+  const blockedBy = async (q, r, cancelCode) => {
+    assert.deepEqual([r.status, r.body.error?.code, r.body.error?.cancelCode], [409, 'REQUEST_NOT_PENDING', cancelCode], '核准：' + show(r));
+    const x = await row(q.id);
+    assert.deepEqual([x.state, x.cancel_code, x.project_id], ['cancelled', cancelCode, null]);
+    assert.equal(await projectsNamed(q.name), 0, '沒有建立專案');
+    assert.equal(await count("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'project.create' AND detail LIKE ?", `%${q.id}%`), 0, '沒有 project.create 稽核');
+  };
+  // 6a) 核准先（停在建專案那句），政策切換被擋住 → 核准生效；政策切換只取消另一份
+  {
+    const q = await submit(), other = await submit();
+    const pendingBefore = await count("SELECT COUNT(*) AS n FROM project_creation_requests WHERE state = 'pending'"); // 前面幾段留下的待審申請也算
+    const { r1, r2, blocked } = await race(g1, CREATE, () => approve(call1, boss, q.id), () => policy(call2, 'admins'));
+    assert.ok(blocked, '政策切換要等核准做完');
+    await approvedOnce(q, r1, chen);
+    assert.equal(r2.status, 200, show(r2));
+    assert.equal(r2.body.cancelledProjectCreationRequests, pendingBefore - 1, '政策切換只取消交易內實際待審的（不含剛核准的）');
+    assert.deepEqual({ ...(await row(other.id)) }, { state: 'cancelled', cancel_code: 'policy_changed', project_id: null });
+    assert.equal((await approve(call2, boss, q.id)).body.duplicate, true, '政策切走後再核准已核准的：回原本的結果');
+    assert.equal(await projectsNamed(q.name), 1);
+    assert.equal((await policy(call1, 'approval')).status, 200, '政策切回 approval');
+    console.log('✓ Postgres：核准先完成、政策切換後到：申請已核准、專案留著，政策切換只取消剩下的');
+  }
+  // 6b) 政策切換先（停在改政策那句），核准被擋住 → 核准 409、申請 policy_changed、沒有專案
+  {
+    const q = await submit();
+    const pendingBefore = await count("SELECT COUNT(*) AS n FROM project_creation_requests WHERE state = 'pending'");
+    const { r1, r2, blocked } = await race(g1, POLICY, () => policy(call1, 'members'), () => approve(call2, boss, q.id));
+    assert.ok(blocked, '核准要等政策切換做完');
+    assert.equal(r1.status, 200, show(r1));
+    assert.equal(r1.body.cancelledProjectCreationRequests, pendingBefore, '取消的包含這份');
+    await blockedBy(q, r2, 'policy_changed');
+    assert.equal((await policy(call1, 'approval')).status, 200, '政策切回 approval');
+    console.log('✓ Postgres：政策切換先完成、核准後到：核准 409（已取消 policy_changed），沒有專案');
+  }
+  // 每一段用新的申請人（會被停用、移出）
+  const requester = async name => {
+    const p = await join(name);
+    assert.equal((await call1(boss.token, `/api/participants/${p.id}/projects`, 'PUT', { projects: ['預設專案'] })).status, 200);
+    for (const c of [call1, call2]) assert.equal((await c(p.token, '/api/me')).status, 200);
+    const r = await call1(p.token, '/api/project-creation-requests', 'POST', { requestId: `race-${++n}`, name: `${name}的申請`, reason: 'x' });
+    assert.equal(r.status, 201, show(r));
+    return { p, q: r.body };
+  };
+  // 7a) 停用申請人先，核准被擋住 → 核准 409、申請 account_disabled、沒有專案
+  {
+    const { p, q } = await requester('丁丁');
+    const { r1, r2, blocked } = await race(g1, DISABLE, () => call1(boss.token, `/api/participants/${p.id}/disable`, 'POST'), () => approve(call2, boss, q.id));
+    assert.ok(blocked, '核准要等停用做完');
+    assert.equal(r1.status, 200, show(r1));
+    assert.equal(r1.body.cancelledProjectCreationRequests, 1);
+    await blockedBy(q, r2, 'account_disabled');
+    console.log('✓ Postgres：停用申請人先完成、核准後到：核准 409（已取消 account_disabled），沒有專案');
+  }
+  // 7b) 核准先，停用申請人被擋住 → 核准生效、停用取消 0 份
+  {
+    const { p, q } = await requester('戴戴');
+    const { r1, r2, blocked } = await race(g1, CREATE, () => approve(call1, boss, q.id), () => call2(boss.token, `/api/participants/${p.id}/disable`, 'POST'));
+    assert.ok(blocked, '停用要等核准做完');
+    await approvedOnce(q, r1, p);
+    assert.equal(r2.status, 200, show(r2));
+    assert.equal(r2.body.cancelledProjectCreationRequests, 0, '已核准的不再取消');
+    assert.equal((await row(q.id)).state, 'approved');
+    console.log('✓ Postgres：核准先完成、停用申請人後到：申請已核准、停用取消 0 份');
+  }
+  // 8a) 移出申請人先，核准被擋住 → 核准 409、申請 workspace_member_removed、沒有專案
+  {
+    const { p, q } = await requester('彭彭');
+    const { r1, r2, blocked } = await race(g1, REMOVE, () => call1(boss.token, `/api/participants/${p.id}/remove`, 'POST'), () => approve(call2, boss, q.id));
+    assert.ok(blocked, '核准要等移出做完');
+    assert.equal(r1.status, 200, show(r1));
+    assert.equal(r1.body.cancelledProjectCreationRequests, 1);
+    await blockedBy(q, r2, 'workspace_member_removed');
+    console.log('✓ Postgres：移出申請人先完成、核准後到：核准 409（已取消 workspace_member_removed），沒有專案');
+  }
+  // 8b) 核准先，移出申請人被擋住 → 核准生效、移出取消 0 份（移出把他的專案成員資格一起結束，專案照樣存在）
+  {
+    const { p, q } = await requester('曾曾');
+    const { r1, r2, blocked } = await race(g1, CREATE, () => approve(call1, boss, q.id), () => call2(boss.token, `/api/participants/${p.id}/remove`, 'POST'));
+    assert.ok(blocked, '移出要等核准做完');
+    assert.equal(r1.status, 200, show(r1));
+    assert.equal(r2.status, 200, show(r2));
+    assert.equal(r2.body.cancelledProjectCreationRequests, 0, '已核准的不再取消');
+    const x = await row(q.id);
+    assert.deepEqual([x.state, x.project_id], ['approved', r1.body.project.id]);
+    assert.equal(await projectsNamed(q.name), 1, '專案照樣存在');
+    console.log('✓ Postgres：核准先完成、移出申請人後到：申請已核准、移出取消 0 份');
   }
   console.log('project-creation-request-approve-pg-race-test：全部通過');
 } catch (e) {

@@ -144,12 +144,20 @@ const ROW_SHAPE = {
   [PCR_STATE.WITHDRAWN]: r => filled(r.ended_at) && filled(r.ended_by) && r.ended_by === r.requester_id && none(r.project_id) && none(r.reject_reason) && none(r.cancel_code),
   [PCR_STATE.CANCELLED]: r => filled(r.ended_at) && none(r.ended_by) && none(r.project_id) && none(r.reject_reason) && PCR_CANCEL_CODES.includes(r.cancel_code),
 };
+// 說明的句型放在表裡（英文字典整句比對，{0} 是欄位名稱或值）
+const ROW_PROBLEM_MSG = {
+  missing: '缺少必要欄位：{0}',
+  state: '不認得的狀態：{0}',
+  visibility: '不認得的可見度：{0}',
+  shape: '狀態 {0} 的結束時間、處理人、專案、拒絕理由或取消原因不合',
+};
+const problem = (k, v) => ROW_PROBLEM_MSG[k].replace('{0}', String(v));
 export function restoreRowProblem(r) {
   const missing = ['id', 'workspace_id', 'requester_id', 'request_id', 'name', 'reason', 'created_at'].filter(k => !filled(r[k]));
-  if (missing.length) return `缺少必要欄位：${missing.join('、')}`;
-  if (!PCR_STATES.includes(r.state)) return `不認得的狀態：${r.state ?? '（空）'}`;
-  if (r.visibility !== undefined && !['open', 'review', 'private'].includes(r.visibility)) return `不認得的可見度：${r.visibility}`;
-  if (!ROW_SHAPE[r.state](r)) return `狀態 ${r.state} 的結束時間、處理人、專案、拒絕理由或取消原因不合`;
+  if (missing.length) return problem('missing', missing.join(', '));
+  if (!PCR_STATES.includes(r.state)) return problem('state', r.state ?? 'null');
+  if (r.visibility !== undefined && !['open', 'review', 'private'].includes(r.visibility)) return problem('visibility', r.visibility);
+  if (!ROW_SHAPE[r.state](r)) return problem('shape', r.state);
   return null;
 }
 // 待審申請的數量（[sql, args]；放在 cancelStmts 之前的稽核 countOf，或交易外的預覽）
@@ -194,7 +202,7 @@ export function registerProjectCreationRequests(d) {
   const notFound = () => new ApiError(404, 'NOT_FOUND', '找不到這份建立專案申請');
   const notReady = () => new ApiError(503, 'PROJECT_CREATION_REQUESTS_NOT_READY', '建立專案申請還沒準備好（資料庫還沒升級），請稍後再試。', { retryAfter: 5 });
   const conflict = () => new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
-  const ended = r => new ApiError(409, 'REQUEST_NOT_PENDING', '這份申請已經結束（不是待審核），不能再變更。', { state: r.state });
+  const ended = r => new ApiError(409, 'REQUEST_NOT_PENDING', '這份申請已經結束（不是待審核），不能再變更。', { state: r.state, ...(r.state === PCR_STATE.CANCELLED ? { cancelCode: r.cancel_code } : {}) }); // 帶目前的狀態與取消原因（呼叫者已經看得到這份申請）
   // 申請相關資料表還沒建立（程式先部署、資料庫還沒升級）：503，可以重試；直接建立專案照常
   const guarded = fn => async args => { try { return await fn(args); } catch (e) { if (isMissingTable(e)) throw notReady(); throw e; } };
 

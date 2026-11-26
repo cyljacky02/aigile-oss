@@ -10,7 +10,7 @@ import { startKit, findBrowser, until } from './browser-kit.js';
 import { adminSession } from './test-admin.js';
 
 if (!findBrowser()) { console.log('project-creation-request-review-ui-test：略過（找不到 Chrome／Edge）'); process.exit(0); }
-const kit = await startKit('pcrrevui', { env: { AIGILE_UNRELEASED_PROJECT_CREATION_REQUESTS: '1' } }); // 暫時的啟用控制（#48 移除）
+const kit = await startKit('pcrrevui');
 try {
   const join = async (name, role = 'PG') => { const b = (await kit.call(null, '/api/join', 'POST', { name, role })).body; return { token: b.token, id: b.participant.participantId }; };
   const boss = await join('林志明', 'PO'); // 工作區管理員兼平台管理員
@@ -37,6 +37,10 @@ try {
   await login(boss.token, '/');
   await until(() => js(`!!document.querySelector('.hub-todo [data-hub-todo="r:${alpha.id}"]')`), 10000, '總覽右欄列出建立專案申請');
   assert.match(await text(`.hub-todo [data-hub-todo="r:${alpha.id}"]`), /建立專案[\s\S]*陳大文 申請建立「Alpha」/, '總覽右欄的一項');
+  // 分組：建立專案申請是工作區層的事，放在「工作區」下，不是「跨專案頻道」
+  const groupOf = id => js(`(() => { let e = document.querySelector('.hub-todo [data-hub-todo="r:${id}"]'); while (e && !e.classList.contains('ht-group')) e = e.previousElementSibling; return e?.textContent.trim() || ''; })()`);
+  assert.equal(await groupOf(alpha.id), '工作區', '建立專案申請分在「工作區」');
+  assert.equal(await text('.hub-todo .ht-head .ps-count'), '3', '「要你處理」的數字＝3 份待審');
   await login(boss.token, '/cross/inbox');
   await until(() => js("!!document.querySelector('.wpcr')"), 10000, '「要你處理」的建立專案申請');
   assert.equal(await text('.wpcr .wsugg-head h3'), '建立專案申請');
@@ -140,6 +144,10 @@ try {
   await until(() => js("document.querySelector('.wpcr .wsugg-head h3')?.textContent === 'Project requests'"), 15000, '英文：建立專案申請');
   await click(`[data-pcr-review="${eps.id}"]`);
   await until(async () => (await text('#pcr-rv [data-pcr-ok]')) === 'Approve and create', 8000, '英文：核准並建立');
+  await js("document.querySelector('.modal [data-close]')?.click(); true");
+  await login(boss.token, '/');
+  await until(() => js(`!!document.querySelector('.hub-todo [data-hub-todo="r:${eps.id}"]')`), 15000, '英文：總覽右欄');
+  await until(async () => (await groupOf(eps.id)) === 'Workspace', 8000, '英文：建立專案申請分在 Workspace（不是 Cross-project channel）');
   console.log('project-creation-request-review-ui-test：全部通過');
 } finally {
   await kit.stop();

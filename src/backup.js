@@ -41,6 +41,8 @@ const pageOf = t => PAGES[t] || 500;
 // 匯入前逐列檢查的表（跟資料表的 CHECK、NOT NULL 一致）：不合法的列整批不寫，回明確的格式錯誤（不修改資料、不繞過資料庫約束）。
 // 檢查回問題說明（合法回 null）。這些表寫入時撞到資料庫約束（例：同一申請人兩份同名的待審申請）也回同一個格式錯誤
 const ROW_CHECKS = { [PCR_TABLE]: restoreRowProblem };
+// 格式錯誤說明的固定句型（英文字典整句比對）
+const ROW_INVALID_MSG = { constraint: '違反資料表的約束（重複或欄位不合法）', which: '（資料列 id {0}）' };
 
 const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
 const unb64 = s => { const bin = atob(s); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; };
@@ -193,14 +195,14 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     }
     for (let i = 0; i < stmts.length; i += 100) {
       try { await db.batch(stmts.slice(i, i + 100)); } catch (e) {
-        if (ROW_CHECKS[t] && isConstraintViolation(e)) throw rowInvalid(t, null, '違反資料表的約束（重複或欄位不合法）');
+        if (ROW_CHECKS[t] && isConstraintViolation(e)) throw rowInvalid(t, null, ROW_INVALID_MSG.constraint);
         throw e;
       }
     }
     return { table: t, inserted };
   });
   function rowInvalid(t, row, problem) {
-    const which = row && typeof row.id === 'string' ? `（id ${row.id.slice(0, 80)}）` : '';
+    const which = row && typeof row.id === 'string' ? ROW_INVALID_MSG.which.replace('{0}', row.id.slice(0, 80)) : '';
     return new ApiError(400, 'BACKUP_ROW_INVALID', `備份檔的 ${t} 有不合法的資料列${which}：${problem}。這一批沒有寫入；請確認備份檔沒有被改壞。`, { table: t });
   }
   // 專案文件本體：資料表的 docs 列先匯入，才收它的檔案
