@@ -686,7 +686,7 @@
   // ---------- 網址英文名（選填）：跟伺服器同一套規則。留空＝依專案名稱自動產生；不合規則就在欄位下說哪裡不對，給建議值一鍵帶入 ----------
   const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/, SLUG_RESERVED = ['cross', 'p', 'api', 'hub'];
   const realSlug = p => (p && p.slug && p.slug !== p.id ? p.slug : ''); // 還沒設時 API 回專案 id（有底線），不能拿來當預設值
-  const slugUsed = exceptId => new Set((state.projectList || []).filter(p => p.id !== exceptId).flatMap(p => [p.slug, p.id.toLowerCase()].filter(Boolean)));
+  const slugUsed = exceptId => new Set((state.projectList || []).filter(p => p.id !== exceptId).flatMap(p => [p.slug, p.id.replace(/[A-Z]/g, c => c.toLowerCase())].filter(Boolean)));
   const slugClean = v => String(v ?? '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '');
   function slugFree(base, used) {
     const ok = s => SLUG_RE.test(s) && !SLUG_RESERVED.includes(s) && !used.has(s);

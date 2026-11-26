@@ -9,6 +9,7 @@
 // 4. 既有的衝突（重複代號、代號與他案舊代號相同、重複網址英文名、未封存專案同名）原樣保留，identityConflicts 列給平台管理員看。
 import { lockWorkspaceStmt, ensureStmt, notRestoringStmt, writeOrdered, RESTORE_STATE_KEY } from './write-order.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
+import { CLAIMS_VERSION, CLAIM_SCHEMA_QUERY, claimsSeeded, seedClaimsStmts, diagnoseClaims, notDisputed, routeToken } from './project-identity-claims.js';
 
 export const CODE_RE = /^[A-Z]{2,5}$/;
 export const SLUG_DEFAULT = { '預設專案': 'main', '第二專案': 'second' }; // 舊站固定 id 的專案的網址英文名（卡號前綴取它的字母）
@@ -64,16 +65,20 @@ export async function cardSeqInProject(db, projectId, no) {
 }
 
 // ---------- 交易內斷言（條件都是 EXISTS／NOT EXISTS，不會是 SQL NULL） ----------
-// 已正規化：識別碼都存進資料庫了，下面的唯一性斷言才有意義
-export const identityReadyStmt = () => ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ?)', [IDENTITY_READY_KEY]);
+// 舊標記不代表保留表已正規化；兩張表都要存在，連只改名稱的寫入也不能跳過。
+export const identityReadyStmt = () => ensureStmt(`EXISTS (SELECT 1 FROM app_settings WHERE key = ?
+  AND CASE WHEN json_valid(value) THEN CAST(json_extract(value, '$.claimsVersion') AS TEXT) END = ?)
+  AND NOT EXISTS (${CLAIM_SCHEMA_QUERY})`, [IDENTITY_READY_KEY, String(CLAIMS_VERSION)]);
 // 這個網址英文名沒被別的專案用（存的網址英文名，或別的專案的 id；含可復原期內的）
 export const slugFreeCond = (slug, id) => ({
-  cond: "NOT EXISTS (SELECT 1 FROM app_settings WHERE key >= 'slug:' AND key < 'slug;' AND value = ? AND key != ?) AND NOT EXISTS (SELECT 1 FROM projects WHERE lower(id) = ? AND id != ?)",
-  args: [slug, 'slug:' + id, slug, id] });
-// 這個代號沒被別的專案用（別的專案的代號、別的專案的舊代號；自己的舊代號可以改回來）
+  cond: `NOT EXISTS (SELECT 1 FROM app_settings WHERE key >= 'slug:' AND key < 'slug;' AND value = ? AND key != ?)
+    AND NOT EXISTS (SELECT 1 FROM projects WHERE lower(id) = ? AND id != ?) AND ${notDisputed('slug')}`,
+  args: [slug, 'slug:' + id, routeToken(slug), id, routeToken(slug)] });
+// 現行代號、舊代號以及有衝突的代號保留。
 export const codeFreeCond = (code, id) => ({
-  cond: "NOT EXISTS (SELECT 1 FROM app_settings WHERE key >= 'pcode:' AND key < 'pcode;' AND value = ? AND key != ?) AND NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value != ?)",
-  args: [code, 'pcode:' + id, 'pcodeold:' + code, id] });
+  cond: `NOT EXISTS (SELECT 1 FROM app_settings WHERE key >= 'pcode:' AND key < 'pcode;' AND value = ? AND key != ?)
+    AND NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value != ?) AND ${notDisputed('code')}`,
+  args: [code, 'pcode:' + id, 'pcodeold:' + code, id, code] });
 // 這個專案現在存的代號、網址英文名都沒跟別的專案重複（取消封存、復原：既有的衝突不能因此變成使用中）
 export const ownIdentityFreeCond = id => ({
   cond: `NOT EXISTS (SELECT 1 FROM app_settings m JOIN app_settings o ON o.value = m.value AND o.key != m.key WHERE m.key = ? AND o.key >= 'pcode:' AND o.key < 'pcode;')
@@ -92,7 +97,12 @@ export function identityConflicts(rows, shown) {
   const out = [], ids = new Set(rows.map(r => r.id));
   const dup = (kind, keyOf, list = rows) => {
     const by = new Map();
-    for (const r of list) { const k = keyOf(r); if (k) by.set(k, [...(by.get(k) || []), r.id]); }
+    for (const r of list) {
+      const k = keyOf(r);
+      if (!k) continue;
+      if (!by.has(k)) by.set(k, []);
+      by.get(k).push(r.id);
+    }
     for (const [value, projects] of by) if (projects.length > 1) out.push({ kind, value, projects });
   };
   dup('duplicate_code', r => shown.codes[r.id]);
@@ -105,10 +115,26 @@ export function identityConflicts(rows, shown) {
   return out;
 }
 
+// D1 限制單一綁定值的位元組數。逐頁綁定，完整斷言與寫入仍用同一批交易。
+function* jsonPages(rows) {
+  const limit = 512 * 1024, encoder = new TextEncoder();
+  let page = [], bytes = 2;
+  for (const row of rows) {
+    const json = JSON.stringify(row), size = encoder.encode(json).byteLength + 1;
+    if (page.length && bytes + size > limit) {
+      yield ['[' + page.join(',') + ']', page.length];
+      page = []; bytes = 2;
+    }
+    page.push(json); bytes += size;
+  }
+  if (page.length) yield ['[' + page.join(',') + ']', page.length];
+}
+
 // ---------- 讀取與正規化 ----------
 export function createProjectIdentity({ db, nowIso, waits }) {
   // 讀取一律不吞錯：讀不到就丟，不會被當成「沒有資料」
-  const isNormalized = async () => !!(await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', IDENTITY_READY_KEY));
+  const isNormalized = async () => claimsSeeded((await db.get('SELECT value FROM app_settings WHERE key = ?', IDENTITY_READY_KEY))?.value);
+  const markers = async () => new Map((await db.all('SELECT key, value FROM app_settings WHERE key IN (?, ?)', IDENTITY_READY_KEY, RESTORE_STATE_KEY)).map(r => [r.key, r.value]));
   async function snapshot() {
     // 一句查詢取同一時間的專案與設定，避免把並行調整前後的資料混成一份快照。
     const data = await db.all(`SELECT id, name, archived, deleted_at, created_at, NULL AS key, NULL AS value FROM projects
@@ -121,32 +147,41 @@ export function createProjectIdentity({ db, nowIso, waits }) {
     }
     return { rows, settings, shown: displayedIdentity(rows, splitIdentitySettings(settings)) };
   }
-  // finishingRestore：還原收尾時（還在還原中）照樣做，而且不看標記（一定重新算）。其他時候還原中先不做（回 false，之後再試）。
+  // restoreRaw：還原收尾時確定仍是同一次還原，且不看正規化標記（一定重新算）。啟動時若還原中，先回 false。
   // 回 true＝已正規化；false＝這次沒做成（之後再試）；讀寫錯誤照丟
-  async function normalize({ finishingRestore = false, attempts = 5 } = {}) {
+  async function normalize({ restoreRaw, keepDisputes = false, attempts = 5 } = {}) {
+    const finishingRestore = restoreRaw !== undefined;
     for (let i = 0; i < attempts; i++) {
-      if (!finishingRestore) {
-        if (await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', RESTORE_STATE_KEY)) return false;
-        if (await isNormalized()) return true;
-      }
+      const state = await markers();
+      const ready = state.get(IDENTITY_READY_KEY);
+      if (state.get(RESTORE_STATE_KEY) !== restoreRaw) return false;
+      if (!finishingRestore && claimsSeeded(ready)) return true;
       const { rows, settings, shown } = await snapshot();
       const stored = new Map(settings.map(r => [r.key, r.value]));
       const items = rows.flatMap(r => [['slug:' + r.id, shown.slugs[r.id]], ['pcode:' + r.id, shown.codes[r.id]]])
         .filter(([k, v]) => stored.get(k) !== v).map(([k, v]) => ({ k, v, p: k.slice(k.indexOf(':') + 1) }));
       const conflicts = identityConflicts(rows, shown);
       // 第一句工作區列鎖（跟建立、改名、改識別碼、開始匯入排隊）；確認快照之後專案與識別碼設定都沒變，變了就重讀重算。
-      // 比的是值：數量一樣，而且現在每一列都在快照裡（專案的 id 與建立時間決定推導的順序；設定的 key 與 value）。
-      // 編碼是 key（或 id）＋'=' ＋值：key 與專案 id 不含 '='，所以不會把不同的兩列編成同一個字串
-      const projectKeys = JSON.stringify(rows.map(r => `${r.id}=${r.created_at ?? ''}`)), settingKeys = JSON.stringify(settings.map(r => `${r.key}=${r.value}`));
+      // 逐頁比對每個主鍵與值，再比總列數。建案時間決定代號推導的順序。
+      const projectKeys = jsonPages(rows.map(r => ({ id: r.id, at: r.created_at })));
+      const settingKeys = jsonPages(settings);
       const stmts = [lockWorkspaceStmt(DEFAULT_WORKSPACE),
-        finishingRestore ? null : notRestoringStmt(),
-        ensureStmt(`(SELECT COUNT(*) FROM projects) = ? AND (SELECT COUNT(*) FROM app_settings WHERE ${SETTINGS_RANGE}) = ?
-          AND NOT EXISTS (SELECT 1 FROM projects WHERE (id || '=' || COALESCE(created_at, '')) NOT IN (SELECT value FROM json_each(?)))
-          AND NOT EXISTS (SELECT 1 FROM app_settings WHERE (${SETTINGS_RANGE}) AND (key || '=' || value) NOT IN (SELECT value FROM json_each(?)))`,
-        [rows.length, settings.length, projectKeys, settingKeys]),
-        items.length ? [`INSERT INTO app_settings (key, value) SELECT json_extract(value, '$.k'), json_extract(value, '$.v') FROM json_each(?)
-          WHERE EXISTS (SELECT 1 FROM projects WHERE id = json_extract(value, '$.p')) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [JSON.stringify(items)]] : null,
-        ['INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [IDENTITY_READY_KEY, JSON.stringify({ at: nowIso(), projects: rows.length, written: items.length, conflicts: conflicts.length })]]];
+        finishingRestore ? ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, restoreRaw]) : notRestoringStmt(),
+        // 別的執行個體先做完時，重讀標記。舊程式之後的寫入可能讓快照過時，不能在每次啟動時洗掉爭議來源。
+        ...(finishingRestore ? [] : [ready === undefined
+          ? ensureStmt('NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?)', [IDENTITY_READY_KEY])
+          : ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [IDENTITY_READY_KEY, ready])]),
+        ensureStmt(`(SELECT COUNT(*) FROM projects) = ? AND (SELECT COUNT(*) FROM app_settings WHERE ${SETTINGS_RANGE}) = ?`, [rows.length, settings.length]),
+        ...Array.from(projectKeys, ([json, count]) => ensureStmt(`(SELECT COUNT(*) FROM
+          (SELECT json_extract(value, '$.id') AS id, json_extract(value, '$.at') AS at FROM json_each(?)) AS snapshot
+          JOIN projects p ON p.id = snapshot.id AND p.created_at = snapshot.at) = ?`, [json, count])),
+        ...Array.from(settingKeys, ([json, count]) => ensureStmt(`(SELECT COUNT(*) FROM
+          (SELECT json_extract(value, '$.key') AS key, json_extract(value, '$.value') AS value FROM json_each(?)) AS snapshot
+          JOIN app_settings s ON s.key = snapshot.key AND s.value = snapshot.value) = ?`, [json, count])),
+        ...Array.from(jsonPages(items), ([json]) => [`INSERT INTO app_settings (key, value) SELECT json_extract(value, '$.k'), json_extract(value, '$.v') FROM json_each(?)
+          WHERE EXISTS (SELECT 1 FROM projects WHERE id = json_extract(value, '$.p')) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [json]]),
+        ...seedClaimsStmts({ keepDisputes: finishingRestore && keepDisputes }),
+        ['INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [IDENTITY_READY_KEY, JSON.stringify({ at: nowIso(), projects: rows.length, written: items.length, conflicts: conflicts.length, claimsVersion: CLAIMS_VERSION })]]];
       if (await writeOrdered(db, stmts, waits ? { waits } : {})) {
         if (conflicts.length) console.warn(`專案識別碼：既有的衝突 ${conflicts.length} 處（原樣保留，平台管理員在平台設定看得到）`, JSON.stringify(conflicts));
         return true;
@@ -156,8 +191,10 @@ export function createProjectIdentity({ db, nowIso, waits }) {
   }
   // 平台管理員的診斷：已不已正規化、既有的衝突（每次都用新鮮資料算）
   async function diagnose() {
+    const state = await markers();
     const { rows, shown } = await snapshot();
-    return { normalized: await isNormalized(), rows, shown, conflicts: identityConflicts(rows, shown) };
+    const claims = await diagnoseClaims(db, { rows, shown, marker: state.get(IDENTITY_READY_KEY), restoring: state.has(RESTORE_STATE_KEY) });
+    return { normalized: state.has(IDENTITY_READY_KEY), rows, shown, conflicts: identityConflicts(rows, shown), claims };
   }
   return { normalize, isNormalized, diagnose, snapshot };
 }
