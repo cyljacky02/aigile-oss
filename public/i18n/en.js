@@ -3592,6 +3592,7 @@ window.AIGILE_EN = {
     "＋ 新增一個狀態": "+ Add a status",
     "拿掉": "Remove",
     "專案範本": "Project templates",
+    "專案範本每批最多 97 列": "Import up to 97 project templates per request",
     "新增專案範本": "Created project template",
     "停用專案範本": "Retired project template",
     "專案範本已變更或停用；請重新讀取後再試。": "This project template was changed or retired. Reload it and try again.",

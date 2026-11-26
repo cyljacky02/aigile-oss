@@ -11774,9 +11774,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const total = Object.values(T).reduce((n, rows) => n + rows.length, 0) + (b.docs || []).length;
       let done = 0;
       for (const [table, rows] of Object.entries(T)) {
-        for (let i = 0; i < rows.length;) { // 一批最多 500 列、約 3 MB
+        const pageSize = table === 'project_templates' ? 97 : 500;
+        for (let i = 0; i < rows.length;) {
           let j = i, size = 0;
-          while (j < rows.length && j - i < 500 && (size += JSON.stringify(rows[j]).length) < 3_000_000) j++;
+          while (j < rows.length && j - i < pageSize && (size += JSON.stringify(rows[j]).length) < 3_000_000) j++;
           if (j === i) j = i + 1;
           await api('/api/admin/restore/rows', { method: 'POST', body: { table, rows: rows.slice(i, j) } });
           done += j - i; i = j;

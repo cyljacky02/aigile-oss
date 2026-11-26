@@ -38,7 +38,8 @@ const DROP_COLS = { participants: ['token', 'token_expires_at'] }; // 匯入時�
 // IDENTITY_READY_KEY：專案識別碼「已正規化」是這個站自己的狀態，不跟著搬（還原收尾一定重新正規化，舊備份或動過的備份都不會因為帶了標記而跳過）
 const skipSetting = k => k.startsWith('olink:') || k.startsWith('must_change_cred:') || k.startsWith('relogin:') || ['people_ver', 'msg_ver', 'restore_state', 'update_check', IDENTITY_READY_KEY].includes(k);
 // 每頁幾列：一般 500；大欄位的表少一點（技能一列最多 1 MB、file_chunks 一列 512 KB、頭像是圖片）
-const PAGES = { file_chunks: 1, skills: 4, avatar_proposals: 5, avatars: 20, kb_pages: 50 }; // 知識頁一頁最多 2 萬字
+const TEMPLATE_RESTORE_PAGE = 97; // 留三句給還原階段的鎖與斷言。
+const PAGES = { file_chunks: 1, skills: 4, avatar_proposals: 5, avatars: 20, kb_pages: 50, [TEMPLATE_TABLE]: TEMPLATE_RESTORE_PAGE }; // 知識頁一頁最多 2 萬字
 const pageOf = t => PAGES[t] || 500;
 // 匯入前逐列檢查的表（跟資料表的 CHECK、NOT NULL 一致）：不合法的列整批不寫，回明確的格式錯誤（不修改資料、不繞過資料庫約束）。
 // 檢查回問題說明（合法回 null）。這些表寫入時撞到資料庫約束（例：同一申請人兩份同名的待審申請）也回同一個格式錯誤
@@ -198,6 +199,8 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       if (body.rows.length) throw templateNotReady(ApiError);
       return { table: t, inserted: 0 };
     }
+    // 範本頁在一批內寫入。唯一鍵衝突時，整頁一起回滾。
+    if (t === TEMPLATE_TABLE && body.rows.length > TEMPLATE_RESTORE_PAGE) throw invalid('專案範本每批最多 97 列');
     const have = new Set(await columnsOf(t)), drop = [...(DROP_COLS[t] || []), ...(t === 'audit_log' ? ['seq'] : [])], blobs = BLOB_COLS[t] || [];
     const stmts = [];
     let inserted = 0;
@@ -225,7 +228,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
       // 稽核紀錄跟這個站原本的合併：流水號重新編（不跟原本的撞），已經有的 id 略過（中途重來不重複）
       stmts.push([`INSERT${t === 'audit_log' ? ' OR IGNORE' : ''} INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})${t === 'app_settings' ? ' ON CONFLICT(key) DO UPDATE SET value = excluded.value' : ''}`, cols.map(c => row[c])]);
     }
-    // 每一批在交易內確認還在匯入（restore_state 還是這次讀到的）：收尾開始後才到的資料列不寫（收尾的修整與檢查看不到它們）
+    // 每一批在交易內確認還在匯入（restore_state 還是這次讀到的）。收尾開始後才到的資料列不寫。
     for (let i = 0; i < stmts.length; i += 100) {
       try { await db.batch([...samePhaseStmts(raw), ...stmts.slice(i, i + 100)]); } catch (e) {
         if (isAssertionFailure(e)) throw (await restoring())?.you ? finishingError() : notRestoring();

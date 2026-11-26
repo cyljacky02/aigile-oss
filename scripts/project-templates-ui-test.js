@@ -112,5 +112,36 @@ try {
   await openCreate();
   await until(() => js("document.querySelector('#np-form [name=template]')?.disabled === false"), 5000, '範本已載入');
   assert.equal(await exists(`#np-form [name=template] option[value="${template.id}"]`), false, '已停用的範本不再出現');
+
+  await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+    const fetchOriginal = window.fetch;
+    window.fetch = (input, options) => {
+      const url = new URL(input instanceof Request ? input.url : input, location.href);
+      if (url.pathname === ${JSON.stringify(base)} && (options?.method || 'GET') === 'GET') {
+        return Promise.resolve(new Response(JSON.stringify({ error: { code: 'PROJECT_TEMPLATES_NOT_READY', message: 'Templates unavailable' } }), {
+          status: 503, headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return fetchOriginal(input, options);
+    };
+  })()` });
+  await policy('members');
+  await openCreate();
+  await until(() => js("document.querySelector('#np-template-error')?.textContent.includes('Templates unavailable')"), 5000, '範本無法載入時仍可建立');
+  await value('#np-form [name=name]', '不套用範本的專案');
+  await value('#np-form [name=url]', 'https://example.com/team/manual');
+  await value('#np-form [name=branch]', 'main');
+  await submit('np-form');
+  const manual = await until(async () => (await projects()).find(p => p.name === '不套用範本的專案'), 8000, '建立仍保留程式庫');
+  assert.equal(manual.repo?.url, 'https://example.com/team/manual');
+  assert.equal(manual.repo?.branch, 'main');
+  await policy('approval');
+  await openCreate();
+  await until(() => js("document.querySelector('#np-template-error')?.textContent.includes('Templates unavailable')"), 5000, '範本無法載入時仍可申請');
+  await value('#np-form [name=name]', '不套用範本的申請');
+  await value('#np-form [name=reason]', '使用預設狀態');
+  await submit('np-form');
+  const manualRequest = await until(async () => (await requests()).find(q => q.name === '不套用範本的申請'), 8000, '送出使用預設狀態的申請');
+  assert.equal(manualRequest.statuses, null);
   console.log('project-templates-ui-test：全部通過');
 } finally { await kit.stop(); }

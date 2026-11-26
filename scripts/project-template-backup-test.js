@@ -60,8 +60,43 @@ const checks = {
     assert.ok(!result.tables.some(t => t.name === table));
     assert.equal(result.empty, true);
     assert.deepEqual(expect(await call(`${backup}/rows?table=${table}`), 200), { table, rows: [], next: null });
+    const legacy = expect(await call(`${backup}/rows?table=workspaces`), 200).rows;
+    assert.equal(legacy.length, 1);
     expect(await call(begin, 'POST', header), 200);
     assert.equal(expect(await call(restoreRows, 'POST', { table, rows: [{ id: 'saved' }] }), 503).error.code, 'PROJECT_TEMPLATES_NOT_READY');
+    expect(await call(restoreRows, 'POST', { table: 'workspaces', rows: [{ ...legacy[0], name: '從舊版還原的工作區' }] }), 200);
+    expect(await call('/api/admin/restore/finish', 'POST', {}), 200);
+    assert.equal((await db.get('SELECT name FROM workspaces WHERE id = ?', legacy[0].id)).name, '從舊版還原的工作區');
+  },
+  async 'template import validates an entire page before writing'({ call, db }) {
+    expect(await call(begin, 'POST', header), 200);
+    const row = { workspace_id: 'default', id: 'duplicate', name: '重複', visibility: 'private', statuses_json: JSON.stringify(spec.statuses.map((status, i) => ({ ...status, color: ['indigo', 'amber', 'green'][i] }))), retired_at: null };
+    const duplicate = [row, ...Array.from({ length: 95 }, (_, i) => ({ ...row, id: `unique-${i}` })), row];
+    const failed = expect(await call(restoreRows, 'POST', { table, rows: duplicate }), 400);
+    assert.equal(failed.error.code, 'BACKUP_ROW_INVALID');
+    assert.equal((await db.get('SELECT COUNT(*) AS n FROM project_templates')).n, 0, '重複的整批沒有寫入');
+    const rows = Array.from({ length: 97 }, (_, i) => ({ ...row, id: `page-${i}` }));
+    const saved = expect(await call(restoreRows, 'POST', { table, rows }), 200);
+    assert.equal(saved.inserted, 97, '合法頁面可完整匯入');
+    assert.equal((await db.get('SELECT COUNT(*) AS n FROM project_templates')).n, 97);
+    const tooMany = expect(await call(restoreRows, 'POST', { table, rows: Array.from({ length: 98 }, (_, i) => ({ ...row, id: `large-${i}` })) }), 400);
+    assert.equal(tooMany.error.code, 'INVALID_REQUEST');
+    assert.equal((await db.get('SELECT COUNT(*) AS n FROM project_templates')).n, 97, '超大範本頁不寫入');
+  },
+  async 'template migration racing restore begin'({ call, db, hooks }) {
+    await db.run('DROP TABLE project_templates');
+    await db.run('DELETE FROM schema_migrations WHERE name = ?', '018_project_templates.sql');
+    hooks.beforeBegin = async () => {
+      await db.batch([
+        [`CREATE TABLE IF NOT EXISTS project_templates (workspace_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 30), visibility TEXT NOT NULL CHECK (visibility IN ('open', 'review', 'private')), statuses_json TEXT NOT NULL, retired_at TEXT, PRIMARY KEY(workspace_id, id))`, []],
+        ['INSERT INTO project_templates (workspace_id, id, name, visibility, statuses_json) VALUES (?,?,?,?,?)', ['default', 'during-migration', '部署中的範本', 'private', JSON.stringify(spec.statuses)]],
+      ]);
+    };
+    const result = expect(await call(begin, 'POST', header), 409);
+    assert.equal(result.error.code, 'NOT_EMPTY');
+    assert.equal(hooks.beforeBegin, undefined, '範本表在交易鎖之前完成建立');
+    assert.equal((await db.get('SELECT name FROM project_templates WHERE id = ?', 'during-migration')).name, '部署中的範本');
+    assert.equal((await db.get("SELECT COUNT(*) AS n FROM app_settings WHERE key = 'restore_state'")).n, 0, '沒有開始清空');
   },
   async 'a database error is not a missing table'({ call, hooks }) {
     hooks.beforeGet = sql => { if (sql.includes('COUNT(*)') && sql.includes('FROM project_templates')) throw new Error('test: template export failed to read'); };

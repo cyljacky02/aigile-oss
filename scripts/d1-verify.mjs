@@ -645,7 +645,7 @@ try {
   });
 
   await check('D1-12', '專案範本：選取本機預設值、停用後仍可依送出的內容核准', async () => {
-    // A fresh Worker process has a fresh per-participant request limiter; keep the main scenario run independent of this optional-feature check.
+    // 使用獨立的 Worker 程序，避免前面壓力測試累積的請求次數影響範本測試。
     const worker = await A.dev({ vars: VARS });
     running.push(worker);
     const templateSite = site(worker.base, TOKEN);
@@ -686,6 +686,10 @@ try {
     }
     is(await old.call(admin.token, '/api/admin/restore/begin', 'POST', header), 200, null, '舊 D1 能開始匯入');
     is(await old.call(admin.token, '/api/admin/restore/rows', 'POST', { table: 'project_templates', rows: [{ id: 'saved' }] }), 503, 'PROJECT_TEMPLATES_NOT_READY', '尚不能匯入範本列');
+    const legacyWorkspaces = destinationRows.workspaces.map(row => ({ ...row, name: '舊備份的工作區' }));
+    ok(await old.call(admin.token, '/api/admin/restore/rows', 'POST', { table: 'workspaces', rows: legacyWorkspaces }), '舊備份可匯入工作區');
+    ok(await old.call(admin.token, '/api/admin/restore/finish', 'POST', {}), '未升級也能完成舊備份匯入');
+    assert.deepEqual(await old.one('SELECT name FROM workspaces WHERE id = ?', legacyWorkspaces[0].id), { name: '舊備份的工作區' });
     await worker.stop();
     assert.deepEqual(migrate(siteOld, '升級範本表').plan.apply.map(f => f.name), [templateMigration]);
     const upgraded = await siteOld.dev({ vars: VARS });
