@@ -18,7 +18,9 @@ export const BACKUP_FORMAT_VERSION = 1;
 // 匯出的資料表（順序＝匯入順序）。新增資料表時一定要放進 EXPORT_TABLES 或 SKIP_TABLES（backup-test 會檢查）
 export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'project_events', 'app_settings', 'accounts', 'participants', 'project_members', 'ai_state', 'messages', 'message_recipients', 'notifications', 'dms',
   'decision_resolutions', 'cards', 'card_log', 'card_msgs', 'suggestions', 'avatars', 'avatar_proposals',
-  'skills', 'skill_allows', 'skill_installs', 'skill_syncs', 'join_requests', 'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
+  'skills', 'skill_allows', 'skill_installs', 'skill_syncs', 'join_requests',
+  'project_creation_requests', // 建立專案申請：所有狀態原樣帶（舊備份沒有這張表＝還原後是空的；還原後的待審申請檢查在 #47）
+  'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages', // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
   'audit_log']; // 稽核紀錄：還原時不清掉這個站原本的，備份裡的合併進來（同一筆 id 不重複），結束匯入時再加一筆 backup.restore
 const KEEP_TABLES = ['audit_log']; // 開始匯入時不清的表（稽核紀錄只能新增）

@@ -24,6 +24,7 @@ import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, writeOrdered } from './write-order.js'; // 工作區寫入排序與交易內斷言（ADR 0005）
 import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS } from './project-identity.js'; // 專案網址英文名與代號（#42）
 import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯（#43）
+import { registerProjectCreationRequests } from './project-creation-requests.js'; // 建立專案申請（#44）
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -1654,7 +1655,7 @@ ${ending}`;
   const workspace = createWorkspaceSettings({ db, env: { openJoin: OPEN_JOIN, roomCode: ROOM_CODE }, hashPassword, verifyPassword });
   // nameOf 在下面才定義（const），所以包一層
   const access = createAccess({
-    loadWorkspace: workspace.load, membersCreateProjects: workspace.membersCreateProjects, membersDeleteOwn: workspace.membersDeleteOwn,
+    loadWorkspace: workspace.load, membersCreateProjects: workspace.membersCreateProjects, membersRequestProjects: workspace.membersRequestProjects, membersDeleteOwn: workspace.membersDeleteOwn,
     ApiError, requireHuman, nameOf: id => nameOf(id), people: peopleMap, projects: () => PROJECTS, projectsOf, isolatedFrom, hiddenArchived,
     memberProjectsOf: membership.projectsOf, visibilityOf: pj => projectRows.find(r => r.id === pj)?.visibility,
     isDeletedProject: pj => deletedProjects.has(pj), // 可復原期內的專案：各處都當它不存在
@@ -2137,6 +2138,9 @@ ${ending}`;
   // 工作區政策允不允許他刪自己的訊息（人類；工作區管理員永遠可以）。在哪個專案是唯讀成員由網頁另外看
   const canDeleteOwnMessages = async (ctx, me) => me.kind === 'human' && ((await workspace.load()).deleteOwnMessages === DELETE_OWN_MESSAGES.MEMBERS || (await access.can(ctx, me, 'delete_message', 'workspace')));
   route('GET', '/api/projects', async ({ ctx, me }) => ({ ...(await projectsSeenBy(ctx, me)), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace'),
+    // 建立專案申請（#44）：能不能送申請、能不能審核。canCreateProject 仍只代表能直接建立；三個都是給介面用的快照，寫入時重新檢查
+    canRequestProjectCreation: await access.can(ctx, me, 'request_project_creation', 'workspace'),
+    canReviewProjectCreationRequests: await access.can(ctx, me, 'review_project_creation_requests', 'workspace'),
     ...(ctx.viewerKind === 'human' ? { canDeleteOwnMessages: await canDeleteOwnMessages(ctx, me) } : {}) })); // canCreateProject：網頁要不要顯示「新增專案」；canDeleteOwnMessages：工作區政策允不允許他刪自己的訊息（唯讀另看專案；只給人類，給 AI 的形狀不變）
   // 群組名稱（登入頁也要顯示，所以讀取不用登入）；只有管理員能改
   route('GET', '/api/group', async () => ({ name: await groupName() }), { open: true });
@@ -2173,7 +2177,12 @@ ${ending}`;
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看加入設定' });
     return groupSettings();
   });
-  const CREATE_PROJECTS_LABEL = { [CREATE_PROJECTS.MEMBERS]: '所有成員', [CREATE_PROJECTS.ADMINS]: '只有工作區管理員' };
+  const CREATE_PROJECTS_LABEL = { [CREATE_PROJECTS.MEMBERS]: '所有成員', [CREATE_PROJECTS.APPROVAL]: '成員申請，管理員核准', [CREATE_PROJECTS.ADMINS]: '只有工作區管理員' };
+  // 暫時的啟用控制（#44 加、#48 移除；不是功能旗標框架）：「成員申請，管理員核准」（approval）要等申請、審核、取消、還原處理都完成後才開放給正式環境選。
+  // 在那之前只有設了 config.unreleasedProjectCreationRequests（本機環境變數 AIGILE_UNRELEASED_PROJECT_CREATION_REQUESTS=1；測試用）才能透過 API 設成 approval；
+  // 工作區設定的畫面不提供這個選項。已經存成 approval 的值照常生效（可以切回其他兩種）
+  const APPROVAL_SELECTABLE = config.unreleasedProjectCreationRequests === true || config.unreleasedProjectCreationRequests === '1';
+  const selectableCreateProjects = () => Object.values(CREATE_PROJECTS).filter(x => x !== CREATE_PROJECTS.APPROVAL || APPROVAL_SELECTABLE);
   const DELETE_OWN_LABEL = { [DELETE_OWN_MESSAGES.MEMBERS]: '所有成員', [DELETE_OWN_MESSAGES.ADMINS]: '只有工作區管理員' };
   for (const pattern of ['/api/workspace/settings', '/api/group/settings']) route('PUT', pattern, async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '改加入設定' });
@@ -2185,7 +2194,7 @@ ${ending}`;
       code = body.roomCode === null ? '' : String(body.roomCode);
       if (code && (code.length < 4 || code.length > 64 || /\s/.test(code))) throw invalid('房間碼需為 4～64 字，不可有空白；要清除請送空字串');
     }
-    if (has('createProjects') && !Object.values(CREATE_PROJECTS).includes(body.createProjects)) throw invalid('createProjects 只能是 members（所有成員）或 admins（只有工作區管理員）');
+    if (has('createProjects') && !selectableCreateProjects().includes(body.createProjects)) throw invalid('createProjects 只能是 members（所有成員）或 admins（只有工作區管理員）');
     if (has('deleteOwnMessages') && !Object.values(DELETE_OWN_MESSAGES).includes(body.deleteOwnMessages)) throw invalid('deleteOwnMessages 只能是 members（所有成員）或 admins（只有工作區管理員）');
     let name = null;
     if (has('name')) {
@@ -2379,21 +2388,31 @@ ${ending}`;
       nameWriteFailed: (id, name) => nameWriteFailed(id, name, { existing: false }),
       afterWrite: async () => { invalidatePeople(); invalidateProjects(); await membership.loadMembers(true); },
     } });
-  route('POST', '/api/projects', async ({ ctx, me, req }) => {
-    await access.check(ctx, me, 'create_project', 'workspace');
-    const body = await readJson(req);
+  // 建立專案的內容（直接建立與建立專案申請共用同一套驗證與正規化）：名稱、可見度、網址英文名與代號（沒指定＝null，自動）、看板狀態（沒指定＝null，預設狀態組）
+  // 只驗格式；有沒有被用掉在建立的那一批裡斷言（src/project-create.js）
+  async function readCreationSpec(body) {
     const name = readProjectName(body.name);
     const visibility = readVisibility(body.visibility, invalid); // 選填；沒給＝審核。在建立的同一批寫入，私人專案從第一刻起就是私人的
-    // 看板狀態（選填）：建立時直接給整份清單；沒給就是預設狀態組（第一次讀狀態時補上）
     const statuses = body.statuses === undefined || body.statuses === null ? null : readStatusList(body.statuses, invalid);
     const rawSlug = String(body.slug ?? '').trim();
     let slug = null;
     if (rawSlug) { await loadProjects(true); slug = checkSlug(rawSlug, name, await usedSlugs(null)); } // 不合規則 400（附建議值）
     const code = body.code ? String(body.code).trim().toUpperCase() : null;
     if (code !== null && !CODE_RE.test(code)) throw invalid('專案代號需為 2～5 個英文字母');
+    return { name, visibility, slug, code, statuses };
+  }
+  route('POST', '/api/projects', async ({ ctx, me, req }) => {
+    await access.check(ctx, me, 'create_project', 'workspace');
+    const body = await readJson(req);
+    const { name, visibility, slug, code, statuses } = await readCreationSpec(body);
     const { id } = await creation.create({ actor: me, beneficiary: me, method: CREATION_METHOD.DIRECT, spec: { name, visibility, slug, code, statuses } });
     return { __status: 201, ...(await projectsSeenBy(ctx, me)), id };
   });
+  // 建立專案申請（#44；src/project-creation-requests.js）：送出、查看自己的、撤回。核准與拒絕（#45）、取消（#46、#47）接它回傳的介面
+  const creationRequests = registerProjectCreationRequests({ route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, access, peopleMap,
+    writeInWorkspace, readSpec: readCreationSpec, loadProjects: () => loadProjects(),
+    projectInfo: id => { const r = projectRows.find(x => x.id === id); return r ? { id: r.id, name: r.name } : null; },
+    liveTo: (ids, type, data) => live?.toPeople(ids, type, data) });
   route('PATCH', '/api/projects/:id', async ({ ctx, me, req, params }) => {
     await access.check(ctx, me, 'manage_project', { project: params.id }, { what: '改專案名稱' });
     const name = readProjectName((await readJson(req)).name);

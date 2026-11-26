@@ -7,7 +7,9 @@
 // 讀：同步，看已載入的快照（10 秒快取；load(true) 重讀）。寫：回傳 [sql, args] 給呼叫端的 db.batch，執行後呼叫 load(true)。
 import { DEFAULT_WORKSPACE } from './membership.js';
 
-export const CREATE_PROJECTS = Object.freeze({ MEMBERS: 'members', ADMINS: 'admins' });
+// 誰可以建立專案（docs/adr/0004）：三選一。admins＝只有工作區管理員與平台管理員直接建立；
+// approval＝成員申請，管理員核准（一般成員送建立專案申請，管理員照樣直接建立）；members＝所有成員直接建立。不認得或缺少的值當作 admins
+export const CREATE_PROJECTS = Object.freeze({ MEMBERS: 'members', APPROVAL: 'approval', ADMINS: 'admins' });
 // 誰可以刪除自己的訊息：所有成員（唯讀成員、AI 本來就不行）／只有工作區管理員（含平台管理員）
 export const DELETE_OWN_MESSAGES = Object.freeze({ MEMBERS: 'members', ADMINS: 'admins' });
 
@@ -19,7 +21,7 @@ export function createWorkspaceSettings({ db, env = {}, hashPassword, verifyPass
     if (!force && at && Date.now() - at < 10_000) return snap;
     const row = await db.get('SELECT create_projects, delete_own_messages FROM workspaces WHERE id = ?', DEFAULT_WORKSPACE).catch(() => null);
     snap = {
-      createProjects: row?.create_projects === CREATE_PROJECTS.MEMBERS ? CREATE_PROJECTS.MEMBERS : CREATE_PROJECTS.ADMINS,
+      createProjects: Object.values(CREATE_PROJECTS).includes(row?.create_projects) ? row.create_projects : CREATE_PROJECTS.ADMINS,
       deleteOwnMessages: row?.delete_own_messages === DELETE_OWN_MESSAGES.MEMBERS ? DELETE_OWN_MESSAGES.MEMBERS : DELETE_OWN_MESSAGES.ADMINS,
     };
     at = Date.now();
@@ -27,6 +29,8 @@ export function createWorkspaceSettings({ db, env = {}, hashPassword, verifyPass
   }
   // 一般成員可以建立專案嗎（工作區管理員永遠可以，由權限模組判斷）
   const membersCreateProjects = () => snap.createProjects === CREATE_PROJECTS.MEMBERS;
+  // 一般成員要送建立專案申請嗎（approval）
+  const membersRequestProjects = () => snap.createProjects === CREATE_PROJECTS.APPROVAL;
   const setCreateProjectsStmts = value => [['UPDATE workspaces SET create_projects = ? WHERE id = ?', [value, DEFAULT_WORKSPACE]]];
   // 一般成員可以刪除自己的訊息嗎（工作區管理員永遠可以，由權限模組判斷）
   const membersDeleteOwn = () => snap.deleteOwnMessages === DELETE_OWN_MESSAGES.MEMBERS;
@@ -50,5 +54,5 @@ export function createWorkspaceSettings({ db, env = {}, hashPassword, verifyPass
   // code：''＝清除（之後不用房間碼，也不再看環境變數）
   const setRoomCodeStmts = async code => [[upsert, ['room_code', code ? await hashPassword(code) : '']]];
 
-  return { load, membersCreateProjects, setCreateProjectsStmts, membersDeleteOwn, setDeleteOwnStmts, joinRules, setOpenJoinStmts, setRoomCodeStmts, invalidate: () => { at = 0; } };
+  return { load, membersCreateProjects, membersRequestProjects, setCreateProjectsStmts, membersDeleteOwn, setDeleteOwnStmts, joinRules, setOpenJoinStmts, setRoomCodeStmts, invalidate: () => { at = 0; } };
 }

@@ -15,6 +15,8 @@
 // - 敏感動作（動作表標 sensitive: true）：權限檢查通過後，還要這台裝置剛再驗證過（deps.requireRecentAuth 不行就丟錯；沒注入時不檢查）
 // - 成員名冊：工作區成員（含 AI）看得到工作區裡所有人（see_member）；已移出的人只有工作區管理員看得到（see_removed_members；待接受的邀請走 invite）
 // - 建立專案：工作區管理員；工作區設定「誰可以建立專案」是所有成員時，一般成員（人類）也可以
+// - 建立專案申請（docs/adr/0004）：政策是「成員申請，管理員核准」時，一般成員送申請（有直接建立權的管理員不送）；
+//   申請人本人看得到、可以撤回自己的申請；審核人＝工作區管理員與平台管理員（其他專案的專案管理員不算）。只有有效的人類，規則本身就擋 AI
 // - 專案可見度：開放＝直接加入、審核＝送申請、私人＝只有專案成員與有隱含權限的人知道它存在（discover_project；其他人各處都當它不存在，回 404）
 // 資料都由呼叫端注入（成員資料歸成員資格模組管），這裡只做判斷。
 import { WORKSPACE_ROLE } from './membership.js';
@@ -75,6 +77,10 @@ const workspaceAdmin = (v, me) => v.roleIn(me, 'workspace') === R.WORKSPACE_ADMI
 const activeProjectAdmin = (v, me, s) => workspaceAdmin(v, me) || (v.active(s.project) && v.roleIn(me, s) === R.PROJECT_ADMIN);
 // 不能動對方的上層管理權：對象是平台管理員時，要是平台管理員才行（沒帶對象＝不看）
 const notAboveMe = (v, me, { target }) => !target || v.roleIn(target, 'platform') !== R.PLATFORM_ADMIN || platformAdmin(v, me);
+// 有效的人類（啟用中）。動作表的 human 旗標只在 check() 生效、can() 不看；要讓 can 與 check 對 AI 都回否的動作，規則本身要先問這個
+const activeHuman = me => !!me && me.kind === 'human' && me.status === 'active';
+// 建立專案申請的申請人本人：有效的人類工作區成員（沒被移出）；target＝申請人（沒帶＝問「自己的」）
+const ownRequest = (v, me, s) => activeHuman(me) && inWorkspace(me) && (!s.target || s.target.id === me.id);
 const DENY = {
   platform: d => d.err(403, 'NOT_ADMIN', `只有平台管理員能${d.what || '管理平台'}。`),
   workspace: d => d.err(403, 'NOT_ADMIN', `只有工作區管理員（${d.adminName()}）能${d.what || '管理專案與成員所屬專案'}。`),
@@ -108,7 +114,22 @@ const ACTIONS = {
   invite: { admin: true, rule: workspaceAdmin },
   reset_login: { admin: true, rule: (v, me, s) => workspaceAdmin(v, me) && notAboveMe(v, me, s), deny: DENY.upper(n => `${n} 是平台管理員，只有平台管理員能重設他的登入。`) }, // target 是平台管理員時只有平台管理員能
   assign_members: { admin: true, rule: workspaceAdmin }, // 直接改某人所屬的整份專案清單（PUT /api/participants/:id/projects）
-  create_project: { admin: true, fresh: true, rule: (v, me) => workspaceAdmin(v, me) || (v.membersCreateProjects() && v.roleIn(me, 'workspace') === R.MEMBER) }, // fresh：check 時重讀工作區設定
+  create_project: { admin: true, fresh: true, rule: (v, me) => workspaceAdmin(v, me) || (v.membersCreateProjects() && v.roleIn(me, 'workspace') === R.MEMBER), // fresh：check 時重讀工作區設定
+    // 「成員申請，管理員核准」的一般成員：明確的錯誤代碼（不會自動轉成申請）
+    deny: d => (activeHuman(d.me) && d.v.membersRequestProjects() && d.v.roleIn(d.me, 'workspace') === R.MEMBER
+      ? d.err(403, 'PROJECT_CREATION_REQUIRES_APPROVAL', '工作區政策是「成員申請，管理員核准」：請改送建立專案申請，由工作區管理員核准後建立。這次沒有建立專案，也沒有送出申請。')
+      : DENY.workspace(d)) },
+  // 建立專案申請（docs/adr/0004）。規則本身要求有效的人類：can 與 check 對 AI 都回否（不靠只在 check 生效的 human 旗標）
+  // 送出：政策是 approval、有效的人類工作區成員、不具直接建立權（工作區管理員與平台管理員直接建立）。fresh：重讀工作區設定
+  request_project_creation: { human: true, fresh: true, rule: (v, me) => activeHuman(me) && v.membersRequestProjects() && v.roleIn(me, 'workspace') === R.MEMBER,
+    deny: d => (workspaceAdmin(d.v, d.me) ? d.err(403, 'CAN_CREATE_DIRECTLY', '你可以直接建立專案，不用送建立專案申請。')
+      : !d.v.membersRequestProjects() ? d.err(403, 'PROJECT_CREATION_REQUESTS_CLOSED', '工作區政策目前不是「成員申請，管理員核准」，不收建立專案申請。')
+      : d.err(403, 'FORBIDDEN', '只有工作區成員能申請建立專案。')) },
+  // 查看自己的申請、撤回：申請人本人，而且目前仍是有效的人類工作區成員（被移出、停用後查不到）。範圍 { target: 申請人 }
+  see_own_project_creation_requests: { human: true, rule: ownRequest, deny: d => d.err(404, 'NOT_FOUND', '找不到這份建立專案申請') },
+  withdraw_project_creation_request: { human: true, rule: ownRequest, deny: d => d.err(403, 'NOT_REQUESTER', '只有申請人本人能撤回這份申請。') },
+  // 審核（查看全部申請、核准、拒絕；核准與拒絕在 #45）：該工作區的工作區管理員，或有隱含權限的平台管理員。不另訂「不能審自己的」
+  review_project_creation_requests: { human: true, fresh: true, rule: (v, me) => activeHuman(me) && workspaceAdmin(v, me) },
   // 刪除專案：先進入可復原期，期滿由系統永久清除（只有工作區管理員）
   delete_project: { admin: true, sensitive: true, rule: workspaceAdmin }, // 刪除已封存的專案（敏感）
   preview_project_delete: { admin: true, rule: workspaceAdmin }, // 刪除前的預覽：會刪掉多少、預計永久清除的時間（不用再驗證）
@@ -176,6 +197,7 @@ const scopeOf = scope => {
 //   ownerOf(ai)              → AI 所屬人類的列（實際的唯讀要看他有沒有隱含權限）
 //   memberProjectsOf(p)      → 他明確加入的（未封存）專案（不含隱含權限；沒給就用 projectsOf）
 //   loadWorkspace(force)     → 讀工作區設定（10 秒快取）；membersCreateProjects() → 目前快取裡「一般成員可以建立專案」（沒注入＝不行）
+//                            membersRequestProjects() → 目前快取裡「一般成員送建立專案申請」（approval；沒注入＝不行）
 //                            membersDeleteOwn() → 目前快取裡「一般成員可以刪除自己的訊息」（沒注入＝不行）
 //   isPlatformAdmin(p)       → 他的帳號是平台管理員（沒注入＝沒有平台管理員）
 //   visibilityOf(pj)         → 專案可見度（PROJECT_VISIBILITY；沒注入或不認得的值＝審核）
@@ -218,6 +240,7 @@ export function createAccess(deps) {
       },
       active: pj => projects().includes(pj),
       membersCreateProjects: () => !!deps.membersCreateProjects?.(),
+      membersRequestProjects: () => !!deps.membersRequestProjects?.(),
       membersDeleteOwn: () => !!deps.membersDeleteOwn?.(),
       visibilityOf: pj => { const x = deps.visibilityOf?.(pj); return PROJECT_VISIBILITIES.includes(x) ? x : VIS.REVIEW; },
       // 私人專案只有專案成員與有隱含權限的人（工作區管理員等）看得到它存在；開放、審核所有人都看得到
