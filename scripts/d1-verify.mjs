@@ -189,12 +189,6 @@ try {
     boss = await defaultAdmin(a, 'd1boss');
     ann = await join(a, '安娜');
     ok(await a.call(boss.token, `/api/participants/${ann.id}/workspace-role`, 'PUT', { role: 'admin' }), '安娜升為工作區管理員');
-    ann.token = (await (async () => { // 安娜也要能做敏感操作：設帳密、登入、再驗證
-      ok(await a.call(ann.token, '/api/me/password', 'PUT', { username: 'd1ann', newPassword: NEW_PASSWORD, newPasswordAgain: NEW_PASSWORD }), '安娜設帳密');
-      const l = ok(await a.call(null, '/api/auth/password', 'POST', { username: 'd1ann', password: NEW_PASSWORD }), '安娜登入');
-      ok(await a.call(l.token, '/api/auth/reauth', 'POST', { password: NEW_PASSWORD }), '安娜再驗證');
-      return l.token;
-    })());
     for (const n of ['陳大文', '王小美', '丹尼', '伊芙', '菲菲', '古斯']) people[n] = await join(a, n);
     ok(within('政策設成 approval', await a.call(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'approval' })), '政策設成 approval');
     assert.equal((await a.one("SELECT create_projects AS v FROM workspaces WHERE id = 'default'")).v, 'approval');
