@@ -29,6 +29,10 @@ try {
   const previewText = await until(() => js("document.querySelector('#ident-preview-result')?.textContent.includes('NEWM-N') && document.querySelector('#ident-preview-result').innerText"), 10000, '修復預覽');
   assert.match(previewText, /MAIN-N/);
   assert.match(previewText, /同一個參照無法同時指向兩個專案/);
+  assert.ok(await js("!!document.querySelector('#ident-preview-form [name=reference]')"), '可預覽指定卡號');
+  await js("document.querySelector('#ident-preview-form [name=reference]').value = 'MAIN-99'");
+  await submit('NEWM');
+  await until(() => js("document.querySelector('#ident-preview-result')?.textContent.includes('MAIN-99')"), 10000, '指定卡號預覽');
   assert.equal((await kit.call(boss.token, '/api/admin/project-identity')).body.conflicts.length, 1, '預覽後衝突還在');
   await js("document.querySelector('#modal-root .modal-x').click()");
   console.log('✓ 在平台設定預覽、處理替換值衝突，再預覽成功');
@@ -56,6 +60,19 @@ try {
   await until(() => js("document.querySelector('#messages')?.innerText.includes('Route target one')"), 10000, '正常網址仍開原專案');
   assert.ok(!(await js("document.querySelector('#messages')?.innerText.includes('Route target two')")));
   console.log('✓ 瀏覽器正常網址與預覽的目前解析相符');
+  kit.sql("INSERT INTO app_settings (key, value) VALUES ('pcodeold:MAIN', ?)", '第二專案');
+  await goto('/admin/system');
+  await until(() => js("[...document.querySelectorAll('.ident-list li')].find(li => li.textContent.includes('舊代號相同'))?.querySelector('button')?.click() ?? !!document.querySelector('#ident-preview-form')"), 10000, '開啟現行代號和舊代號衝突');
+  await js("(() => { const form = document.querySelector('#ident-preview-form'); const action = form.elements.repairAction; action.value = 'retireAlias'; action.dispatchEvent(new Event('input', { bubbles: true })); form.requestSubmit(); })()");
+  await until(() => js("document.querySelector('#ident-preview-result')?.textContent.includes('將停用這個專案的舊代號')"), 10000, '預覽保留現行代號');
+  console.log('✓ 平台設定可預覽停用另一個專案的舊代號');
+
+  kit.sql('UPDATE projects SET archived = 1 WHERE id = ?', '預設專案');
+  const archived = (await kit.call(boss.token, '/api/admin/project-identity/preview', 'POST', { projectId: '預設專案', field: 'slug', replacement: 'new-main' })).body;
+  assert.equal(archived.routes[0].beforeStatus, 'archived');
+  await goto('/p/main/messages');
+  await until(() => js("location.pathname === '/'"), 10000, '封存專案的網址回到首頁');
+  console.log('✓ 先符合網址的封存專案沒有可開啟的專案頁面');
   console.log('project-identity-ui-test：全部通過');
 } catch (e) {
   console.error('project-identity-ui-test 失敗：', e.stack || e.message);

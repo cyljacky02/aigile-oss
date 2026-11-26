@@ -2470,7 +2470,16 @@ ${ending}`;
       replacement = body.replacement.trim().toUpperCase();
       if (!CODE_RE.test(replacement)) throw invalid('專案代號需為 2～5 個英文字母');
     }
-    return previewProjectIdentity({ db, projectIdentity, ApiError, sha256 }, { projectId: body.projectId, field: body.field, replacement });
+    const { retireAlias = false } = body;
+    if (typeof retireAlias !== 'boolean' || (retireAlias && body.field !== 'code')) throw invalid('retireAlias 只適用於專案代號');
+    let reference;
+    if (body.reference !== undefined) {
+      const ref = typeof body.reference === 'string' && /^([A-Z]{2,5})-(\d+)$/i.exec(body.reference.trim());
+      const number = ref && Number(ref[2]);
+      if (body.field !== 'code' || !number || number > 2147483647) throw invalid('reference 需為有效的專案卡號');
+      reference = `${ref[1].toUpperCase()}-${number}`;
+    }
+    return previewProjectIdentity({ db, projectIdentity, ApiError, sha256 }, { projectId: body.projectId, field: body.field, replacement, reference, retireAlias });
   });
   route('PUT', '/api/platform/settings', async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'manage_platform', 'platform', { what: '改平台設定' });

@@ -474,7 +474,7 @@ try {
     const diag = ok(await a.call(boss.token, '/api/admin/project-identity'), '診斷');
     assert.equal(diag.normalized, true);
     assert.ok(diag.conflicts.some(c => c.kind === 'duplicate_slug' && c.value === 'legacy-site'), '診斷列出既有的網址英文名衝突：' + JSON.stringify(diag.conflicts));
-    const preview = (token, field, replacement) => a.call(token, '/api/admin/project-identity/preview', 'POST', { projectId: 'p_legacy_a', field, replacement });
+    const preview = (token, field, replacement, options = {}) => a.call(token, '/api/admin/project-identity/preview', 'POST', { projectId: 'p_legacy_a', field, replacement, ...options });
     const plan = ok(within('修復預覽', await preview(boss.token, 'slug', 'legacy-alpha')), '修復預覽');
     assert.deepEqual(plan.routes.map(r => [r.path, r.before?.projectId, r.after?.projectId]), [
       ['/p/legacy-site', 'p_legacy_a', 'p_legacy_b'], ['/p/legacy-alpha', undefined, 'p_legacy_a'],
@@ -492,6 +492,10 @@ try {
     assert.equal(oldRef.ambiguous, true);
     assert.deepEqual(oldRef.examples.map(r => [r.before?.legacyId, r.after?.legacyId]), [[alphaCard.legacyId, betaCard.legacyId]]);
     assert.equal(ok(await a.call(boss.token, `/api/cards/${oldCode}-1`), '預覽後查卡').legacyId, alphaCard.legacyId);
+    const keep = ok(within('停用舊代號預覽', await preview(boss.token, 'code', oldCode, { retireAlias: true, reference: `${oldCode}-1` })), '保留現行代號');
+    assert.deepEqual(keep.retiredAlias, { code: oldCode, projectId: 'p_legacy_b' });
+    assert.deepEqual(keep.cardReferences[0].examples.map(r => [r.outcome, r.after?.legacyId]), [['same_card', alphaCard.legacyId]]);
+    assert.ok(keep.resolutionState);
     note(`舊專案代號：${stored['pcode:p_legacy_a']}、${stored['pcode:p_legacy_b']}；既有衝突 ${diag.conflicts.length} 處`);
   });
 

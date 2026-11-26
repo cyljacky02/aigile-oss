@@ -25,7 +25,7 @@ try {
   const lookup = async value => ok(await api(boss, `/api/cards/${value}`));
   const diagnostics = async () => ok(await api(boss, '/api/admin/project-identity'));
   const projects = async () => ok(await api(boss, '/api/projects')).items;
-  const preview = async (projectId, field, replacement, token = boss) => api(token, endpoint, 'POST', { projectId, field, replacement });
+  const preview = (projectId, field, replacement, token = boss, options = {}) => api(token, endpoint, 'POST', { projectId, field, replacement, ...options });
   const setting = (key, value) => db.run('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, value);
   const a = await add('Legacy Alpha', 'legacy-a', 'TWIN');
   const b = await add('Legacy Beta', 'legacy-b', 'BETA');
@@ -53,6 +53,28 @@ try {
   assert.equal((await api(boss, '/api/cards/NEWA-1'))[0], 404);
   console.log('✓ 重複代號預覽顯示同號的兩張卡，識別碼照舊');
 
+  const sampleBefore = ok(await preview(a, 'code', 'NEWA', boss, { reference: 'twin-12' }));
+  const byReference = p => p.cardReferences.find(r => r.code === 'TWIN').examples.find(e => e.reference === 'TWIN-12');
+  assert.equal(byReference(sampleBefore)?.outcome, 'missing', '可查樣本以外的特定參照');
+  await setting('cardmoved:' + a + ':12', String(Number(ca.legacyId.slice(2)) - 100));
+  const sampleAfter = ok(await preview(a, 'code', 'NEWA', boss, { reference: 'TWIN-12' }));
+  assert.equal(sampleAfter.resolutionState, ok(await preview(a, 'code', 'NEWA', boss, { reference: ' twin-012 ' })).resolutionState);
+  assert.equal(byReference(sampleAfter).outcome, 'lost');
+  assert.equal(byReference(sampleAfter).before.legacyId, ca.legacyId);
+  assert.equal(byReference(sampleAfter).after, null);
+  assert.equal(sampleAfter.state, sampleBefore.state);
+  assert.notEqual(sampleAfter.resolutionState, sampleBefore.resolutionState);
+  assert.equal(old.examples[0].outcome, 'redirected');
+  assert.equal((await preview(a, 'code', 'NEWA', boss, { reference: 'BETA-12' }))[0], 400);
+  await db.run('DELETE FROM app_settings WHERE key = ?', 'cardmoved:' + a + ':12');
+  const unassigned = ok(await preview(a, 'code', 'NEWA', boss, { reference: 'TWIN-2' }));
+  const added = await card(a, 'New card under the old prefix');
+  const confirmedCard = ok(await preview(a, 'code', 'NEWA', boss, { reference: 'TWIN-2' }));
+  assert.equal((await lookup('TWIN-2')).legacyId, added.legacyId);
+  assert.equal(confirmedCard.state, unassigned.state);
+  assert.notEqual(confirmedCard.resolutionState, unassigned.resolutionState);
+  console.log('✓ 指定卡號查遺失和轉向，新增卡片和移卡別名改變解析指紋');
+
   const archived = await add('Archived owner', 'archived-owner', 'ARCH');
   const archivedCard = await card(archived, 'Archived card');
   const recoverable = await add('Recoverable owner', 'recoverable-owner', 'RCVR');
@@ -68,6 +90,7 @@ try {
   const aliasPlan = ok(await preview(recoverable, 'code', 'REV'));
   assert.equal(aliasPlan.projects.find(p => p.id === recoverable).deleted, true);
   const alias = aliasPlan.cardReferences.find(r => r.code === 'RCVR');
+  assert.deepEqual([alias.beforeStatus, alias.afterStatus], ['recoverable', 'reachable']);
   assert.deepEqual(alias.before, { projectId: recoverable, source: 'current', available: false });
   assert.deepEqual(alias.after, { projectId: a, source: 'historical', available: true });
   assert.equal(alias.examples.find(e => e.reference === 'RCVR-1').after.legacyId, ca.legacyId);
@@ -79,6 +102,7 @@ try {
   await projects();
   const archivedAlias = ok(await preview(a, 'code', 'OWN')).cardReferences.find(r => r.code === 'TWIN');
   assert.equal(archivedAlias.after, null, '封存專案的舊代號不會變成使用中的前綴');
+  assert.equal(archivedAlias.afterStatus, 'archived');
   assert.equal(ok(await preview(a, 'code', 'OWN')).cardReferences.find(r => r.code === 'OWN').before.source, 'historical', '可以使用自己的舊代號');
   assert.equal((await lookup('ARCH-1')).legacyId, archivedCard.legacyId, '封存專案的現行代號仍可查');
   const [codeStatus, codeTaken] = await preview(a, 'code', 'RCVR');
@@ -91,8 +115,8 @@ try {
   const routeOwner = (items, value) => (items.find(p => p.slug === value) || items.find(p => p.id === value) || items.find(p => p.name === value))?.id ?? null;
   const slugPlan = ok(await preview(a, 'slug', ' ALPHA-NEW '));
   assert.deepEqual(slugPlan.routes, [
-    { path: '/p/legacy-a', before: { projectId: a, source: 'slug' }, after: { projectId: b, source: 'slug' }, claimants: [a, b], ambiguous: true },
-    { path: '/p/alpha-new', before: null, after: { projectId: a, source: 'slug' }, claimants: [], ambiguous: false },
+    { path: '/p/legacy-a', before: { projectId: a, source: 'slug' }, after: { projectId: b, source: 'slug' }, claimants: [a, b], beforeStatus: 'reachable', afterStatus: 'reachable', ambiguous: true },
+    { path: '/p/alpha-new', before: null, after: { projectId: a, source: 'slug' }, claimants: [], beforeStatus: 'missing', afterStatus: 'reachable', ambiguous: false },
   ]);
   assert.equal(routeOwner(legacyRoutes, 'legacy-a'), a);
   const [slugStatus, slugTaken] = await preview(a, 'slug', 'recoverable-owner');
@@ -115,6 +139,31 @@ try {
   ok(await api(admin.token, `/api/participants/${member.participant.participantId}/workspace-role`, 'PUT', { role: 'admin' }));
   assert.equal((await preview(a, 'slug', 'other-slug', member.token))[0], 403, '工作區管理員沒有平台權限');
   console.log('✓ 重複網址英文名和未封存專案同名的預覽依照正常網址解析');
+
+  const derived = await add('Derived code', 'rcvr-derived', 'DERV');
+  await db.run('DELETE FROM app_settings WHERE key = ?', 'pcode:' + derived);
+  assert.equal((await projects()).find(p => p.id === derived).code, 'RCVRA');
+  const derivedPlan = ok(await preview(recoverable, 'code', 'REV'));
+  assert.deepEqual(derivedPlan.codeChanges.map(c => [c.projectId, c.before, c.after]), [[recoverable, 'RCVR', 'REV'], [derived, 'RCVRA', 'RCVR']]);
+  assert.equal(derivedPlan.cardReferences.find(r => r.code === 'RCVR').after.projectId, derived);
+  assert.equal(derivedPlan.cardReferences.find(r => r.code === 'RCVRA').after, null);
+  assert.equal((await projects()).find(p => p.id === derived).code, 'RCVRA');
+  console.log('✓ 試算使用變更後的設定重新推導代號');
+  await setting('slug:' + archived, 'inactive-route');
+  await setting('slug:' + recoverable, 'inactive-route');
+  const inactiveRoute = ok(await preview(archived, 'slug', 'archived-new')).routes[0];
+  assert.deepEqual([inactiveRoute.beforeStatus, inactiveRoute.afterStatus], ['archived', 'recoverable']);
+  assert.equal(inactiveRoute.before.projectId, archived);
+  assert.equal(inactiveRoute.after, null, '刪除的專案沒有可開啟的網址');
+  console.log('✓ 網址解析區分封存與可復原專案');
+  const keep = ok(await preview(a, 'code', 'TWIN', boss, { retireAlias: true, reference: 'TWIN-1' }));
+  assert.deepEqual(keep.retiredAlias, { code: 'TWIN', projectId: archived });
+  assert.deepEqual(keep.codeChanges, []);
+  assert.deepEqual(keep.cardReferences.map(r => [r.code, r.before.projectId, r.after.projectId, r.examples[0].outcome]), [['TWIN', a, a, 'same_card']]);
+  assert.ok((await diagnostics()).conflicts.some(c => c.kind === 'code_is_old_alias' && c.value === 'TWIN'), '預覽保留原本的舊代號設定');
+  assert.equal((await preview(a, 'code', 'NEWA', boss, { retireAlias: true }))[0], 400);
+  assert.equal((await preview(a, 'code', 'TWIN', member.token, { retireAlias: true }))[0], 403);
+  console.log('✓ 預覽保留現行代號並停用另一個專案的舊代號');
   console.log('project-identity-preview-test：全部通過');
 } finally {
   await db.close();
