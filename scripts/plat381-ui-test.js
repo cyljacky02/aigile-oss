@@ -3,7 +3,7 @@
 // B. 頭像選單：leader 有「📁 專案管理 · 你負責的 N 個專案」；管理員照舊（管理員設定、專案管理捷徑）；一般成員沒有「管理」區
 // C. leader 的專案管理頁（/projects）：只列自己當 leader 的專案，沒有新增；⋯ 有改名、程式庫、成員、封存，刪除灰掉
 // D. 專案旁 ⚙：leader 跟管理員一樣有改名、程式庫與分支、成員與本專案角色；封存不放 ⚙（昱志 11/21 選 A），只在專案管理頁
-// E. 要你處理：leader 最上面「👑 你負責的專案」放加入申請、技能核准；管理員 1 天內看不到，超過 1 天才出現並註明「leader 還沒處理」
+// E. 要你處理：加入申請、技能審核各有區塊；工作區管理員 1 天內看不到，超過 1 天才出現並註明「專案管理員還沒處理」
 // F. 1280、375 不橫向捲動
 // 本機暫存資料庫＋無頭 Chrome／Edge，不連正式站。設 PLAT381_SHOTS=資料夾 會另外截圖。用法：node scripts/plat381-ui-test.js
 import fs from 'node:fs';
@@ -108,12 +108,16 @@ try {
     await js("document.body.click(); true");
     // ---------- E leader 的要你處理 ----------
     await login(wang.token, '/p/main/inbox');
-    await until(() => js("document.querySelectorAll('.wlead .lead-row').length === 2"), 10000, L + '👑 你管理的專案（申請＋技能）');
-    const lead = await txt('.wlead');
-    assert.match(lead, /👑 你管理的專案\s*2/, L + '標題與件數：' + lead);
-    assert.match(lead, /你是「預設專案」的專案管理員，這些由你處理；超過 1 天沒處理，會提醒工作區管理員。/, L + '說明');
-    assert.match(lead, /加入申請：李小華\s*想加入「預設專案」.*想幫忙測試搜尋功能/, L + '加入申請');
-    assert.match(lead, /技能待核准：deploy-check\s*預設專案 · 含腳本 1 個 · 陳大文上傳/, L + '技能待核准');
+    await until(() => js("document.querySelectorAll('.wlead .lead-row').length === 2"), 10000, L + '專案的加入申請與技能審核');
+    const sectionOf = row => J(`(() => {
+      const s = document.querySelector(${JSON.stringify(row)}).closest('section');
+      return [s.querySelector('h3').innerText, s.querySelector('.wcount').innerText];
+    })()`);
+    assert.deepEqual(await sectionOf('[data-join-row]'), ['加入申請', '1'], L + '加入申請有自己的標題與件數');
+    assert.deepEqual(await sectionOf('[data-skrev-row]'), ['技能審核', '1'], L + '技能審核有自己的標題與件數');
+    assert.match(await txt('.wlead-note'), /你是「預設專案」的專案管理員，這些由你處理；超過 1 天沒處理，會提醒工作區管理員。/, L + '說明');
+    assert.match(await txt('[data-join-row]'), /李小華\s*預設專案.*想幫忙測試搜尋功能/, L + '加入申請');
+    assert.match(await txt('[data-skrev-row]'), /deploy-check\s*預設專案 · 含腳本 1 個 · 陳大文上傳/, L + '技能待核准');
     assert.equal(await js("document.querySelector('.wlead').previousElementSibling === null || !document.querySelector('.wlead').previousElementSibling.matches('.wsugg')"), true, L + '放在最上面');
     assert.ok(Number(await js("document.querySelector('.inbox-badge:not([hidden])')?.textContent || 0")) >= 2, L + '左側紅點算進去');
     assert.equal(await js("[...document.querySelectorAll('.sec-note')].some(n => n.textContent.includes('申請加入'))"), false, L + '同一筆申請不再出現在「給你知道的」（UX #6479）');
@@ -139,15 +143,18 @@ try {
     await until(() => js("document.querySelector('.work-title') && !document.querySelector('.wlead')"), 10000, L + '管理員的預設專案要你處理沒有 leader 那區');
     await login(liu.token, '/p/second/inbox');
     await until(() => js("!!document.querySelector('.wlead')"), 10000, L + '沒有 leader 的專案直接給管理員');
-    assert.match(await txt('.wlead'), /🛡 專案待處理\s*1.*加入申請：李小華\s*想加入「第二專案」/, L + '管理員看到第二專案的申請');
+    assert.deepEqual(await sectionOf('[data-join-row]'), ['加入申請', '1'], L + '沒有專案管理員：待審件數');
+    assert.match(await txt('[data-join-row]'), /李小華\s*第二專案/, L + '管理員看到第二專案的申請');
+    assert.equal(await js("!!document.querySelector('[data-skrev-row]')"), false, L + '不顯示預設專案的技能');
     // 時間往後 25 小時（只改這個頁面的 Date.now，再切到「要你處理」重畫）：預設專案的申請、技能出現在管理員那邊，註明 leader 還沒處理
     await login(liu.token, '/p/main/messages');
     await until(() => js("!!document.querySelector('[data-nav=\"inbox\"]')"), 10000, L + '管理員進預設專案');
     await sleep(500);
     await js("(() => { const n = Date.now.bind(Date); Date.now = () => n() + 25 * 3600 * 1000; document.querySelector('[data-nav=\"inbox\"]').click(); return true; })()");
-    await until(() => js("!!document.querySelector('.wlead')"), 10000, L + '超過 1 天出現在管理員的要你處理');
-    const late = await txt('.wlead');
-    assert.match(late, /🛡 專案待處理\s*2.*加入申請：李小華.*專案管理員 王小明 還沒處理.*技能待核准：deploy-check.*專案管理員 王小明 還沒處理/, L + '註明 leader 還沒處理：' + late);
+    await until(() => js("document.querySelectorAll('.wlead .lead-row').length === 2"), 10000, L + '超過 1 天出現在管理員的要你處理');
+    for (const row of ['[data-join-row]', '[data-skrev-row]']) {
+      assert.match(await txt(row), /專案管理員 王小明 還沒處理.*預設專案/, L + '註明專案管理員還沒處理');
+    }
     await shot(`PLAT-381-6-${tag}-管理員-超過1天`);
     // ---------- 一般成員 ----------
     await login(chen.token, '/p/main/messages');
@@ -160,7 +167,7 @@ try {
     assert.equal((await call(chen.token, '/api/projects/預設專案', 'PATCH', { name: 'x' })).status, 403);
   }
 
-  // ---------- 英文介面（開源版）：專案管理頁、⋯ 選單、「👑 你負責的專案」都是英文，沒有中文殘留（人名、專案名除外）----------
+  // ---------- 英文介面：專案管理頁、⋯ 選單、兩個專案審核區塊 ----------
   await size(1280, 900);
   await login(wang.token, '/');
   await js("localStorage.setItem('aigile-lang', 'en'); true");
@@ -178,11 +185,20 @@ try {
   await shot('PLAT-381-8-電腦-英文-leader-專案管理頁');
   await js("document.body.click(); true");
   await login(wang.token, '/p/main/inbox');
-  await until(() => js("document.querySelectorAll('.wlead .lead-row').length === 2"), 10000, '英文要你處理');
-  const enL = await txt('.wlead');
-  assert.match(enL, /👑 Projects you manage\s*2[\s\S]*You're a project admin of "Default project"[\s\S]*Join request: 李小華\s*wants to join "Default project" · Just now[\s\S]*Reject\s*Approve[\s\S]*Skill awaiting approval: deploy-check\s*Default project · 1 script · uploaded by 陳大文 · Just now\s*View\s*Approve/, '英文「你負責的專案」：' + enL);
-  assert.deepEqual(zhLeft(enL), [], '「你負責的專案」沒有中文殘留：' + enL);
+  await until(async () => (await txt('.wlead h3')) === 'Join requests', 10000, '英文要你處理');
+  const enL = await J("[...document.querySelectorAll('.wlead, .wlead-note')].map(e => e.innerText.replace(/\\s+/g, ' ').trim()).join(' ')");
+  assert.match(enL, /Join requests 1[\s\S]*李小華\s*Default project[\s\S]*Reject\s*Approve/, '英文加入申請：' + enL);
+  assert.match(enL, /Skill reviews 1[\s\S]*deploy-check\s*Default project · 1 script · uploaded by 陳大文 · Just now\s*View\s*Approve/, '英文技能審核：' + enL);
+  assert.match(enL, /You're a project admin of "Default project"/, '英文優先審核說明');
+  assert.deepEqual(zhLeft(enL), [], '審核區塊沒有中文殘留：' + enL);
   await shot('PLAT-381-9-電腦-英文-leader-要你處理');
+  assert.equal((await call(wang.token, '/api/projects/預設專案', 'PATCH', { name: '技能審核' })).status, 200);
+  await login(wang.token, '/p/main/inbox');
+  await until(async () => (await txt('.wlead h3')) === 'Join requests', 10000, '改名後的英文要你處理');
+  for (const selector of ['[data-join-row]', '[data-skrev-row]']) {
+    assert.match(await txt(selector), /技能審核/, '英文介面保留使用者輸入的專案名稱');
+  }
+  assert.equal((await call(wang.token, '/api/projects/預設專案', 'PATCH', { name: '預設專案' })).status, 200);
   await login(wang.token, '/');
   await js("localStorage.setItem('aigile-lang', 'zh'); true");
 
@@ -190,6 +206,12 @@ try {
   await size(1280, 900);
   await login(wang.token, '/p/main/inbox');
   await until(() => js("!!document.querySelector('[data-lead-skok]')"), 10000, '技能核准鈕');
+  await click('[data-join-row] [data-join-review]');
+  await until(() => js("!!document.querySelector('#jr [data-jr-role]') && !!document.querySelector('#jr [data-jr-ro]')"), 5000, '開啟原有加入申請審核表單');
+  await click('#modal-root .modal [data-close]');
+  await click('[data-lead-skview]');
+  await until(() => js("!!document.querySelector('.sk-drawer [data-skok]')"), 5000, '開啟原有技能內容與審核');
+  await click('.sk-drawer [data-skx]');
   await click('[data-lead-skok]');
   await until(() => js("!!document.querySelector('.confirm-root [data-ok]')"), 5000, '確認視窗');
   await click('.confirm-root [data-ok]');
