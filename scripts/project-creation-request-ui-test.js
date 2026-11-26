@@ -24,6 +24,7 @@ try {
   await login(mate.token, '/');
   await until(() => js("!!document.querySelector('.hub-side [data-hub-newproj]')"), 10000, '總覽側欄的入口');
   assert.equal(await text('.hub-side [data-hub-newproj] .hs-name'), '申請建立專案', '總覽側欄');
+  await until(() => js("!!document.querySelector('.hub-join[data-hub-newproj]')"), 10000, '總覽的入口'); // 總覽右邊的卡片區可能比側欄晚一點畫好（負載高時）
   assert.equal(await text('.hub-join[data-hub-newproj]'), '＋ 申請建立專案', '總覽');
   assert.equal(await js("document.querySelector('#m-newproj').hidden"), false, '手機選單有入口');
   assert.equal(await text('#m-newproj .m-newproj-t'), '申請建立專案', '手機選單');

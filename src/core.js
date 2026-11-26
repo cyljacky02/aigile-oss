@@ -2461,7 +2461,7 @@ ${ending}`;
   });
   // 建立專案申請（#44；src/project-creation-requests.js）：送出、查看自己的、撤回。核准與拒絕（#45）、取消（#46、#47）接它回傳的介面
   const creationRequests = registerProjectCreationRequests({ route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, access, peopleMap,
-    writeInWorkspace, readSpec: readCreationSpec, loadProjects: () => loadProjects(),
+    writeInWorkspace, readSpec: readCreationSpec, loadProjects: force => loadProjects(!!force), creation, auditLog, // creation、auditLog：核准與拒絕（#45）
     projectInfo: id => { const r = projectRows.find(x => x.id === id); return r ? { id: r.id, name: r.name } : null; },
     liveTo: (ids, type, data) => live?.toPeople(ids, type, data) });
   route('PATCH', '/api/projects/:id', async ({ ctx, me, req, params }) => {

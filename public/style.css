@@ -3101,6 +3101,17 @@ input[aria-invalid="true"] { border-color: var(--danger, #c62828); }
 .pcr-why { margin-top: 2px; }
 .pcr-acts { display: flex; align-items: center; gap: 8px; }
 .pcr-acts .btn, .pcr-mine .pcr-head .btn { min-height: 36px; }
+/* 建立專案申請的審核視窗（#45） */
+.pcr-rv { display: grid; gap: 12px; }
+.pcr-dl { display: grid; gap: 6px; margin: 0; }
+.pcr-f { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.pcr-f dt { color: var(--muted); font-size: 13px; }
+.pcr-f dd { margin: 0; overflow-wrap: anywhere; }
+.pcr-reason { white-space: pre-wrap; }
+.pcr-warn { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); border-left: 3px solid #b45309; }
+.pcr-done { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pcr-rv .pcr-acts { justify-content: flex-end; flex-wrap: wrap; }
+@media (max-width: 520px) { .pcr-f { grid-template-columns: 1fr; gap: 2px; } }
 /* 中英切換：英文字典載好前先不顯示畫面（避免閃中文）；登入頁的語言切換 */
 .i18n-wait body { visibility: hidden; }
 .lang-switch { display: flex; justify-content: center; gap: 4px; margin: 10px 0 0; font-size: 13px; color: var(--muted); }
