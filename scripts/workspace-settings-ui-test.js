@@ -24,7 +24,7 @@ try {
   assert.match(await js("document.querySelector('.adm-h').textContent"), /工作區設定/, '大標題');
   assert.equal(await js("document.querySelector('label[for=\"pm-group-name\"]').textContent"), '工作區名稱');
   assert.match(await js("document.querySelector('.pm-create-proj').innerText"), /誰可以建立專案[\s\S]*所有成員[\s\S]*只有工作區管理員/);
-  assert.deepEqual(await js("[...document.querySelectorAll('[data-pp=\"createprojects\"]')].map(i => i.value)"), ['members', 'approval', 'admins'], '三個選項：所有成員、成員申請（正式環境可選，#48）、只有工作區管理員');
+  assert.deepEqual(await js("[...document.querySelectorAll('[data-pp=\"createprojects\"]')].map(i => i.value)"), ['members', 'approval', 'admins'], '三個選項：所有成員、成員申請（正式環境可選）、只有工作區管理員');
   assert.match(await js("document.querySelector('.pm-tools strong').textContent"), /可連線的 AI 工具/);
   assert.ok(await js("!!document.querySelector('.pm-join-set [data-pp=\"openjoin\"]') && !!document.querySelector('#pm-room-code')"), '開放註冊、房間碼');
   await until(() => js("!!document.querySelector('.adm-main #ws-ttl')"), 8000, '附件保存期限（工作區覆寫）');

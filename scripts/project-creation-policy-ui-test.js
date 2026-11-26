@@ -1,4 +1,4 @@
-// 畫面測試（#46）：工作區設定的「誰可以建立專案」三個單選項（正式環境都能選，#48）；
+// 畫面測試：工作區設定的「誰可以建立專案」三個單選項（正式環境都能選）；
 // 從「成員申請」切走時跳確認視窗、顯示預估會取消幾份待審申請，取消就不改；確認後顯示實際取消數（預覽之後又多了申請時以實際為準）；
 // 申請人的「我的建立專案申請」顯示已取消與原因、帳號提醒有一則通知；375 寬不橫向捲動；英文介面
 // 本機暫存資料庫＋無頭 Chrome／Edge。用法：node scripts/project-creation-policy-ui-test.js
@@ -92,9 +92,9 @@ try {
   await until(() => js("/Members request, admins approve/.test(document.querySelector('.pm-create-proj')?.textContent || '')"), 15000, '英文：成員申請');
   await click('[data-pp="createprojects"][value="admins"]');
   await until(() => js("!!document.querySelector('.confirm-root .confirm-msg')"), 8000, '英文確認視窗');
-  assert.match(await text('.confirm-root .confirm-msg'), /1 pending project request/, '英文預估數量：' + await text('.confirm-root .confirm-msg'));
+  assert.match(await text('.confirm-root .confirm-msg'), /1 pending project creation request/, '英文預估數量：' + await text('.confirm-root .confirm-msg'));
   await click('.confirm-root [data-ok]');
-  await until(async () => /Cancelled 1 pending project request/.test(await text('#toast')), 8000, '英文實際取消數：' + await text('#toast'));
+  await until(async () => /Cancelled 1 pending project creation request/.test(await text('#toast')), 8000, '英文實際取消數：' + await text('#toast'));
   console.log('project-creation-policy-ui-test：全部通過');
 } catch (e) {
   console.error('project-creation-policy-ui-test 失敗：', e.message);

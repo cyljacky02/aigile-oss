@@ -22,10 +22,10 @@ import { createWorkspaceSettings, CREATE_PROJECTS, DELETE_OWN_MESSAGES } from '.
 import { createAudit, AUDIT_ACTION, AUDIT_ACTIONS, AUDIT_SCOPE } from './audit.js'; // 稽核紀錄（管理操作）
 import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js'; // 管理員異動通知
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, writeOrdered } from './write-order.js'; // 工作區寫入排序與交易內斷言（ADR 0005）
-import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS } from './project-identity.js'; // 專案網址英文名與代號（#42）
-import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯（#43）
+import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS } from './project-identity.js'; // 專案網址英文名與代號
+import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯
 import { registerProjectCreationRequests, cancelStmts as pcrCancelStmts, cancelNoticeStmts as pcrCancelNoticeStmts, pendingCountSql as pcrPendingCountSql, requestsTableReady as pcrTableReady, PCR_TABLE, PCR_CANCEL_CODE,
-  restoreStaleCountSql as pcrRestoreStaleCountSql, restoreCheckStmts as pcrRestoreCheckStmts, directCreateAllowedCond, activeMemberCond as pcrActiveMemberCond, reviewerCond as pcrReviewerCond } from './project-creation-requests.js'; // 建立專案申請（#44、#46）
+  restoreStaleCountSql as pcrRestoreStaleCountSql, restoreCheckStmts as pcrRestoreCheckStmts, directCreateAllowedCond, activeMemberCond as pcrActiveMemberCond, reviewerCond as pcrReviewerCond } from './project-creation-requests.js'; // 建立專案申請
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -1693,7 +1693,7 @@ ${ending}`;
   // 成員資格的寫入（升降管理員、停用／恢復帳號、移出、離開）：list 的第一句就是工作區列鎖（membership 的 *Stmts 自己帶），
   // 跟 writeInWorkspace 一樣在鎖之後斷言不在還原中（503 RESTORING）、忙碌時整批重試；交易內斷言不成立回 false（什麼都沒寫）
   const writeMembership = list => writeOrdered(db, list, { busy: busyError, restoring: restoringError });
-  // 建立專案申請的系統取消（#46；GLOSSARY「取消」）：掛在觸發它的操作那一批（政策切走、移出、離開、停用帳號），取消交易內實際待審的申請。
+  // 建立專案申請的系統取消（GLOSSARY「取消」）：掛在觸發它的操作那一批（政策切走、移出、離開、停用帳號），取消交易內實際待審的申請。
   // 觸發的操作失敗（最後一位管理員保護…）整批回復，就沒有任何申請被取消。沒有公開的取消 API。
   // 實際取消數：用該操作既有的那筆稽核的 countOf 在同一批算（audit() 那句要放在 stmts 之前），提交後 count() 讀回來給操作者；不為每份申請另寫稽核。
   // notify：通知每位申請人（只有政策切走時）。workspaceId＝null：所有工作區（停用帳號）。
@@ -1715,7 +1715,7 @@ ${ending}`;
       requesters: async () => (await db.all(ended.replace('%s', 'DISTINCT requester_id'), ...endedArgs).catch(() => [])).map(r => r.requester_id),
     };
   }
-  // 專案網址英文名與代號存進資料庫（#42，src/project-identity.js）：每份程式第一個請求做一次啟動正規化；還原備份中先不做（收尾會做）。
+  // 專案網址英文名與代號存進資料庫（src/project-identity.js）：每份程式第一個請求做一次啟動正規化；還原備份中先不做（收尾會做）。
   // 做不成只記下來、不擋請求：只有會動到名稱或識別碼命名空間的寫入回 503（writeIdentity），其他功能照常；下個請求再試
   const projectIdentity = createProjectIdentity({ db, nowIso });
   let identityReady;
@@ -2164,7 +2164,7 @@ ${ending}`;
   // 工作區政策允不允許他刪自己的訊息（人類；工作區管理員永遠可以）。在哪個專案是唯讀成員由網頁另外看
   const canDeleteOwnMessages = async (ctx, me) => me.kind === 'human' && ((await workspace.load()).deleteOwnMessages === DELETE_OWN_MESSAGES.MEMBERS || (await access.can(ctx, me, 'delete_message', 'workspace')));
   route('GET', '/api/projects', async ({ ctx, me }) => ({ ...(await projectsSeenBy(ctx, me)), canCreateProject: await access.can(ctx, me, 'create_project', 'workspace'),
-    // 建立專案申請（#44）：能不能送申請、能不能審核。canCreateProject 仍只代表能直接建立；三個都是給介面用的快照，寫入時重新檢查
+    // 建立專案申請：能不能送申請、能不能審核。canCreateProject 仍只代表能直接建立；三個都是給介面用的快照，寫入時重新檢查
     canRequestProjectCreation: await access.can(ctx, me, 'request_project_creation', 'workspace'),
     canReviewProjectCreationRequests: await access.can(ctx, me, 'review_project_creation_requests', 'workspace'),
     ...(ctx.viewerKind === 'human' ? { canDeleteOwnMessages: await canDeleteOwnMessages(ctx, me) } : {}) })); // canCreateProject：網頁要不要顯示「新增專案」；canDeleteOwnMessages：工作區政策允不允許他刪自己的訊息（唯讀另看專案；只給人類，給 AI 的形狀不變）
@@ -2205,7 +2205,7 @@ ${ending}`;
     return groupSettings();
   });
   const CREATE_PROJECTS_LABEL = { [CREATE_PROJECTS.MEMBERS]: '所有成員', [CREATE_PROJECTS.APPROVAL]: '成員申請，管理員核准', [CREATE_PROJECTS.ADMINS]: '只有工作區管理員' };
-  // 三種政策都能選（#48 開放「成員申請，管理員核准」；不分執行環境，Node、Docker、Cloudflare 都一樣）
+  // 三種政策都能選（不分執行環境，Node、Docker、Cloudflare 都一樣）
   const CREATE_PROJECTS_OPTIONS = Object.freeze([CREATE_PROJECTS.MEMBERS, CREATE_PROJECTS.APPROVAL, CREATE_PROJECTS.ADMINS]);
   const DELETE_OWN_LABEL = { [DELETE_OWN_MESSAGES.MEMBERS]: '所有成員', [DELETE_OWN_MESSAGES.ADMINS]: '只有工作區管理員' };
   for (const pattern of ['/api/workspace/settings', '/api/group/settings']) route('PUT', pattern, async ({ ctx, me, req }) => {
@@ -2236,7 +2236,7 @@ ${ending}`;
       stmts.push(projEvent(GROUP_EVT, me.id, code ? `${me.name} 設定房間碼` : `${me.name} 清除房間碼`, at)); // 紀錄不寫房間碼本身
     }
     const createBefore = has('createProjects') ? (await workspace.load(true)).createProjects : null;
-    // 從「成員申請」切到其他模式（#46）：同一批取消這個工作區所有待審的建立專案申請（policy_changed）、通知每位申請人；其他方向不處理任何申請。
+    // 從「成員申請」切到其他模式：同一批取消這個工作區所有待審的建立專案申請（policy_changed）、通知每位申請人；其他方向不處理任何申請。
     // 政策在交易內確認仍是讀到的舊值（不然稽核的 from 與取消的範圍都不對：別人剛好先改了回 409）
     const changeCreate = has('createProjects') && createBefore !== body.createProjects;
     const leavingApproval = changeCreate && createBefore === CREATE_PROJECTS.APPROVAL;
@@ -2271,7 +2271,7 @@ ${ending}`;
     if (cancel && out.cancelledProjectCreationRequests) creationRequests.pokeLater(await cancel.requesters());
     return out;
   });
-  // 切換「誰可以建立專案」的預覽（#46）：目前的政策與待審的建立專案申請數量（從 approval 切走會取消這些）。只給有權修改政策的人；
+  // 切換「誰可以建立專案」的預覽：目前的政策與待審的建立專案申請數量（從 approval 切走會取消這些）。只給有權修改政策的人；
   // 只是預估，實際取消數以儲存回應的 cancelledProjectCreationRequests 為準
   route('GET', '/api/workspace/settings/create-projects-preview', async ({ ctx, me }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看切換政策的影響' });
@@ -2416,7 +2416,7 @@ ${ending}`;
     if (await db.get('SELECT 1 AS x FROM projects WHERE name = ? AND id != ? AND archived = 0 AND deleted_at IS NULL', name, id)) return nameTaken();
     return new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
   }
-  // 識別碼（網址英文名、代號）的寫入（#42、ADR 0005）：交易內斷言沒被別的專案用掉。自動產生的值剛好被搬走：重讀重算，整批重試（次數有限）；
+  // 識別碼（網址英文名、代號）的寫入（ADR 0005）：交易內斷言沒被別的專案用掉。自動產生的值剛好被搬走：重讀重算，整批重試（次數有限）；
   // 使用者指定的值被用掉：409。IDENTITY_TRIES＝自動產生的值最多試幾次（建立專案的重試在 src/project-create.js）
   const IDENTITY_TRIES = 3;
   // 取消封存、復原：這個專案的代號或網址英文名跟別的專案（或舊代號）重複（升級前就有的衝突）。不說是哪個專案（可能是看不到的私人專案）
@@ -2426,7 +2426,7 @@ ${ending}`;
   const slugTaken = (slug, used, who = null) => new ApiError(409, 'SLUG_TAKEN', who ? `「${slug}」已經是「${who}」在用的網址名` : `「${slug}」已經有專案在用`, { suggestion: slugFree(slug, used) });
   // 別的專案的代號與所有舊代號（自動產生代號時要避開的；含可復原期內的）
   const usedCodes = exceptId => new Set([...allProjectRows.filter(r => r.id !== exceptId).map(r => projCodes[r.id]), ...Object.keys(oldCodes).filter(c => oldCodes[c] !== exceptId)].filter(Boolean));
-  // 共用的建立專案邏輯（src/project-create.js）：直接建立、核准建立（#45）、新站預設專案、示範資料。這裡接上專案快取與識別碼規則
+  // 共用的建立專案邏輯（src/project-create.js）：直接建立、核准建立、新站預設專案、示範資料。這裡接上專案快取與識別碼規則
   const creation = createProjectCreation({ db, randId, nowIso, ApiError, auditLog, membership, projEvent, write: writeIdentity,
     nameFreeCond: (name, id) => ({ cond: nameFree(), args: [name, id] }),
     names: {
@@ -2472,9 +2472,9 @@ ${ending}`;
       guards: [ensureCond(allowed)], explain: () => directCreateDenied(me, allowed) });
     return { __status: 201, ...(await projectsSeenBy(ctx, me)), id };
   });
-  // 建立專案申請（#44；src/project-creation-requests.js）：送出、查看自己的、撤回。核准與拒絕（#45）、取消（#46、#47）接它回傳的介面
+  // 建立專案申請（src/project-creation-requests.js）：送出、查看自己的、撤回。核准與拒絕、取消接它回傳的介面
   const creationRequests = registerProjectCreationRequests({ route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, access, peopleMap,
-    writeInWorkspace, readSpec: readCreationSpec, loadProjects: force => loadProjects(!!force), creation, auditLog, // creation、auditLog：核准與拒絕（#45）
+    writeInWorkspace, readSpec: readCreationSpec, loadProjects: force => loadProjects(!!force), creation, auditLog, // creation、auditLog：核准與拒絕
     projectInfo: id => { const r = projectRows.find(x => x.id === id); return r ? { id: r.id, name: r.name } : null; },
     liveTo: (ids, type, data) => live?.toPeople(ids, type, data) });
   route('PATCH', '/api/projects/:id', async ({ ctx, me, req, params }) => {
@@ -3596,7 +3596,7 @@ ${ending}`;
       }
       // 鎖之後確認還是原本的角色（別人剛好先改了：不重複記）、改完確實是新角色（最後一位的檢查擋下來就整批不寫）。
       // 稽核紀錄、通知跟著同一批；被降級的人已經不是工作區管理員，也要通知（include）。還原備份中：鎖之後的斷言擋下（503 RESTORING）。
-      // 申請人升為工作區管理員時，他的待審建立專案申請保留（#46：他可以自己核准或撤回後直接建立）
+      // 申請人升為工作區管理員時，他的待審建立專案申請保留（他可以自己核准，或撤回後直接建立）
       const adminIs = `EXISTS (SELECT 1 FROM participants WHERE id = ? AND workspace_role = '${WORKSPACE_ROLE.ADMIN}')`;
       const ok = await writeMembership([lock, ensureStmt(admin ? `NOT ${adminIs}` : adminIs, [t.id]), ...stmts, ensureStmt(admin ? adminIs : `NOT ${adminIs}`, [t.id]),
         auditLog.stmt({ actor: me, action: admin ? AUDIT_ACTION.WORKSPACE_ADMIN_GRANT : AUDIT_ACTION.WORKSPACE_ADMIN_REVOKE, scope: AUDIT_SCOPE.WORKSPACE, target: auditTarget(t) }),
@@ -4646,13 +4646,13 @@ ${ending}`;
     // 只清快取（開始匯入清空資料後、收尾做完後）；不做任何資料修整
     clearCaches: async () => { invalidatePeople(); await bumpPeopleVer(); membersReady = undefined; auditReady = undefined; identityReady = undefined; await Promise.all([loadProjects(true), membership.loadMembers(true), loadProjectRoles(true)]); },
     // 還原收尾的修整步驟：在登入轉移之後、寫稽核與解除「還原中」之前依序執行。每一步都要能從頭重跑（中途失敗再按一次收尾會全部重做），
-    // 失敗就丟錯（回 false 也算沒做完），站台維持還原中。新的步驟照依賴順序接在後面（例：識別碼正規化、檢查待審的建立專案申請）
+    // 失敗就丟錯（回 false 也算沒做完），平台維持還原中。新的步驟照依賴順序接在後面（例：識別碼正規化、檢查待審的建立專案申請）
     restoreSteps: [
       { name: '成員資料轉換', run: () => membership.migrateLegacy({ finishingRestore: true }) }, // 舊版備份：成員資料匯入後轉到新的成員資料表
       { name: '稽核紀錄轉換', run: () => auditLog.migrateLegacy({ finishingRestore: true }) }, // 舊的專案刪除紀錄轉進稽核紀錄
       // 專案網址英文名與代號存進資料庫：不看「已正規化」的標記，一定照備份的資料重算（舊備份沒有存的值照舊規則推導，畫面上的值不變）
       { name: '專案識別碼正規化', run: () => projectIdentity.normalize({ finishingRestore: true }) },
-      // 待審的建立專案申請（#47）：成員轉換之後才看得到正確的成員資格與政策。不再成立的依固定順序取消，有效的保留；不通知、不核准、不建立專案。
+      // 待審的建立專案申請：成員轉換之後才看得到正確的成員資格與政策。不再成立的依固定順序取消，有效的保留；不通知、不核准、不建立專案。
       // 取消數跟取消同一批記進 restore_state（累加）：稽核寫入失敗重試時，第一次已取消的不會被數成零
       { name: '檢查待審的建立專案申請', run: async ({ state, keepStmts }) => {
         if (!(await pcrTableReady(db))) return true; // 申請資料表還沒建立（程式先部署）：沒有待審申請

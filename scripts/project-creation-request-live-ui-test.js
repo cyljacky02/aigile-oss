@@ -1,6 +1,6 @@
-// 畫面測試（#48，規格 #39「即時事件」「介面」）：審核人與申請人在對方操作後自動重新抓取（不用重新整理），
+// 畫面測試（規格 #39「即時事件」「介面」）：審核人與申請人在對方操作後自動重新抓取（不用重新整理），
 // 「要你處理」的待審數量在各種操作後都正確（用伺服器的待審總數，不是載入的筆數），審核清單可以載入更多。
-//   審核人：成員送出 → 出現；超過一頁 → 數字是總數、可以載入更多；申請人撤回、另一位管理員拒絕、政策切走 → 數字跟著變
+//   審核人：成員送出 → 出現；超過一頁 → 數字是總數、可以載入更多；申請人撤回、另一位審核人拒絕、政策切走 → 數字跟著變
 //   申請人：被拒絕、被系統取消 → 「我的建立專案申請」跟著變
 // 本機暫存資料庫＋無頭 Chrome／Edge（本機版有即時通道）。用法：node scripts/project-creation-request-live-ui-test.js
 import assert from 'node:assert';
@@ -52,17 +52,17 @@ try {
   await login(boss.token, '/cross/inbox');
   await until(async () => (await rows()) === 50, 15000, '重新進來：第一頁');
 
-  // ---------- 申請人撤回、另一位管理員拒絕：數字即時變 ----------
+  // ---------- 申請人撤回、另一位審核人拒絕：數字即時變 ----------
   assert.equal((await kit.call(mate.token, `/api/project-creation-requests/${first.id}/withdraw`, 'POST')).status, 200);
   await until(async () => (await text('.wpcr .wcount')) === '55', 10000, '撤回後 55');
   await until(async () => (await badge()) === '55', 5000, '徽章 55');
   const list = (await kit.call(boss.token, '/api/project-creation-requests?scope=review&state=pending&limit=1')).body.items;
   assert.equal((await kit.call(ann.token, `/api/project-creation-requests/${list[0].id}/reject`, 'POST', { reason: '先不需要' })).status, 200);
-  await until(async () => (await text('.wpcr .wcount')) === '54', 10000, '另一位管理員拒絕後 54');
+  await until(async () => (await text('.wpcr .wcount')) === '54', 10000, '另一位審核人拒絕後 54');
   const next = (await kit.call(boss.token, '/api/project-creation-requests?scope=review&state=pending&limit=1')).body.items[0];
   const approved = (await kit.call(ann.token, `/api/project-creation-requests/${next.id}/approve`, 'POST', {})).body;
   assert.ok(approved.project?.id, JSON.stringify(approved));
-  await until(async () => (await text('.wpcr .wcount')) === '53', 10000, '另一位管理員核准後 53');
+  await until(async () => (await text('.wpcr .wcount')) === '53', 10000, '另一位審核人核准後 53');
 
   // ---------- 申請人：被拒絕、被系統取消即時看到 ----------
   await login(mate.token, '/');

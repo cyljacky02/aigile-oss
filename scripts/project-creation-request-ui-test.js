@@ -1,4 +1,4 @@
-// 畫面測試（#44）：「成員申請，管理員核准」時，一般成員所有建立專案的入口都是「申請建立專案」；
+// 畫面測試：「成員申請，管理員核准」時，一般成員所有建立專案的入口都是「申請建立專案」；
 // 申請表單（申請原因必填、可見度、沒有程式庫欄位、說明核准後成為專案管理員、送出中停用按鈕、重試沿用同一個 requestId）；
 // 總覽專案列表上方的「我的建立專案申請」（狀態、撤回、載入更多）；管理員照樣是「新增專案」；375 寬不橫向捲動；英文介面
 // 本機暫存資料庫＋無頭 Chrome／Edge。用法：node scripts/project-creation-request-ui-test.js
@@ -41,11 +41,11 @@ try {
   await until(() => js("!!document.querySelector('.hub')"), 10000, '回總覽');
 
   // ---------- 申請表單 ----------
-  // 攔住送出申請的請求：記下內容；可以讓下一次「網路中斷」或延遲
-  await js(`(() => { window.__pcr = { bodies: [], fail: false, delay: 0 }; const of = window.fetch;
+  // 攔住送出申請的請求：記下內容；可以讓下一次「網路中斷」，或停在半路直到測試放行（hold）
+  await js(`(() => { window.__pcr = { bodies: [], fail: false, hold: null }; const of = window.fetch;
     window.fetch = async (u, o) => { if (String(u).startsWith('/api/project-creation-requests') && o?.method === 'POST' && !String(u).includes('/withdraw')) {
       window.__pcr.bodies.push(JSON.parse(o.body)); if (window.__pcr.fail) { window.__pcr.fail = false; throw new TypeError('Failed to fetch'); }
-      if (window.__pcr.delay) await new Promise(r => setTimeout(r, window.__pcr.delay)); } return of(u, o); }; return true; })()`);
+      if (window.__pcr.hold) await window.__pcr.hold; } return of(u, o); }; return true; })()`);
   await click('.hub-join[data-hub-newproj]');
   await until(() => js("!!document.querySelector('#np-form')"), 8000, '申請表單');
   assert.match(await text('.modal .modal-title, .modal h2, .modal-head'), /申請建立專案/, '標題');
@@ -68,8 +68,10 @@ try {
   await until(async () => /連線中斷/.test(await text('#np-err')), 5000, '連線中斷的說明');
   assert.equal(await js("document.querySelector('#np-submit').disabled"), false, '失敗後按鈕可以再按');
   // 送出中停用按鈕：連按兩下只送一次
-  await js('window.__pcr.delay = 600; const f = document.querySelector("#np-form"); f.requestSubmit(); f.requestSubmit(); true');
+  await js('window.__pcr.hold = new Promise(r => { window.__pcr.release = r; }); const f = document.querySelector("#np-form"); f.requestSubmit(); f.requestSubmit(); true');
+  await until(() => js('window.__pcr.bodies.length === 2'), 5000, '重按的那次送出了（停在半路）');
   assert.equal(await js("document.querySelector('#np-submit')?.disabled"), true, '送出中停用按鈕');
+  await js('window.__pcr.hold = null; window.__pcr.release(); true');
   await until(() => js("!document.querySelector('#np-form')"), 8000, '送出後關掉表單');
   const bodies = await js('window.__pcr.bodies');
   assert.equal(bodies.length, 2, '中斷那次＋重按那次（連按的第二下沒送）：' + JSON.stringify(bodies));
@@ -81,7 +83,6 @@ try {
   assert.equal(list.length, 1, '伺服器只有一份申請');
   assert.equal(list[0].state, 'pending');
   // 再開一次表單＝新的一份申請（新的 requestId）
-  await js('window.__pcr.delay = 0; true');
   await click('.hub-join[data-hub-newproj]');
   await until(() => js("!!document.querySelector('#np-form')"), 8000, '再開申請表單');
   await fill('資料平台', '整合報表');
@@ -131,7 +132,7 @@ try {
   // ---------- 英文介面 ----------
   await login(mate.token, '/');
   await js("localStorage.setItem('aigile-lang', 'en'); location.reload(); true");
-  await until(() => js("document.querySelector('.pcr-mine h3')?.textContent === 'My project requests'"), 15000, '英文：我的建立專案申請');
+  await until(() => js("document.querySelector('.pcr-mine h3')?.textContent === 'My project creation requests'"), 15000, '英文：我的建立專案申請');
   assert.equal(await text('.hub-side [data-hub-newproj] .hs-name'), 'Request a project', '英文入口');
   console.log('project-creation-request-ui-test：全部通過');
 } finally {

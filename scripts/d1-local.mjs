@@ -1,4 +1,4 @@
-// 本機 D1（wrangler --local／Miniflare）的工具：給 scripts/d1-verify.mjs 用（#49）。只碰本機，絕不碰 Cloudflare 上的 D1。
+// 本機 D1（wrangler --local／Miniflare）的工具：給 scripts/d1-verify.mjs 用。只碰本機，絕不碰 Cloudflare 上的 D1。
 //
 // 防護（多層，任何一層不過就丟錯、不執行）：
 //   1. assertLocalArgs：只允許 `d1 execute` 與 `dev` 兩個子指令；一定要有 --local、--persist-to（在這次的暫存資料夾裡、不在 repo 裡）、

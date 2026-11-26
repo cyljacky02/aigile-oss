@@ -1,4 +1,4 @@
-// 本機 D1 驗證（#49；規格 #39「Testing Decisions → D1」）：一個指令，從空的本機 D1 跑完建立專案申請的關鍵資料庫行為，逐項印 PASS／FAIL。
+// 本機 D1 驗證（規格 #39「Testing Decisions → D1」）：一個指令，從空的本機 D1 跑完建立專案申請的關鍵資料庫行為，逐項印 PASS／FAIL。
 // 用法：npm run verify:d1   （= node scripts/d1-verify.mjs [--keep] [--verbose]）
 //   --keep     保留暫存資料夾（本機 D1 檔、wrangler dev 的紀錄）方便查
 //   --verbose  每項多印細節（量到的 D1 用量等）
@@ -113,7 +113,7 @@ const tmpRoot = makeTmpRoot(repoRoot);
 const running = [];
 let exitCode = 0;
 try {
-  console.log(`本機 D1 驗證（#49）　暫存：${tmpRoot}`);
+  console.log(`本機 D1 驗證　暫存：${tmpRoot}`);
   let wrangler;
   try {
     wrangler = findWrangler();
@@ -431,7 +431,7 @@ try {
     const p2 = ok(await a.call(boss.token, '/api/projects', 'POST', { name: 'Delta Echo 2', slug: 'delta-echo-2' }), '自動代號 2');
     const codes = Object.fromEntries((await a.q("SELECT key, value FROM app_settings WHERE key IN (?, ?)", 'pcode:' + p1.id, 'pcode:' + p2.id)).map(r => [r.key, r.value]));
     assert.ok(codes['pcode:' + p1.id] && codes['pcode:' + p2.id] && codes['pcode:' + p1.id] !== codes['pcode:' + p2.id], `自動代號不重複：${JSON.stringify(codes)}`);
-    // 舊資料（#42 之前）：識別碼沒存、還有既有的衝突（兩個專案存了同一個網址英文名）；拿掉「已正規化」的標記
+    // 舊資料（識別碼存進資料庫之前）：識別碼沒存、還有既有的衝突（兩個專案存了同一個網址英文名）；拿掉「已正規化」的標記
     const at = '2026-01-01T00:00:00.000Z';
     assert.deepEqual(await a.batch([
       ["INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at, visibility) VALUES ('p_legacy_a', 'Legacy Alpha', 0, 'default', 'system', ?, 'open')", [at]],

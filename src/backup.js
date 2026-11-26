@@ -280,7 +280,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     } catch (e) {
       if (e instanceof ApiError) throw e;
       console.error('還原收尾失敗（維持還原中，可以再按一次收尾）', e);
-      throw new ApiError(503, 'RESTORE_UNFINISHED', '還原的收尾沒有做完，站台仍在還原中；請再按一次「完成匯入」（restore/finish）。', { retryAfter: 1 });
+      throw new ApiError(503, 'RESTORE_UNFINISHED', '還原的收尾沒有做完，平台仍在還原中；請再按一次「完成匯入」（restore/finish）。', { retryAfter: 1 });
     }
   });
   const notRestoring = () => new ApiError(409, 'NOT_RESTORING', '沒有你開始的匯入（先按匯入，restore/begin）');

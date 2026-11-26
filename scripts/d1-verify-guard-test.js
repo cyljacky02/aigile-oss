@@ -1,4 +1,4 @@
-// 本機 D1 驗證（npm run verify:d1，#49）的防護：只能碰本機 D1，不能碰 Cloudflare 上的正式 D1。
+// 本機 D1 驗證（npm run verify:d1）的防護：只能碰本機 D1，不能碰 Cloudflare 上的正式 D1。
 // 不需要 wrangler、不連網路：只測防護的純函式，與 d1-verify.mjs 收到 --remote 時立刻拒絕（不建暫存資料夾、不找 wrangler）。
 // 用法：node scripts/d1-verify-guard-test.js
 import fs from 'node:fs';

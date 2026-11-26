@@ -1,14 +1,14 @@
-// 驗收測試（#45；ADR 0005）：Postgres 上用不同的資料庫連線真的同時核准建立專案申請
+// 驗收測試（ADR 0005）：Postgres 上用不同的資料庫連線真的同時核准建立專案申請
 // 第一個請求停在提交前（工作區列鎖還拿著），第二個請求在另一份程式（另一組連線）開始、被工作區列鎖擋住；第一個提交後第二個才繼續：
 //   1. 同時核准：只建立一個專案，後完成的拿到原本的結果（200）
 //   2. 核准與拒絕：拒絕 409，申請維持已核准
 //   3. 核准與撤回：撤回 409
 //   4. 審核人被降級與核准：降級先完成，核准的交易內斷言擋下（看不到了 → 404），沒有專案
 //   5. 直接建立與核准搶同一個指定代號：核准 409 CODE_TAKEN（指出欄位、不透露占用者），申請維持待審核
-//   6. 核准 vs 政策切換（#48）：核准先完成 → 申請已核准、專案存在，政策切換只取消剩下的；政策切換先完成 → 核准 409（申請已取消 policy_changed），沒有專案
-//   7. 核准 vs 停用申請人（#48）：停用先完成 → 核准 409（account_disabled）、沒有專案；核准先完成 → 停用取消 0 份、專案留著
-//   8. 核准 vs 移出申請人（#48）：移出先完成 → 核准 409（workspace_member_removed）、沒有專案；核准先完成 → 移出取消 0 份
-// 申請與政策切換、移出、停用的交錯（沒有核准的）在 project-creation-request-pg-race-test.js（#46）。
+//   6. 核准 vs 政策切換：核准先完成 → 申請已核准、專案存在，政策切換只取消剩下的；政策切換先完成 → 核准 409（申請已取消 policy_changed），沒有專案
+//   7. 核准 vs 停用申請人：停用先完成 → 核准 409（account_disabled）、沒有專案；核准先完成 → 停用取消 0 份、專案留著
+//   8. 核准 vs 移出申請人：移出先完成 → 核准 409（workspace_member_removed）、沒有專案；核准先完成 → 移出取消 0 份
+// 申請與政策切換、移出、停用的交錯（沒有核准的）在 project-creation-request-pg-race-test.js。
 // 只有 Postgres 會有兩個寫入交易同時進行；沒設 AIGILE_TEST_PG_URL 就略過。用法：AIGILE_TEST_PG_URL=… node scripts/project-creation-request-approve-pg-race-test.js
 import './test-home.mjs';
 import fs from 'node:fs';
@@ -141,7 +141,7 @@ try {
     console.log('✓ Postgres：審核人被降級與核准同時進行，降級先完成，核准被交易內斷言擋下');
   }
 
-  // ---------- #48：核准 vs 政策切換、停用申請人、移出申請人（兩個順序） ----------
+  // ---------- 核准 vs 政策切換、停用申請人、移出申請人（兩個順序） ----------
   const POLICY = /^UPDATE workspaces SET create_projects/, DISABLE = /SET status = 'disabled'/, REMOVE = /SET workspace_status = 'removed'/;
   const policy = (call, value) => call(boss.token, '/api/workspace/settings', 'PUT', { createProjects: value });
   const row = id => a.get('SELECT state, cancel_code, project_id FROM project_creation_requests WHERE id = ?', id);

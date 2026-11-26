@@ -1,4 +1,4 @@
-// D1 的 SQLite 限制（#49 的本機 D1 驗證找到的）：D1 的 SQLite 比一般的嚴（例：一個複合 SELECT 最多 5 段、LIKE 樣式最長 50 位元組），
+// D1 的 SQLite 限制（本機 D1 驗證找到的）：D1 的 SQLite 比一般的嚴（例：一個複合 SELECT 最多 5 段、LIKE 樣式最長 50 位元組），
 // 超過時在 D1 上是 500，在 SQLite 與 Postgres 上卻照常——所以一般的測試抓不到。這支用 node:sqlite 開一個「套上 D1 限制」的資料庫
 // （src/db-d1.js 的 D1_SQLITE_LIMITS，數字是在本機 D1 實測的），跑建立專案與建立專案申請的主要流程，任何一句超過限制就失敗。
 // 回歸：沒指定看板狀態的新專案第一次被讀到時，補預設狀態組那一句是 6 段 UNION ALL → D1「too many terms in compound SELECT」，

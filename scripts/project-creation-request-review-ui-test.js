@@ -1,7 +1,7 @@
-// 畫面測試（#45）：審核人在「要你處理」處理建立專案申請，申請人看到結果
+// 畫面測試：審核人在「要你處理」處理建立專案申請，申請人看到結果
 // - 「要你處理」有「建立專案申請」一類（待審總數）；總覽右欄也列出
 // - 審核視窗：完整內容、自動識別碼的預估值（標明預估）、衝突提示；「核准並建立」、「拒絕」（理由必填）
-// - 另一位管理員已先處理、名稱衝突、審核權失效（清掉已載入的審核資料）
+// - 另一位審核人已先處理、名稱衝突、審核權失效（清掉已載入的審核資料）
 // - 申請人：「我的建立專案申請」即時看到已核准（新專案出現、可以進入）與拒絕理由
 // - 375 寬不橫向捲動；英文介面
 // 本機暫存資料庫＋無頭 Chrome／Edge。用法：node scripts/project-creation-request-review-ui-test.js
@@ -65,12 +65,12 @@ try {
   assert.equal((await reqState(alpha.id)).state, 'approved');
   await until(async () => (await text('.wpcr .wcount')) === '2', 8000, '待審總數變 2');
 
-  // ---------- 另一位管理員已先處理 ----------
+  // ---------- 另一位審核人已先處理 ----------
   await click(`[data-pcr-review="${beta.id}"]`);
   await until(() => js("!!document.querySelector('#pcr-rv [data-pcr-ok]')"), 8000, 'Beta 的審核視窗');
   assert.equal((await kit.call(ann.token, `/api/project-creation-requests/${beta.id}/reject`, 'POST', { reason: '安娜先拒絕了' })).status, 200, '安娜先拒絕');
   await click('#pcr-rv [data-pcr-ok]');
-  await until(async () => /另一位管理員已經處理了這份申請/.test(await text('#pcr-rv-msg')), 8000, '另一位管理員已先處理');
+  await until(async () => /另一位審核人已經處理了這份申請/.test(await text('#pcr-rv-msg')), 8000, '另一位審核人已先處理');
   await until(async () => /已拒絕/.test(await text('#pcr-rv .pcr-done')), 8000, '顯示目前的狀態');
   assert.ok(!(await js("!!document.querySelector('#pcr-rv [data-pcr-ok]')")), '不能再核准');
   await js("document.querySelector('.modal [data-close]')?.click(); true");
@@ -141,7 +141,7 @@ try {
 
   // ---------- 英文介面 ----------
   await js("localStorage.setItem('aigile-lang', 'en'); location.reload(); true");
-  await until(() => js("document.querySelector('.wpcr .wsugg-head h3')?.textContent === 'Project requests'"), 15000, '英文：建立專案申請');
+  await until(() => js("document.querySelector('.wpcr .wsugg-head h3')?.textContent === 'Project creation requests'"), 15000, '英文：建立專案申請');
   await click(`[data-pcr-review="${eps.id}"]`);
   await until(async () => (await text('#pcr-rv [data-pcr-ok]')) === 'Approve and create', 8000, '英文：核准並建立');
   await js("document.querySelector('.modal [data-close]')?.click(); true");
