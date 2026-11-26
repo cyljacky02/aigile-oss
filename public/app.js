@@ -552,6 +552,13 @@
   // 所有工作區管理員的名字（可以有多位）；名單還沒載入時用專案清單給的那位
   const wsAdminNames = () => [...(state.participants?.values() || [])].filter(p => p.memberType === 'human' && p.workspaceRole === 'admin').map(p => p.name).join('、') || state.projMeta.adminName || '';
   const canNewProj = () => !!state.projMeta.canCreateProject; // 工作區設定「誰可以建立專案」：管理員永遠可以，設成所有成員時一般成員也可以（後端判斷）
+  // 建立專案申請（#44）：政策是「成員申請，管理員核准」時，一般成員的入口是「申請建立專案」（後端的 canRequestProjectCreation）。
+  // 所有建立專案的入口（總覽側欄、總覽、專案切換器、手機選單）都看這兩個：能直接建立＝「新增專案」，能申請＝「申請建立專案」，都不能＝不顯示
+  const canReqProj = () => !!state.projMeta.canRequestProjectCreation;
+  const canStartProj = () => canNewProj() || canReqProj();
+  const startProjText = () => (canNewProj() ? '新增專案' : '申請建立專案');
+  const startProjPlus = () => (canNewProj() ? '＋ 新增專案' : '＋ 申請建立專案');
+  const openStartProject = () => openNewProject({ request: !canNewProj() });
   // 專案管理員（每個專案可多位、只能人類）
   const projectAdminsOf = pj => state.projMeta.leaders?.[pj] || [];
   // 唯讀：人類看名單；AI 跟著主人。所在是跨專案頻道時，只要在任何專案唯讀就算
@@ -1023,6 +1030,7 @@
   function liveEvent(kind, raw) {
     if (!kind || kind === 'hello' || kind === 'bye') return;
     if (kind === 'join') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} return onJoinDecided(x).catch(() => {}); }
+    if (kind === 'stale') return refreshPcr().catch(() => {}); // 建立專案申請有變（#44）：事件不帶內容，重新抓取
     if (kind === 'messages_cleared' || kind === 'messages_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return reloadProjMsgs(x.project); } // 整個專案的訊息被清空或整批復原
     if (kind === 'message_deleted' || kind === 'message_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return x.id ? reloadMsg(x.id).catch(() => {}) : undefined; } // 別人刪除或復原：重讀那一則
     liveConn.kinds.add(kind);
@@ -1762,7 +1770,7 @@
   async function loadProjectList() {
     const d = await api('/api/projects');
     state.projectList = d.items;
-    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', leaders: d.projectAdmins || d.leaders || {}, archivedLeaders: d.archivedProjectAdmins || d.archivedLeaders || {}, readOnly: d.viewers || d.readOnly || {}, join: d.join || {}, canCreateProject: !!d.canCreateProject, canDeleteOwnMessages: d.canDeleteOwnMessages !== false}; // join // 、
+    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', leaders: d.projectAdmins || d.leaders || {}, archivedLeaders: d.archivedProjectAdmins || d.archivedLeaders || {}, readOnly: d.viewers || d.readOnly || {}, join: d.join || {}, canCreateProject: !!d.canCreateProject, canRequestProjectCreation: !!d.canRequestProjectCreation, canReviewProjectCreationRequests: !!d.canReviewProjectCreationRequests, canDeleteOwnMessages: d.canDeleteOwnMessages !== false}; // join // 、
     document.querySelectorAll('[data-admin-only]').forEach(b => { b.hidden = !d.adminId || d.adminId !== state.me?.participantId; });
     if (typeof drawAvatarMenu === 'function') drawAvatarMenu();
     if (state.me) drawMe(); // 知道誰是管理員後重畫名片
@@ -1859,7 +1867,7 @@
           ${myProjects().map(p => `<button type="button" class="hs-item" data-proj="${esc(p)}" title="${esc(projName(p))}">${projIcon(p, 22)}<span class="hs-name">${esc(projName(p))}</span>${n(p)}</button>`).join('') || '<p class="muted small hs-empty">還沒有加入任何專案</p>'}
           <button type="button" class="hs-item hs-muted" data-proj="cross">${projIcon('cross', 22)}<span class="hs-name">跨專案頻道</span>${n('cross')}</button>
           <button type="button" class="hs-item hs-add" data-join-open><span class="hs-ico" aria-hidden="true">＋</span><span class="hs-name">申請加入專案</span></button>
-          ${canNewProj() ? '<button type="button" class="hs-item hs-add" data-hub-newproj><span class="hs-ico" aria-hidden="true">＋</span><span class="hs-name">新增專案</span></button>' : ''}
+          ${canStartProj() ? `<button type="button" class="hs-item hs-add" data-hub-newproj><span class="hs-ico" aria-hidden="true">＋</span><span class="hs-name">${startProjText()}</span></button>` : ''}
         </nav>`;
         return;
       }
@@ -1869,7 +1877,7 @@
         <div class="ph-card">${projIcon(v)}<span class="ph-name">${hasHub() ? '<button type="button" class="ph-back in-card" data-proj="hub">‹ 總覽</button>' : ''}<b>${esc(viewLabel(v))}</b>${hasHub() ? '' : `<span class="small">${esc(sub)}</span>`}</span>
           ${canSetProj(v) ? `<button type="button" class="ph-gear" data-pset="${esc(v)}" aria-haspopup="menu" aria-expanded="false" aria-label="${esc(viewLabel(v))} 專案設定" title="專案設定">⚙</button>` : ''}
           ${hasHub() ? `<button type="button" class="ps-btn ph-swap" aria-haspopup="listbox" aria-expanded="false" aria-controls="ps-list-${i}" aria-label="切換專案" title="切換專案">⇅</button>
-          <ul class="ps-list" id="ps-list-${i}" role="listbox" aria-label="切換專案" hidden>${opts.map(k => `<li role="option" tabindex="-1" data-proj="${esc(k)}" aria-selected="${k === v}"><span>${esc(viewLabel(k))}</span>${k === 'hub' ? '' : badge(k)}</li>`).join('')}${canNewProj() || isAdmin() ? '<li class="ps-sep" role="separator"></li>' : ''}${canNewProj() ? '<li role="option" tabindex="-1" class="ps-act" data-ps-act="newproj">＋ 新增專案</li>' : ''}${isAdmin() ? '<li role="option" tabindex="-1" class="ps-act" data-ps-act="manage">管理專案…</li>' : ''}</ul>` : ''}</div>`;
+          <ul class="ps-list" id="ps-list-${i}" role="listbox" aria-label="切換專案" hidden>${opts.map(k => `<li role="option" tabindex="-1" data-proj="${esc(k)}" aria-selected="${k === v}"><span>${esc(viewLabel(k))}</span>${k === 'hub' ? '' : badge(k)}</li>`).join('')}${canStartProj() || isAdmin() ? '<li class="ps-sep" role="separator"></li>' : ''}${canStartProj() ? `<li role="option" tabindex="-1" class="ps-act" data-ps-act="newproj">${startProjPlus()}</li>` : ''}${isAdmin() ? '<li role="option" tabindex="-1" class="ps-act" data-ps-act="manage">管理專案…</li>' : ''}</ul>` : ''}</div>`;
     });
     drawChrome();
   }
@@ -1905,7 +1913,7 @@
     const counts = todoByView(), here = counts[v] || 0; // 收件匣徽章＝所在專案的件數，切專案就跟著變
     document.querySelectorAll('.inbox-badge').forEach(b => { b.hidden = !here; b.textContent = here > 99 ? '99+' : here; });
     const todo = $('#m-todo'), n = counts.hub, nb = todo.querySelector('.m-todo-n');
-    const mnp = $('#m-newproj'); if (mnp) mnp.hidden = !canNewProj(); // 手機選單也能新增專案
+    const mnp = $('#m-newproj'); if (mnp) { mnp.hidden = !canStartProj(); const t = mnp.querySelector('.m-newproj-t'); if (t && t.dataset.k !== startProjText()) { t.dataset.k = startProjText(); t.textContent = startProjText(); } } // 手機選單也能新增專案（或申請建立專案）
     todo.hidden = !hasHub(); // 在手機選單裡，每頁都有（各專案彙總）
     nb.hidden = !n; nb.textContent = n > 99 ? '99+' : n;
     const mn = $('#menu-btn .menu-n'), mc = hasHub() ? n : here; // 選單鈕帶「要你處理」件數（按鈕收進選單後還看得到）
@@ -2005,7 +2013,7 @@
     const btn = e.target.closest('.ps-btn');
     if (btn) return psOpen(btn, btn.getAttribute('aria-expanded') !== 'true');
     const pa = e.target.closest('[data-ps-act]'); // 切換清單最下面：新增專案、管理專案
-    if (pa) { document.querySelectorAll('.ps-btn[aria-expanded="true"]').forEach(x => psOpen(x, false)); closeSheet(false); return pa.dataset.psAct === 'newproj' ? openNewProject() : openAdmin('projects'); }
+    if (pa) { document.querySelectorAll('.ps-btn[aria-expanded="true"]').forEach(x => psOpen(x, false)); closeSheet(false); return pa.dataset.psAct === 'newproj' ? openStartProject() : openAdmin('projects'); }
     const b = e.target.closest('[data-proj]');
     document.querySelectorAll('.ps-btn[aria-expanded="true"]').forEach(x => psOpen(x, false));
     if (b) { closeSheet(false); setProjectView(b.dataset.proj); }
@@ -3796,6 +3804,13 @@
       <div class="sec-acts">${act}<button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(n.detail)} 知道了">知道了</button></div></div>`;
     }
     if (/^admin_/.test(n.kind)) return adminSecHtml(n, when);
+    if (n.kind === 'project_creation_request') { // 建立專案申請送出（#44；只寄給審核人）：細節只有申請人名字，內容到審核頁看
+      let d = {}; try { d = JSON.parse(n.detail) || {}; } catch {}
+      const text = `${d.a || '有成員'} 送出了一份建立專案申請 · ${when}。`;
+      return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🗂️</span>
+      <div class="sec-main"><span>${esc(text)}</span><span class="small">工作區管理員或平台管理員核准後才會建立專案。</span></div>
+      <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
+    }
     const [text, hint] = n.kind === 'password_login' ? [`有新裝置用你的帳號密碼登入：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它並改密碼。']
       : n.kind === 'rescue_login' ? [`有裝置用主機救援連結登入你的帳號：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並檢查誰有主機部署權限。']
       : n.kind === 'login_code_read' ? [`有裝置讀取了你的登入碼：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並換一組登入碼（舊的會失效）。']
@@ -3932,9 +3947,9 @@
     const cm = lastMsgOf(null);
     return `<div class="hub"><section class="hub-main">
         <div class="work-head"><div class="work-title"><h2>${esc(greeting())}，<span data-nt>${esc(shownName(state.me?.name || ''))}</span></h2><span class="muted small"><span>${esc(new Date().toLocaleDateString(window.aigileI18n?.lang === 'en' ? 'en-US' : 'zh-TW', { month: 'numeric', day: 'numeric', weekday: 'short' }))}</span>${counts.hub ? ` · ${counts.hub} 件要你處理` : ' · 沒有要你處理的事'}</span></div></div>
-        ${onboardHtml()}${hubNewAiHtml()}${nextStepsHtml()}<div class="hub-grid">${cards || hubJoinHtml()}</div>
+        ${onboardHtml()}${hubNewAiHtml()}${nextStepsHtml()}${pcrMineHtml()}<div class="hub-grid">${cards || hubJoinHtml()}</div>
         <button type="button" class="link hub-join" data-join-open>＋ 申請加入專案</button>
-        ${canNewProj() ? '<button type="button" class="link hub-join" data-hub-newproj>＋ 新增專案</button>' : ''}
+        ${canStartProj() ? `<button type="button" class="link hub-join" data-hub-newproj>${startProjPlus()}</button>` : ''}
         <button type="button" class="hub-card hub-cross" data-proj="cross" aria-label="進入跨專案頻道">${projIcon('cross', 44)}<span class="hc-name"><b>跨專案頻道</b><span class="small">規則公告、跨團隊協調。${cm ? `最新：${esc(cm.author.name)} ${whenText(cm.createdAt)}「${esc(oneLine(cm.text, 40))}」` : '最近 12 小時沒有新訊息'}</span></span><span class="hc-go">進入 ›</span></button>
       </section>
       <aside class="hub-todo" aria-label="要你處理">${hubTodoHtml()}</aside></div>`;
@@ -4020,6 +4035,56 @@
     const rows = !list ? '<p class="muted small">載入可以申請的專案…</p>' : list.length ? list.map(row).join('') : '<p class="muted small">目前沒有可以加入的專案，請專案管理員或工作區管理員把你加入專案。</p>';
     return `<section class="hub-empty hub-joinable" aria-label="可以申請的專案"><p>你還沒有加入任何專案。下面是你可以加入的專案：開放的專案按「加入」就好；審核的專案送出申請，由專案管理員核准。加入後這裡就會出現專案。</p>${rows}</section>`;
   }
+  // ---------- 我的建立專案申請（#44）：總覽的專案列表上方 ----------
+  // 有申請紀錄、或目前能申請時才顯示；列出狀態、拒絕或取消原因、結果專案（看得到才給連結）、待審核的可以撤回、載入更多。
+  // 資料一律從 GET /api/project-creation-requests 讀（即時事件只說「重新抓取」，不帶內容）
+  const myPcr = { items: null, next: null, loading: false, armed: null, busy: false };
+  const PCR_STATE = { pending: ['待審核', 'yellow'], approved: ['已核准', 'green'], rejected: ['已拒絕', 'red'], withdrawn: ['已撤回', 'grey'], cancelled: ['已取消', 'grey'] };
+  const PCR_CANCEL = { policy_changed: '工作區政策已改變，不再收建立專案申請', workspace_member_removed: '你已被移出工作區', workspace_member_left: '你已離開工作區', account_disabled: '帳號已停用', restore_invalid: '還原備份後這份申請不再成立' };
+  // more：載入下一頁（接在後面）；否則從第一頁重讀
+  async function loadMyPcr(more = false) {
+    if (state.me?.memberType !== 'human' || myPcr.loading) return;
+    myPcr.loading = true;
+    try {
+      const d = await api(`/api/project-creation-requests?scope=mine${more && myPcr.next ? `&cursor=${encodeURIComponent(myPcr.next)}` : ''}`);
+      myPcr.items = more ? [...(myPcr.items || []), ...d.items.filter(x => !(myPcr.items || []).some(y => y.id === x.id))] : d.items;
+      myPcr.next = d.nextCursor;
+    } catch { myPcr.items = myPcr.items || []; } finally { myPcr.loading = false; }
+  }
+  function pcrRowHtml(r) {
+    const [label, color] = PCR_STATE[r.state] || [r.state, 'grey'];
+    const why = r.state === 'rejected' && r.rejectReason ? `<div class="small pcr-why">拒絕原因：<span data-nt>${esc(r.rejectReason)}</span></div>`
+      : r.state === 'cancelled' ? `<div class="small pcr-why">${esc(PCR_CANCEL[r.cancelCode] || '系統已取消這份申請')}</div>` : '';
+    const proj = r.state !== 'approved' || !r.project ? '' : r.project.available ? `<button type="button" class="link small" data-proj="${esc(r.project.id)}">進入專案 ›</button>` : '<span class="muted small">專案已不存在或你目前沒有權限</span>';
+    const act = r.canWithdraw ? `<button type="button" class="btn small" data-pcr-withdraw="${esc(r.id)}"${myPcr.busy ? ' disabled' : ''}>${myPcr.armed === r.id ? '確定撤回？' : '撤回'}</button>` : '';
+    return `<li class="pcr-row" data-pcr="${esc(r.id)}"><div class="pcr-main"><b data-nt>${esc(r.name)}</b> <span class="pill-tag ${color}">${label}</span>
+      <div class="muted small">送出於 ${esc(fmtDate(r.createdAt))}</div>${why}</div><div class="pcr-acts">${proj}${act}</div></li>`;
+  }
+  function pcrMineHtml() {
+    if (state.me?.memberType !== 'human') return '';
+    if (myPcr.items === null) { if (!myPcr.loading) loadMyPcr().then(() => { if (state.page === 'hub') renderWork(); }); return ''; }
+    if (!myPcr.items.length && !canReqProj()) return '';
+    return `<section class="pcr-mine" aria-labelledby="pcr-mine-h"><div class="pcr-head"><h3 id="pcr-mine-h">我的建立專案申請</h3><span class="grow"></span>${canReqProj() ? '<button type="button" class="btn small" data-hub-newproj>＋ 申請建立專案</button>' : ''}</div>
+      ${myPcr.items.length ? `<ul class="pcr-list">${myPcr.items.map(pcrRowHtml).join('')}</ul>` : '<p class="muted small">還沒有申請。需要新專案時按「申請建立專案」，由工作區管理員核准後建立。</p>'}
+      ${myPcr.next ? `<button type="button" class="link small" data-pcr-more${myPcr.loading ? ' disabled' : ''}>載入更多</button>` : ''}</section>`;
+  }
+  // 重新抓取（即時事件、送出或撤回後）：申請清單與 capability 一起更新
+  async function refreshPcr() {
+    await Promise.all([loadMyPcr(), loadProjectList().catch(() => {})]);
+    drawProjSwitch();
+    if (state.page === 'hub') renderWork();
+  }
+  document.addEventListener('click', async e => {
+    if (e.target.closest?.('[data-pcr-more]')) { await loadMyPcr(true); if (state.page === 'hub') renderWork(); return; }
+    const w = e.target.closest?.('[data-pcr-withdraw]');
+    if (!w || myPcr.busy) return;
+    const id = w.dataset.pcrWithdraw;
+    if (myPcr.armed !== id) { myPcr.armed = id; return renderWork(); } // 第一下只是確認
+    myPcr.armed = null; myPcr.busy = true; renderWork();
+    try { await api(`/api/project-creation-requests/${encodeURIComponent(id)}/withdraw`, { method: 'POST' }); toast('已撤回這份申請'); }
+    catch (err) { toast(err.code === 'REQUEST_NOT_PENDING' ? '這份申請已經結束，不能撤回' : err.message); }
+    finally { myPcr.busy = false; await refreshPcr(); }
+  });
   const hubTodoItems = () => todoItems(); // 跟數字同一個來源
   function hubTodoHtml(inModal = false) {
     const items = hubTodoItems();
@@ -4050,7 +4115,7 @@
       const go = () => { const t = document.querySelector('.hub-todo'); if (t && t.offsetParent) { t.scrollIntoView({ behavior: 'smooth', block: 'start' }); t.classList.add('flash'); setTimeout(() => t.classList.remove('flash'), 1400); } else openModal('要你處理', hubTodoHtml(true), { size: 'narrow', sub: '各專案彙總；點一項進到該專案處理' }); };
       return state.page === 'hub' ? go() : Promise.resolve(setProjectView('hub')).then(() => setTimeout(go, 50));
     }
-    if (e.target.closest?.('[data-hub-newproj]')) { closeSheet(false); return openNewProject(); }
+    if (e.target.closest?.('[data-hub-newproj]')) { closeSheet(false); return openStartProject(); }
   });
   function inboxHtml() {
     const all = [...work.cards.values()].filter(cardInView);
@@ -9210,7 +9275,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   function alogDetail(e) {
     const d = e.detail || {}, out = [];
     if (e.action === 'workspace_policy.update' && (d.field === 'createProjects' || d.field === 'deleteOwnMessages')) {
-      const lab = v => (v === 'admins' ? '只有工作區管理員' : '所有成員'), en = v => (v === 'admins' ? 'workspace admins only' : 'all members');
+      const lab = v => (v === 'admins' ? '只有工作區管理員' : v === 'approval' ? '成員申請，管理員核准' : '所有成員'), en = v => (v === 'admins' ? 'workspace admins only' : v === 'approval' ? 'members request, admins approve' : 'all members');
       out.push(d.field === 'createProjects' ? L(`誰可以建立專案：${lab(d.from)} → ${lab(d.to)}`, `Who can create projects: ${en(d.from)} → ${en(d.to)}`)
         : L(`誰可以刪除自己的訊息：${lab(d.from)} → ${lab(d.to)}`, `Who can delete their own messages: ${en(d.from)} → ${en(d.to)}`));
     } else if (e.action === 'recovery_window.update') {
@@ -9676,7 +9741,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!gs || gs.error || !gs.createProjects) return '';
     const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-cp" value="${v}" data-pp="createprojects"${gs.createProjects === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
     return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
-      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${gs.createProjects === 'approval' ? opt('approval', '成員申請，管理員核准', '一般成員送建立專案申請，工作區管理員或平台管理員核准後建立') : ''}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`; // 「成員申請，管理員核准」還不能在這裡選（#48 開放）：目前的值是它時才列出來
   }
   // 工作區政策「誰可以刪除自己的訊息」：所有成員／只有工作區管理員（點了就存）。工作區管理員刪任何人的不受影響
   function deleteOwnHtml() {
@@ -9875,19 +9940,23 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <button type="button" class="link small" data-np-st-add ${list.length >= 12 ? 'disabled' : ''}>＋ 新增一個狀態</button>`;
   }
   // 新增專案彈窗：名稱＋可見度（預設審核；建立的同一步就設好，私人專案從一開始就是私人的）＋程式庫＋分支（選填）一次填完；看板狀態（選填）
-  function openNewProject() {
-    const body = openModal('新增專案', `<form id="np-form" class="stack">
-        <label class="field">專案名稱<input name="name" required maxlength="20" autocomplete="off"></label>
-        ${slugFieldHtml('np-slug', '')}
-        <fieldset class="field np-vis"><legend>專案可見度</legend>
+  // request：申請模式（#44；政策是「成員申請，管理員核准」的一般成員）。同一個表單：多了必填的申請原因、可見度跟名稱放在一起、
+  // 沒有程式庫欄位，送出的是建立專案申請（核准後才建立，申請人成為專案管理員）。
+  // requestId 在打開表單時產生一次：送出中停用按鈕、網路中斷後重按都用同一個（伺服器只會有一份申請）；關掉再開＝新的一份申請
+  function openNewProject({ request = false } = {}) {
+    const requestId = request ? `pcr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` : null;
+    const visHtml = `<fieldset class="field np-vis"><legend>專案可見度</legend>
           <div class="vis-list" role="radiogroup" aria-label="專案可見度">${VISIBILITY.map(([v, t, sub]) => `<label class="vis-opt"><input type="radio" name="visibility" value="${v}"${v === 'review' ? ' checked' : ''}><span><b>${t}</b><span class="muted small">${sub}</span></span></label>`).join('')}</div>
-        </fieldset>
+        </fieldset>`;
+    const body = openModal(request ? '申請建立專案' : '新增專案', `<form id="np-form" class="stack">
+        <label class="field">專案名稱<input name="name" required maxlength="20" autocomplete="off"></label>
+        ${request ? `<label class="field">申請原因<textarea name="reason" required maxlength="200" rows="3" placeholder="這個專案要做什麼、為什麼需要（審核人會看到）"></textarea></label>${visHtml}${slugFieldHtml('np-slug', '')}` : `${slugFieldHtml('np-slug', '')}${visHtml}
         <label class="field">程式庫連結（選填）<input name="url" maxlength="300" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://github.com/帳號/專案"></label>
-        <label class="field">分支（選填）<input name="branch" maxlength="100" autocomplete="off" spellcheck="false" placeholder="main"></label>
+        <label class="field">分支（選填）<input name="branch" maxlength="100" autocomplete="off" spellcheck="false" placeholder="main"></label>`}
         <details class="np-st"><summary>看板狀態（選填，預設六欄）</summary>${ST_HELP}<div id="np-st"></div></details>
-        <p class="muted small" id="pm-new-hint">${esc(newProjText())}，其他成員請到「成員」分頁加入。</p>
+        <p class="muted small" id="pm-new-hint">${request ? '送出後由工作區管理員審核；核准時專案才會建立，你會成為這個專案的專案管理員。程式庫等設定在核准後由你自己設定。' : `${esc(newProjText())}，其他成員請到「成員」分頁加入。`}</p>
         <p class="error" id="np-err" role="alert"></p>
-      </form>`, { size: 'narrow', foot: '<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="np-form">新增專案</button>' });
+      </form>`, { size: 'narrow', foot: `<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="np-form" id="np-submit">${request ? '送出申請' : '新增專案'}</button>` });
     const f = body.querySelector('#np-form');
     const slugF = bindSlugField(body, 'np-slug', f.name, null);
     const npSts = ST_DEFAULT.map(s => ({ ...s })), npBox = body.querySelector('#np-st');
@@ -9900,8 +9969,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (e.target.closest('[data-np-st-add]')) { npSts.push({ name: '', category: '進行中', color: ST_CAT_COLOR['進行中'] }); npDraw(); npBox.querySelector('.st-row:last-child .st-name')?.focus(); }
     });
     setTimeout(() => f.name.focus(), 30);
+    const sendBtn = () => document.getElementById('np-submit');
     f.addEventListener('submit', async e => {
       e.preventDefault();
+      if (request) return submitRequest();
       const err = body.querySelector('#np-err'), name = f.name.value.trim(), url = f.url.value.trim(), branch = f.branch.value.trim();
       err.textContent = '';
       if (!name) { err.textContent = '請輸入專案名稱'; return f.name.focus(); }
@@ -9922,6 +9993,29 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         toast(repoErr ? `已新增專案「${name}」，但程式庫沒存：${repoErr}` : `已新增專案「${name}」，目前只有你`);
       } catch (e2) { err.textContent = e2.message; }
     });
+    // 送出建立專案申請：送出中停用按鈕（按兩次也只送一次）；失敗後重按沿用同一個 requestId
+    async function submitRequest() {
+      const err = body.querySelector('#np-err'), name = f.name.value.trim(), reason = f.reason.value.trim(), btn = sendBtn();
+      err.textContent = '';
+      if (btn?.disabled) return;
+      if (!name) { err.textContent = '請輸入專案名稱'; return f.name.focus(); }
+      if (!reason) { err.textContent = '請寫申請原因'; return f.reason.focus(); }
+      const sf = slugF.check();
+      if (!sf) return;
+      const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
+      if (btn) btn.disabled = true;
+      try {
+        try { await api('/api/project-creation-requests', { method: 'POST', body: { requestId, name, reason, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review', ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
+        catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
+        closeModal();
+        toast(`已送出「${name}」的建立專案申請，等工作區管理員審核`);
+        await loadMyPcr();
+        if (state.page === 'hub') renderWork();
+      } catch (e2) {
+        err.textContent = e2.code === 'IDEMPOTENCY_CONFLICT' ? '這份申請剛才已經送出（內容不同）：請關掉表單，在「我的建立專案申請」查看；要改內容請撤回後重送。'
+          : e2.code === 'NETWORK' || e2.code === 'TIMEOUT' ? '連線中斷，不確定有沒有送到；再按一次「送出申請」不會重複送出。' : e2.message;
+      } finally { if (btn) btn.disabled = false; }
+    }
   }
   function drawPermBar() {
     const bar = $('#pm-bar');
