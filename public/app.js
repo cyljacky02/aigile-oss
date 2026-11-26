@@ -1819,6 +1819,7 @@
     for (const { list, last: n } of dmGroups((work.notes || []).filter(x => x.dm))) items.push({ p: n.project ?? null, kind: n.sender?.system ? '通知' : '私訊', title: (n.sender?.system ? `平台通知：${oneLine(dmGist(n.preview, true), 60)}` : `${n.sender?.name || ''} 回你了`) + (list.length > 1 ? `（${list.length} 則）` : ''), key: 'n:' + n.notificationId }); // PLAT-388 E：連發的合併成一項
     for (const j of (work.joins || []).filter(j => dueForMe(j.project, j.createdAt))) items.push({ p: myProjects().includes(j.project) ? j.project : null, kind: '申請', title: `${j.name} 申請加入${j.projectName}`, key: 'j:' + j.id }); // PLAT-381 先給 leader
     for (const k of (work.skillRev || []).filter(k => dueForMe(k.project, k.uploadedAt))) items.push({ p: myProjects().includes(k.project) ? k.project : null, kind: '核准', title: `技能待核准：${k.name} v${k.version}`, key: 'k:' + k.skillId }); // PLAT-381
+    for (const r of work.pcrRev?.items || []) items.push({ p: null, kind: '建立專案', title: `${r.requesterName || ''} 申請建立「${r.name}」`, key: 'r:' + r.id }); // 建立專案申請（#45）：工作區層，不屬於任何專案
     return items.filter(x => !x.p || myProjects().includes(x.p));
   }
   const todoInView = (x, v = projectView()) => v === 'hub' || (v === 'cross' ? !x.p : x.p === v);
@@ -3811,6 +3812,15 @@
       <div class="sec-main"><span>${esc(text)}</span><span class="small">工作區管理員或平台管理員核准後才會建立專案。</span></div>
       <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
     }
+    if (n.kind === 'project_creation_request_approved' || n.kind === 'project_creation_request_rejected') { // 建立專案申請的結果（#45；只寄給申請人）：細節只有申請的名稱
+      let d = {}; try { d = JSON.parse(n.detail) || {}; } catch {}
+      const yes = n.kind === 'project_creation_request_approved';
+      const text = yes ? `你的建立專案申請「${d.n || ''}」已核准，專案已建立 · ${when}。` : `你的建立專案申請「${d.n || ''}」沒有核准 · ${when}。`;
+      const hint = yes ? '你是這個專案的專案管理員；在「我的建立專案申請」可以進入專案。' : '拒絕理由在「我的建立專案申請」；可以修改後重新申請。';
+      return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">${yes ? '✅' : '📮'}</span>
+      <div class="sec-main"><span>${esc(text)}</span><span class="small">${hint}</span></div>
+      <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
+    }
     const [text, hint] = n.kind === 'password_login' ? [`有新裝置用你的帳號密碼登入：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它並改密碼。']
       : n.kind === 'rescue_login' ? [`有裝置用主機救援連結登入你的帳號：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並檢查誰有主機部署權限。']
       : n.kind === 'login_code_read' ? [`有裝置讀取了你的登入碼：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並換一組登入碼（舊的會失效）。']
@@ -4068,11 +4078,23 @@
       ${myPcr.items.length ? `<ul class="pcr-list">${myPcr.items.map(pcrRowHtml).join('')}</ul>` : '<p class="muted small">還沒有申請。需要新專案時按「申請建立專案」，由工作區管理員核准後建立。</p>'}
       ${myPcr.next ? `<button type="button" class="link small" data-pcr-more${myPcr.loading ? ' disabled' : ''}>載入更多</button>` : ''}</section>`;
   }
-  // 重新抓取（即時事件、送出或撤回後）：申請清單與 capability 一起更新
+  // 重新抓取（即時事件、送出、撤回、核准或拒絕後）：申請清單、capability、審核清單一起更新（失去審核權就清掉已載入的審核資料）
+  // 申請人：自己的申請剛被核准 → 重讀自己的專案（新專案馬上出現）；剛被拒絕 → 提示去看理由
   async function refreshPcr() {
+    const before = new Map((myPcr.items || []).map(r => [r.id, r.state]));
     await Promise.all([loadMyPcr(), loadProjectList().catch(() => {})]);
+    await loadPcrRev();
+    const decided = (myPcr.items || []).filter(r => before.get(r.id) === 'pending' && r.state !== 'pending');
+    const approved = decided.find(r => r.state === 'approved'), rejected = decided.find(r => r.state === 'rejected');
+    if (approved) {
+      state.me = await api('/api/me').catch(() => state.me);
+      await afterJoinChange();
+      loadCards().catch(() => {});
+      toast(`你的建立專案申請「${approved.name}」已核准，專案已建立`);
+    } else if (rejected) toast(`你的建立專案申請「${rejected.name}」沒有核准，理由在「我的建立專案申請」`);
+    updateTodoBadge();
     drawProjSwitch();
-    if (state.page === 'hub') renderWork();
+    if (state.page === 'hub' || state.page === 'inbox') renderWork();
   }
   document.addEventListener('click', async e => {
     if (e.target.closest?.('[data-pcr-more]')) { await loadMyPcr(true); if (state.page === 'hub') renderWork(); return; }
@@ -4085,11 +4107,105 @@
     catch (err) { toast(err.code === 'REQUEST_NOT_PENDING' ? '這份申請已經結束，不能撤回' : err.message); }
     finally { myPcr.busy = false; await refreshPcr(); }
   });
+  // ---------- 建立專案申請的審核（#45）：「要你處理」的「建立專案申請」一類 ----------
+  // 只有審核人（capability canReviewProjectCreationRequests）讀；待審總數用伺服器的 pendingTotal。失去審核權（capability 沒了、API 403／404）就清掉已載入的資料
+  work.pcrRev = { items: [], total: 0 };
+  const canReviewPcr = () => state.me?.memberType === 'human' && !!state.projMeta.canReviewProjectCreationRequests;
+  function clearPcrRev() {
+    work.pcrRev = { items: [], total: 0 };
+    if (document.querySelector('#modal-root #pcr-rv')) closeModal();
+  }
+  async function loadPcrRev() {
+    if (!canReviewPcr()) return clearPcrRev();
+    try {
+      const d = await api('/api/project-creation-requests?scope=review&state=pending&limit=100');
+      work.pcrRev = { items: d.items || [], total: d.pendingTotal ?? (d.items || []).length };
+    } catch (err) { if (err.status === 403 || err.status === 404) clearPcrRev(); }
+  }
+  function pcrRevHtml() {
+    const items = work.pcrRev?.items || [];
+    if (!items.length) return '';
+    return `<section class="wsugg wpcr"><div class="wsugg-head"><span class="wdot"></span><h3>建立專案申請</h3><span class="wcount ora">${work.pcrRev.total}</span><span class="muted small">成員申請的新專案：核准後立即建立，申請人成為專案管理員</span></div>
+      ${items.map(r => `<div class="sugg-row pcr-rev-row" data-pcr-rev-row="${esc(r.id)}"><span class="lead-ic" aria-hidden="true">🗂️</span><div class="sugg-main"><b data-nt>${esc(r.name)}</b><span class="muted small"><span data-nt>${esc(r.requesterName || '')}</span> · <span>${agoText(r.createdAt)}</span> · <span data-nt>「${esc(oneLine(r.reason, 60))}」</span></span></div>
+        <div class="sugg-actions"><button type="button" class="btn small primary" data-pcr-review="${esc(r.id)}">查看並處理</button></div></div>`).join('')}</section>`;
+  }
+  // 審核視窗：完整不可修改的內容、自動識別碼的預估值（標明預估）、衝突提示、「核准並建立」與「拒絕」（理由必填）
+  async function openPcrReview(id) {
+    const body = openModal('建立專案申請', '<div id="pcr-rv" class="pcr-rv"><p class="muted small">載入中…</p></div>', { size: 'form', sub: '核准後立即建立專案，申請人成為唯一的專案管理員；申請內容不能修改。' });
+    const st = { r: null, busy: false, rejecting: false, msg: '' };
+    const draw = () => {
+      const box = body.querySelector('#pcr-rv');
+      if (!box) return;
+      const r = st.r;
+      if (!r) { box.innerHTML = `<p class="muted">${esc(st.msg || '找不到這份申請。')}</p>`; return; }
+      const rv = r.review || {}, pv = rv.preview, cf = new Set(rv.conflicts || []);
+      const ident = (val, est, field) => (val ? `<code data-nt>${esc(val)}</code>` : pv ? `<code data-nt>${esc(est)}</code> <span class="pill-tag">預估</span> <span class="muted small">自動產生，核准時重新計算</span>` : '<span class="muted">自動產生</span>')
+        + (cf.has(field) ? ' <span class="pill-tag red">已有專案在用</span>' : '');
+      const f = (label, html) => `<div class="pcr-f"><dt>${label}</dt><dd>${html}</dd></div>`;
+      const pending = r.state === 'pending', can = pending && rv.canApprove;
+      const [stLabel, stColor] = PCR_STATE[r.state] || [r.state, 'grey'];
+      box.innerHTML = `<dl class="pcr-dl">
+          ${f('專案名稱', `<b data-nt>${esc(r.name)}</b>${cf.has('name') ? ' <span class="pill-tag red">已有專案在用</span>' : ''}`)}
+          ${f('申請人', `<span data-nt>${esc(r.requesterName || '')}</span> <span class="muted small">${esc(fmtDate(r.createdAt))}</span>`)}
+          ${f('申請原因', `<span class="pcr-reason" data-nt>${esc(r.reason)}</span>`)}
+          ${f('可見度', esc(visName(r.visibility)))}
+          ${f('網址英文名', ident(r.slug, pv?.slug, 'slug'))}
+          ${f('專案代號', ident(r.code, pv?.code, 'code'))}
+          ${f('看板狀態', r.statuses?.length ? `<span data-nt>${esc(r.statuses.map(s => s.name).join('、'))}</span>` : '預設狀態')}
+        </dl>
+        ${pending && cf.size ? '<p class="pcr-warn" role="note">標示「已有專案在用」的欄位目前跟現有專案衝突，現在核准會失敗。可以附理由拒絕，或等申請人撤回重提。</p>' : ''}
+        ${st.msg ? `<p class="error small" role="alert" id="pcr-rv-msg">${esc(st.msg)}</p>` : ''}
+        ${!pending ? `<p class="pcr-done">這份申請<span class="pill-tag ${stColor}">${stLabel}</span>${r.state === 'approved' && r.project?.available ? ` <button type="button" class="link small" data-proj="${esc(r.project.id)}">進入專案 ›</button>` : ''}</p>`
+        : !can ? '' : st.rejecting ? `<label class="field"><span class="field-label">拒絕理由（申請人會看到，200 字內）</span><textarea id="pcr-rej" maxlength="200" rows="3" required></textarea></label>
+          <div class="pcr-acts"><button type="button" class="btn" data-pcr-rej-cancel${st.busy ? ' disabled' : ''}>取消</button><button type="button" class="btn danger" data-pcr-rej-go${st.busy ? ' disabled' : ''}>確定拒絕</button></div>`
+        : `<div class="pcr-acts"><button type="button" class="btn danger-outline" data-pcr-rej${st.busy ? ' disabled' : ''}>拒絕…</button><button type="button" class="btn primary" data-pcr-ok${st.busy ? ' disabled' : ''}>核准並建立</button></div>`}`;
+    };
+    const load = async () => {
+      try { st.r = await api(`/api/project-creation-requests/${encodeURIComponent(id)}`); } catch (err) { st.r = null; st.msg = err.message; }
+      draw();
+    };
+    // 失敗的各種情況：權限失效、另一位管理員已先處理、政策已改、暫時無法處理（503）、連線中斷
+    const fail = async err => {
+      if (err.status === 404 || err.code === 'NOT_REVIEWER') { toast('你已經沒有審核這份申請的權限'); clearPcrRev(); return refreshPcr(); }
+      st.msg = err.code === 'REQUEST_NOT_PENDING' ? '另一位管理員已經處理了這份申請（或申請人已撤回）。'
+        : err.status === 503 ? '暫時無法處理（系統正在升級、還原或忙碌），這次什麼都沒寫；請稍後再試。'
+        : err.code === 'NETWORK' || err.code === 'TIMEOUT' ? '連線中斷，不確定有沒有處理到；再按一次不會重複建立專案。' : err.message;
+      st.busy = false;
+      if (err.code !== 'NETWORK' && err.code !== 'TIMEOUT') await load(); else draw(); // 重讀：顯示目前的狀態與衝突
+      refreshPcr().catch(() => {});
+    };
+    body.addEventListener('click', async e => {
+      if (st.busy || !st.r) return;
+      if (e.target.closest('[data-pcr-rej]')) { st.rejecting = true; st.msg = ''; draw(); return body.querySelector('#pcr-rej')?.focus(); }
+      if (e.target.closest('[data-pcr-rej-cancel]')) { st.rejecting = false; return draw(); }
+      const ok = e.target.closest('[data-pcr-ok]'), go = e.target.closest('[data-pcr-rej-go]');
+      if (!ok && !go) return;
+      let reason = '';
+      if (go) {
+        reason = body.querySelector('#pcr-rej')?.value.trim() || '';
+        if (!reason) { st.msg = '請寫拒絕理由（申請人會看到）'; draw(); return body.querySelector('#pcr-rej')?.focus(); }
+      }
+      st.busy = true; st.msg = ''; draw();
+      try {
+        const r = await api(`/api/project-creation-requests/${encodeURIComponent(st.r.id)}/${ok ? 'approve' : 'reject'}`, { method: 'POST', body: ok ? {} : { reason } });
+        closeModal();
+        toast(ok ? (r.duplicate ? '這份申請已經核准過了（沒有重複建立）' : `已核准，已建立專案「${r.name}」`) : '已拒絕，理由會通知申請人');
+        await refreshPcr();
+      } catch (err) { await fail(err); }
+    });
+    await load();
+  }
+  document.addEventListener('click', e => {
+    const b = e.target.closest?.('[data-pcr-review]');
+    if (!b) return;
+    if (b.closest('#modal-root .modal')) closeModal();
+    openPcrReview(b.dataset.pcrReview);
+  });
   const hubTodoItems = () => todoItems(); // 跟數字同一個來源
   function hubTodoHtml(inModal = false) {
     const items = hubTodoItems();
     const groups = [...myProjects(), null].map(p => [p, items.filter(x => x.p === p)]).filter(([, l]) => l.length);
-    const cls = { 決策: 'dec', 需確認: 'ask', 建議: 'sg', 驗收: 'ver', 回覆: 'ask', 私訊: 'sg', 通知: 'sg', 申請: 'ver', 核准: 'ver' };
+    const cls = { 決策: 'dec', 需確認: 'ask', 建議: 'sg', 驗收: 'ver', 回覆: 'ask', 私訊: 'sg', 通知: 'sg', 申請: 'ver', 核准: 'ver', 建立專案: 'ver' };
     return `${inModal ? '' : `<div class="ht-head"><h3>要你處理</h3>${items.length ? `<span class="ps-count">${items.length}</span>` : ''}<span class="grow"></span><span class="muted small">各專案彙總</span></div>`}
       ${groups.length ? groups.map(([p, l]) => `<div class="ht-group">${esc(p ? projName(p) : '跨專案頻道')}</div>
         ${l.map(x => `<button type="button" class="ht-row" data-hub-todo="${esc(x.key)}" data-hub-proj="${esc(p || 'cross')}"><span class="ht-tag ${cls[x.kind]}">${x.kind}</span><span class="ht-title">${esc(x.title)}</span><span class="ht-go" aria-hidden="true">›</span></button>`).join('')}`).join('')
@@ -4104,6 +4220,7 @@
     const key = r.dataset.hubTodo, id = key.slice(2);
     if (key[0] === 'j') return openJoinReview(work.joins.find(j => j.id === id)?.project || '');
     if (key[0] === 'k') return skOpenDrawer(id); // PLAT-381 技能待核准
+    if (key[0] === 'r') return openPcrReview(id); // 建立專案申請（#45）
     await setProjectView(r.dataset.hubProj, 'inbox');
     work.focusItem = { sel: key[0] === 'n' ? `:is(#fyi-${CSS.escape(id)}, [data-fyi~="${CSS.escape(id)}"])` : `[${{ c: 'data-dcard', m: 'data-conf-row', s: 'data-sugg-row', v: 'data-ver-row' }[key[0]]}="${CSS.escape(id)}"]`, until: Date.now() + 5000, scrolled: false };
     if (!applyFocusItem() && key[0] === 'c') openCard(id);
@@ -4147,7 +4264,8 @@
     const inV = pj => projectView() === 'hub' || pj === projectView();
     const joins = (work.joins || []).filter(j => inV(j.project) && dueForMe(j.project, j.createdAt)); // PLAT-381 leader 先處理
     const skRev = (work.skillRev || []).filter(k => inV(k.project) && dueForMe(k.project, k.uploadedAt));
-    if (!decideMe.length && !confirms.length && !sg.length && !verifyMe.length && !asks.length && !dms.length && !joins.length && !skRev.length) return '<section class="wpanel"><p class="muted">目前沒有要你處理的事。</p></section>';
+    const pcrSection = projectView() === 'hub' || projectView() === 'cross' ? pcrRevHtml() : ''; // 建立專案申請（#45）：工作區層，總覽與跨專案頻道才列
+    if (!pcrSection && !decideMe.length && !confirms.length && !sg.length && !verifyMe.length && !asks.length && !dms.length && !joins.length && !skRev.length) return '<section class="wpanel"><p class="muted">目前沒有要你處理的事。</p></section>';
     for (const id of [...work.askSel]) if (!asks.some(n => n.notificationId === id)) work.askSel.delete(id); // 清單變了就丟掉不在的勾選
     const askN = work.askSel.size, askAll = asks.length > 0 && askN === asks.length;
     const askSection = asks.length ? `
@@ -4194,7 +4312,7 @@
           <div class="sugg-actions"><button type="button" class="btn small" data-lead-jno="${esc(j.id)}">${L('拒絕', 'Reject')}</button><button type="button" class="btn small primary" data-join-review="${esc(j.project)}">${L('核准', 'Approve')}</button></div></div>`).join('')}
         ${skRev.map(k => `<div class="sugg-row lead-row" data-skrev-row="${esc(k.skillId)}"><span class="lead-ic" aria-hidden="true">🧩</span><div class="sugg-main"><b>技能待核准：${esc(k.name)}</b><span class="muted small">${late(k.project)}<span>${esc(projName(k.project))}</span> · ${k.scripts ? `${esc(L(`含腳本 ${k.scripts} 個`, `${k.scripts} script${k.scripts > 1 ? 's' : ''}`))} · ` : ''}${esc(L(`${k.uploadedBy?.name || ''}上傳`, `uploaded by ${k.uploadedBy?.name || ''}`))} · <span>${agoText(k.uploadedAt)}</span></span></div>
           <div class="sugg-actions"><button type="button" class="btn small" data-lead-skview="${esc(k.skillId)}">${L('看內容', 'View')}</button><button type="button" class="btn small primary" data-lead-skok="${esc(k.skillId)}">${L('核准', 'Approve')}</button></div></div>`).join('')}</section>` : '';
-    return joinSection + dmSection + askSection + decisionSectionHtml(decideMe) + verSection + confSection + suggHtml(true);
+    return pcrSection + joinSection + dmSection + askSection + decisionSectionHtml(decideMe) + verSection + confSection + suggHtml(true);
   }
 
   const wide = () => matchMedia('(min-width: 900px)').matches;
@@ -10137,8 +10255,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   work.joins = [];
   const joinReviewer = () => isAdmin() || myLeadProjects().length > 0;
   async function loadJoins() {
-    if (!joinReviewer()) { work.joins = []; return; }
-    const [j, k] = await Promise.all([api('/api/join-requests').catch(() => null), api('/api/skills').catch(() => null)]); // PLAT-381：申請、技能一起到，畫面不會先少一件
+    const pcr = loadPcrRev(); // 建立專案申請的審核清單（#45；只有審核人讀）
+    if (!joinReviewer()) { work.joins = []; return pcr; }
+    const [j, k] = await Promise.all([api('/api/join-requests').catch(() => null), api('/api/skills').catch(() => null), pcr]); // PLAT-381：申請、技能一起到，畫面不會先少一件
     work.joins = j?.items || []; work.skillRev = (k?.items || []).filter(x => x.canReview);
   }
   // PLAT-381：「要你處理」裡直接拒絕加入申請、看技能、核准技能
