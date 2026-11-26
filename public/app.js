@@ -11148,6 +11148,23 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       setTimeout(() => location.reload(), 1200);
     } catch (err) { toast(err.message); demo.busy = false; demo.status = null; drawPerm(); }
   });
+  // ---------- 專案代號與網址英文名的診斷（只給平台管理員；沒有問題就不顯示）----------
+  // 升級前就有的衝突原樣保留（不自動改名、不影響建立專案），這裡列出來讓平台管理員自己決定要不要整理
+  const ident = { data: null, loading: false };
+  const IDENT_KIND = { duplicate_code: '代號重複', code_is_old_alias: '代號跟別的專案的舊代號相同', duplicate_slug: '網址英文名重複', duplicate_name: '未封存的專案同名' };
+  function identCardHtml() {
+    if (!ident.data && !ident.loading) {
+      ident.loading = true;
+      api('/api/admin/project-identity').then(d => { ident.data = d; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(() => { ident.data = { hidden: true }; }).finally(() => { ident.loading = false; });
+    }
+    const d = ident.data;
+    if (!d || d.hidden || (d.normalized && !d.conflicts.length)) return '';
+    const pj = p => `「${esc(p.name || p.id)}」${p.deleted ? '（已刪除）' : p.archived ? '（已封存）' : ''}`;
+    const list = d.conflicts.map(c => `<li><b>${esc(IDENT_KIND[c.kind] || c.kind)}</b> <code>${esc(c.value)}</code>：${c.projects.map(pj).join('、')}</li>`).join('');
+    const head = d.normalized ? '' : '<p class="small"><b>專案的代號與網址英文名還沒整理完</b>：建立專案、改名、改代號或網址英文名暫時不能用，系統會自動重試。</p>';
+    const body = d.conflicts.length ? `<p class="small">升級前就有 ${d.conflicts.length} 處重複，原樣保留、建立專案照常；新的修改不會讓重複變多。要整理請改其中一個專案的名稱、代號或網址英文名。</p><ul class="small ident-list">${list}</ul>` : '';
+    return `<div class="pm-card ident-card"><div class="pm-card-head"><strong>專案代號與網址英文名</strong></div><div class="pm-pad">${head}${body}</div></div>`;
+  }
   // ---------- 有新版本：管理員打開成員與權限時查一次（伺服器一天最多問 GitHub 一次）----------
   const upd = { data: null, loading: false };
   const UPD_HIDE = 'aigile.updHidden';
@@ -11198,6 +11215,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     }
     return `<div class="pm-projs">
       ${updCardHtml()}
+      ${identCardHtml()}
       ${admTtlHtml(perm.platTtl)}
       ${admRecHtml(perm.platRec)}
       ${demoCardHtml()}
