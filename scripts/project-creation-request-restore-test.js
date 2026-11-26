@@ -140,6 +140,11 @@ try {
     await auditOk(B, '1', CANCELLED);
     // 還原後：仍待審的申請人照樣是有效的申請人（政策仍是 approval）
     assert.equal((await B.db.get("SELECT create_projects FROM workspaces WHERE id = 'default'")).create_projects, 'approval', '政策照備份');
+    // 「要你處理」：審核人（登入已改掛到備份裡的平台管理員）只看到仍有效的待審申請，而且每一份都能核准並建立專案
+    const todo = ok(await B.call(me.token, '/api/project-creation-requests?scope=review&state=pending'), '審核清單');
+    assert.deepEqual([todo.pendingTotal, todo.items.map(i => i.id).sort()], [expectPending.length, [...expectPending].sort()], '要你處理：只有仍有效的待審申請');
+    for (const id of expectPending) assert.equal(ok(await B.call(me.token, `/api/project-creation-requests/${id}/approve`, 'POST', {}), '核准 ' + id).state, 'approved', `還原後留下的 ${id} 能核准`);
+    assert.equal(await n(B.db, 'SELECT COUNT(*) AS n FROM projects'), projectsInBackup + expectPending.length, '核准後才建立專案');
     console.log('✓ approval 備份：關聯無效 → restore_invalid、停用 → account_disabled、移出 → workspace_member_removed；有效與升管理員的保留；終止的原樣；不建專案、不通知');
   }
 
