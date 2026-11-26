@@ -3204,6 +3204,7 @@ window.AIGILE_EN = {
     "待接受": "Pending",
     "平台角色": "Platform role",
     "工作區": "Workspace",
+    "還有 {0} 份建立專案申請，在「要你處理」按「載入更多」": "{0} more project requests: use \"Load more\" in Needs your attention",
     "disabled aria-disabled=\"true\" title=\"最後一位平台管理員不能停用\"": "disabled aria-disabled=\"true\" title=\"The last platform admin can't be disabled\"",
     "一般帳號": "Regular account",
     "專案（專案角色、職稱）": "Projects (project role, title)",
