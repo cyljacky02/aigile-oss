@@ -49,8 +49,10 @@ try {
     { projectId: 'bravo', source: 'slug', rawValue: 'shared-old' },
   ] };
   assert.deepEqual(ok(await from.call(token, diagnostic)).claims.disputes, [dispute]);
-  ok(await from.call(token, '/api/projects/alfa/slug', 'PUT', { slug: 'alfa-now' }));
-  ok(await from.call(token, '/api/projects/bravo/slug', 'PUT', { slug: 'bravo-now' }));
+  const ordinary = await from.call(token, '/api/projects/alfa/slug', 'PUT', { slug: 'alfa-now' });
+  assert.deepEqual([ordinary.status, ordinary.body.error?.code], [409, 'IDENTITY_REPAIR_REQUIRED']);
+  // Reproduce historical edits by a server predating confirmation, without rewriting the snapshot.
+  from.sql("UPDATE app_settings SET value = CASE key WHEN 'slug:alfa' THEN 'alfa-now' ELSE 'bravo-now' END WHERE key IN ('slug:alfa', 'slug:bravo')");
   ok(await from.call(token, '/api/projects/alfa/code', 'PUT', { code: 'ANEW' }));
   const card = ok(await from.call(token, '/api/cards', 'POST', { project: 'alfa', title: 'Preserved card', requestId: 'claims-backup-card' }));
   assert.equal(card.cardId, 'ANEW-1');
@@ -81,6 +83,15 @@ try {
     const { cardId, title } = ok(await to.call(restorer, `/api/cards/${key}`));
     assert.deepEqual([cardId, title], ['ANEW-1', 'Preserved card']);
   }
+  // A confirmed repair of a new conflict cannot take a reservation restored from old history.
+  to.sql("UPDATE app_settings SET value = 'alfa-now' WHERE key = 'slug:bravo'");
+  const proposal = { projectId: 'bravo', field: 'slug', replacement: 'shared-old' };
+  const blocked = await to.call(restorer, `${diagnostic}/preview`, 'POST', proposal);
+  assert.deepEqual([blocked.status, blocked.body.error?.code], [409, 'SLUG_TAKEN']);
+  const fresh = { ...proposal, replacement: 'bravo-now' };
+  const plan = ok(await to.call(restorer, `${diagnostic}/preview`, 'POST', fresh));
+  ok(await to.call(restorer, `${diagnostic}/confirm`, 'POST', { ...fresh, state: plan.state, resolutionState: plan.resolutionState, acknowledged: true }));
+  assert.deepEqual(ok(await to.call(restorer, diagnostic)).claims.disputes, [dispute], 'repair leaves unrelated restored claims reserved');
   const again = await backup(to, restorer);
   assert.ok(again.tables.project_identity_claimants.some(r => r.namespace === 'slug' && r.value === 'shared-old'));
   assert.ok(!again.tables.project_identity_claimants.some(r => r.value === 'target-only' || (r.value === 'ALFA' && r.source === 'current_code')), '丟掉目標站來源與已過時的單方宣稱');

@@ -30,7 +30,7 @@ export const isRestoring = async db => !!(await db.get(`SELECT 1 AS x FROM app_s
 // 可以整批重試的交易錯誤：SQLite／D1 忙碌（別的程序正在寫，SQLITE_BUSY／SQLITE_LOCKED）、PostgreSQL 序列化失敗（40001）與死結（40P01）。
 // 這些錯誤發生時整批已回復，重送同一批是安全的
 export function isRetryableTxError(e) {
-  if (e?.code === '40001' || e?.code === '40P01') return true;
+  if (e?.code === '40001' || e?.code === '40P01' || e?.code === '55P03') return true; // 55P03: a NOWAIT lock could not be acquired
   const primary = Number(e?.errcode) & 0xff; // node:sqlite 的 errcode 可能是延伸碼（例：517 SQLITE_BUSY_SNAPSHOT）
   if (primary === 5 || primary === 6) return true;
   return /\bSQLITE_BUSY\b|\bSQLITE_LOCKED\b|database is locked|database table is locked/i.test(String(e?.message ?? ''));
