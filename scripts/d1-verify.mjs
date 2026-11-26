@@ -630,21 +630,25 @@ try {
   });
 
   await check('D1-11', '加入申請核准／拒絕：通知寫入失敗時整批回滾，重試後只生效一次', async () => {
-    const member = await join(a, '加入申請測試者');
-    const project = ok(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 加入申請', visibility: 'review' }), '建立審核專案');
+    // 用新的 Worker 程序重設 per-participant request limiter，避免前面壓力測試累積的次數污染此案例。
+    const worker = await A.dev({ vars: VARS });
+    running.push(worker);
+    const joinSite = site(worker.base, TOKEN);
+    const member = await join(joinSite, '加入申請測試者');
+    const project = ok(await joinSite.call(boss.token, '/api/projects', 'POST', { name: 'D1 加入申請', visibility: 'review' }), '建立審核專案');
     assert.ok(project.id);
     const p = `/api/projects/${encodeURIComponent(project.id)}`;
-    const pending = async id => ok(await a.call(boss.token, '/api/join-requests'), '待審清單').items.some(item => item.id === id);
-    const membership = async () => ok(await a.call(boss.token, p + '/members'), '成員清單').members.find(item => item.participantId === member.id);
-    const events = async () => ok(await a.call(boss.token, p + '/events'), '專案事件').items.filter(item => item.text.includes(member.name));
-    const notices = async kind => ok(await a.call(member.token, '/api/me/notices'), '帳號通知').items.filter(item => item.kind === kind);
+    const pending = async id => ok(await joinSite.call(boss.token, '/api/join-requests'), '待審清單').items.some(item => item.id === id);
+    const membership = async () => ok(await joinSite.call(boss.token, p + '/members'), '成員清單').members.find(item => item.participantId === member.id);
+    const events = async () => ok(await joinSite.call(boss.token, p + '/events'), '專案事件').items.filter(item => item.text.includes(member.name));
+    const notices = async kind => ok(await joinSite.call(member.token, '/api/me/notices'), '帳號通知').items.filter(item => item.kind === kind);
     for (const action of ['reject', 'approve']) {
-      const request = ok(await a.call(member.token, p + '/join-requests', 'POST', { note: 'D1 驗證' }), '送加入申請');
-      const decide = () => a.call(boss.token, `/api/join-requests/${request.id}/${action}`, 'POST', { reason: '請再試一次', role: 'UX', readOnly: true });
+      const request = ok(await joinSite.call(member.token, p + '/join-requests', 'POST', { note: 'D1 驗證' }), '送加入申請');
+      const decide = () => joinSite.call(boss.token, `/api/join-requests/${request.id}/${action}`, 'POST', { reason: '請再試一次', role: 'UX', readOnly: true });
       const kind = action === 'approve' ? 'join_approved' : 'join_rejected';
-      await a.fault({ re: '^INSERT INTO account_notices ', mode: 'json' });
+      await joinSite.fault({ re: '^INSERT INTO account_notices ', mode: 'json' });
       const failed = await decide();
-      assert.equal((await a.faultStatus()).hits, 1);
+      assert.equal((await joinSite.faultStatus()).hits, 1);
       assert.equal(failed.status, 500, failed.text.slice(0, 200));
       assert.equal(await pending(request.id), true);
       assert.equal(await membership(), undefined);
@@ -656,7 +660,29 @@ try {
     }
     const joined = await membership();
     assert.deepEqual([joined.role, joined.title], ['viewer', 'UX']);
-    assert.equal((await events()).filter(item => item.text.includes('核准')).length, 1);
+    assert.equal((await events()).filter(item => item.text.includes('核准')).length, 1);  });
+
+  await check('D1-12', '大量識別碼：26,000 個既有專案，逐頁正規化', async note => {
+    const C = localD1({ wrangler, tmpRoot, repoRoot, name: 'site-large', main });
+    migrate(C, '大量專案站');
+    const w = await C.dev({ vars: VARS });
+    running.push(w);
+    const c = site(w.base, TOKEN), total = 26_000;
+    assert.deepEqual(await c.batch([
+      [`WITH RECURSIVE nums(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM nums WHERE n < ?)
+        INSERT INTO projects (id, name, archived, created_at) SELECT 'legacy-網址英文名專案-' || n, 'Legacy ' || n, 1, '2026-01-01T00:00:00.000Z' FROM nums`, [total]],
+      [`WITH RECURSIVE nums(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM nums WHERE n < ?)
+        INSERT INTO app_settings (key, value) SELECT 'pcode:legacy-網址英文名專案-' || n,
+          char(65+(n/17576)%26, 65+(n/676)%26, 65+(n/26)%26, 65+n%26) FROM nums`, [total]],
+      ["INSERT INTO app_settings (key, value) SELECT 'slug:' || id, id FROM projects WHERE rowid % 2 = 0", []],
+    ]), { ok: true });
+    const boot = await c.call(null, '/api/health');
+    assert.equal(boot.status, 200, boot.text.slice(0, 200));
+    assert.equal(await c.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE source = 'project_id'"), total);
+    assert.equal(await c.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE source = 'slug'"), total);
+    assert.equal(await c.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE source = 'current_code'"), total);
+    assert.ok(await c.one("SELECT value FROM app_settings WHERE key = 'project_identity_ready'"));
+    note(`${total} 個專案全部寫入保留表`);
   });
 
   if (usage.length) {

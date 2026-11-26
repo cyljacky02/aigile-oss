@@ -37,7 +37,7 @@ try {
     ['DROP TABLE IF EXISTS project_identity_claims', []],
     ['DELETE FROM schema_migrations WHERE name = ?', [migration]],
     ["UPDATE app_settings SET value = '{}' WHERE key = 'project_identity_ready'", []],
-    ["INSERT INTO projects (id, name, workspace_id, created_at, visibility) VALUES ('a', 'Canonical', 'default', ?, 'open'), ('Legacy-Web', 'Historical', 'default', ?, 'open'), ('tomb', 'Recoverable', 'default', ?, 'open')", [at, at, at]],
+    ["INSERT INTO projects (id, name, workspace_id, created_at, visibility) VALUES ('a', 'Canonical', 'default', ?, 'open'), ('Legacy-Web', 'Historical', 'default', ?, 'open'), ('tomb', 'Recoverable', 'default', ?, 'open'), ('Kelvin-Web', 'Kelvin', 'default', ?, 'open')", [at, at, at, at]],
     ["UPDATE projects SET archived = 1, deleted_at = ?, purge_at = ? WHERE id = 'tomb'", [at, Date.now() + 86400_000]],
     ["INSERT INTO app_settings (key, value) VALUES ('slug:a','legacy-web'), ('slug:Legacy-Web','website'), ('slug:tomb','dead'), ('pcode:a','CLSH'), ('pcode:Legacy-Web','WEBS'), ('pcode:tomb','DEAD'), ('pcodeold:CLSH','Legacy-Web'), ('pcodeold:SITE','Legacy-Web'), ('pcodeold:WEBS','Legacy-Web')", []],
     ["INSERT INTO cards (uid, title, project, proj_no, created_by, created_at, updated_at) VALUES ('fixture-c1', 'Canonical card', 'a', 1, 'system', ?, ?), ('fixture-c2', 'Historical card', 'Legacy-Web', 1, 'system', ?, ?)", [at, at, at, at]],
@@ -64,6 +64,9 @@ try {
       { projectId: 'a', source: 'slug', rawValue: 'legacy-web' },
     ] },
   ], '沒有替任何有衝突的值選出贏家');
+  const routeToken = await db.get("SELECT value FROM project_identity_claimants WHERE source = 'project_id' AND project_id = ?", 'Kelvin-Web');
+  assert.equal(routeToken.value, 'Kelvin-web', '只折疊 ASCII 字元，保留舊專案 ID 的 Kelvin 字元');
+  assert.equal((await call(admin, '/api/projects', 'POST', { name: 'ASCII Kelvin', slug: 'kelvin-web', code: 'ASK' })).status, 201);
   assert.equal((await call(member, diagnostic)).status, 403);
   // 主鍵保留整個值。有衝突的值不能再 INSERT，兩個命名空間可以各用一次相同的文字。
   for (const [namespace, value] of [['code', 'CLSH'], ['code', 'SITE'], ['slug', 'legacy-web'], ['code', 'DEAD'], ['slug', 'dead']]) {
@@ -85,6 +88,27 @@ try {
   assert.deepEqual(afterWrite.claims.disputes, claims.disputes, '新執行個體不會覆寫既有爭議的來源');
   assert.equal(afterWrite.conflicts.some(c => c.kind === 'code_is_old_alias'), false, '既有診斷仍反映現況');
   assert.equal(ok(await restarted(admin, '/api/cards/CLSH-1')).title, 'Historical card', '改代號後沿用既有的舊代號查找規則');
+
+  // 把爭議寫在交易外檢查之後，驗證建立的交易內仍會擋下。
+  for (const [namespace, value, source, field, error] of [
+    ['slug', 'racing-slug', 'slug', 'slug', 'SLUG_TAKEN'],
+    ['code', 'RACEC', 'current_code', 'code', 'CODE_TAKEN'],
+  ]) {
+    let injected = false;
+    const interleaved = site({ ...db, batch: async stmts => {
+      if (!injected && stmts.some(([sql]) => sql.startsWith('INSERT INTO projects '))) {
+        injected = true;
+        await db.batch([
+          ['INSERT INTO project_identity_claims (namespace, value) VALUES (?, ?)', [namespace, value]],
+          ...['a', 'Legacy-Web'].map(id => ['INSERT INTO project_identity_claimants (namespace, value, project_id, source, raw_value) VALUES (?,?,?,?,?)', [namespace, value, id, source, value]]),
+        ]);
+      }
+      return db.batch(stmts);
+    } });
+    const r = await interleaved(admin, '/api/projects', 'POST', { name: 'Racing claim', [field]: value });
+    assert.equal(injected, true);
+    assert.deepEqual([r.status, r.body.error?.code], [409, error]);
+  }
   console.log('project-identity-claims-test：通過');
 } finally {
   await db?.close();

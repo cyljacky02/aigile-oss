@@ -4,9 +4,17 @@ export function claimsSeeded(marker) {
   try { return JSON.parse(marker)?.claimsVersion === CLAIMS_VERSION; } catch { return false; }
 }
 
+// 新網址英文名與代號只含 ASCII。舊專案 ID 的非 ASCII 字元保留原樣，只折疊 ASCII 大小寫，與 SQLite／D1 及 Postgres 的 C 排序一致。
+export const routeToken = value => value.replace(/[A-Z]/g, c => c.toLowerCase());
+const codeToken = value => value.replace(/[a-z]/g, c => c.toUpperCase());
+const DISPUTED = 'HAVING COUNT(DISTINCT project_id) > 1';
+export const notDisputed = namespace => `NOT EXISTS (SELECT 1 FROM project_identity_claimants
+  WHERE namespace = '${namespace}' AND value = ? GROUP BY namespace, value ${DISPUTED})`;
+export const readDisputed = db => db.all(`SELECT namespace, value FROM project_identity_claimants GROUP BY namespace, value ${DISPUTED}`);
+
 function claimants(rows, shown) {
-  const slug = (projectId, source, rawValue) => ({ namespace: 'slug', value: rawValue.toLowerCase(), projectId, source, rawValue });
-  const code = (projectId, source, rawValue) => ({ namespace: 'code', value: rawValue.toUpperCase(), projectId, source, rawValue });
+  const slug = (projectId, source, rawValue) => ({ namespace: 'slug', value: routeToken(rawValue), projectId, source, rawValue });
+  const code = (projectId, source, rawValue) => ({ namespace: 'code', value: codeToken(rawValue), projectId, source, rawValue });
   return [
     ...rows.flatMap(({ id }) => [slug(id, 'slug', shown.slugs[id]), slug(id, 'project_id', id), code(id, 'current_code', shown.codes[id])]),
     // 舊代號的專案可能已不存在，舊設定仍保留這個代號。
@@ -14,16 +22,29 @@ function claimants(rows, shown) {
   ];
 }
 
-// 整批取代快照：還原時可能是完全不同的資料集。由呼叫端在工作區列鎖與快照斷言之後提交。
-export function seedClaimsStmts(rows, shown) {
-  const sources = JSON.stringify(claimants(rows, shown));
-  const ns = "json_extract(value, '$.namespace')", value = "json_extract(value, '$.value')";
+// 以正規化後的資料直接寫入保留表，避免把全部來源序列化成一個 D1 綁定值。
+const SOURCE_ROWS = `SELECT 'slug' AS namespace, lower(s.value) AS value, p.id AS project_id, 'slug' AS source, s.value AS raw_value
+  FROM projects p JOIN app_settings s ON s.key = 'slug:' || p.id
+  UNION ALL SELECT 'slug', lower(id), id, 'project_id', id FROM projects
+  UNION ALL SELECT 'code', s.value, p.id, 'current_code', s.value
+  FROM projects p JOIN app_settings s ON s.key = 'pcode:' || p.id
+  UNION ALL SELECT 'code', upper(substr(key, 10)), value, 'historical_code', substr(key, 10)
+  FROM app_settings WHERE key >= 'pcodeold:' AND key < 'pcodeold;'`;
+
+// 還原先保留備份裡由不同專案共同宣稱的值，再用舊設定重建現況。由呼叫端在同一批交易內提交。
+export function seedClaimsStmts({ keepDisputes }) {
   return [
-    ['DELETE FROM project_identity_claimants', []],
-    ['DELETE FROM project_identity_claims', []],
-    [`INSERT INTO project_identity_claims (namespace, value) SELECT DISTINCT ${ns}, ${value} FROM json_each(?)`, [sources]],
+    [keepDisputes ? `DELETE FROM project_identity_claimants WHERE (namespace, value) IN (
+      SELECT namespace, value FROM project_identity_claimants GROUP BY namespace, value HAVING COUNT(DISTINCT project_id) = 1
+    )` : 'DELETE FROM project_identity_claimants', []],
+    [`DELETE FROM project_identity_claims WHERE NOT EXISTS (SELECT 1 FROM project_identity_claimants s
+      WHERE s.namespace = project_identity_claims.namespace AND s.value = project_identity_claims.value)`, []],
+    [`INSERT INTO project_identity_claims (namespace, value)
+      SELECT DISTINCT namespace, value FROM (${SOURCE_ROWS}) AS sources WHERE 1 = 1
+      ON CONFLICT (namespace, value) DO NOTHING`, []],
     [`INSERT INTO project_identity_claimants (namespace, value, project_id, source, raw_value)
-      SELECT ${ns}, ${value}, json_extract(value, '$.projectId'), json_extract(value, '$.source'), json_extract(value, '$.rawValue') FROM json_each(?)`, [sources]],
+      SELECT namespace, value, project_id, source, raw_value FROM (${SOURCE_ROWS}) AS sources WHERE 1 = 1
+      ON CONFLICT (namespace, value, project_id, source, raw_value) DO NOTHING`, []],
   ];
 }
 

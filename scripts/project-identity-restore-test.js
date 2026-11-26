@@ -54,7 +54,7 @@ try {
   const oldClaims = await readClaims();
   assert.ok(oldClaims.length > 0);
   const exported = (await call(me.token, '/api/admin/backup')).body;
-  assert.ok(exported.tables.every(t => !t.name.startsWith('project_identity_claim')), '備份沿用舊設定');
+  assert.ok(exported.tables.some(t => t.name === 'project_identity_claims') && exported.tables.some(t => t.name === 'project_identity_claimants'), '現代備份保留識別碼爭議來源');
   let r = await call(me.token, '/api/admin/restore/begin', 'POST', { format: backup.format, formatVersion: backup.formatVersion, appVersion: backup.appVersion });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   for (const [table, rows] of Object.entries(backup.tables)) {
@@ -69,7 +69,7 @@ try {
   assert.deepEqual([r.status, r.body.error?.code], [503, 'RESTORE_UNFINISHED'], JSON.stringify(r.body));
   assert.ok(await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'"), '維持還原中');
   assert.deepEqual(await stored(A), [undefined, undefined], '沒有寫入一半');
-  assert.deepEqual(await readClaims(), oldClaims, '寫入中途失敗後保留上一份完整的保留表');
+  assert.deepEqual(await readClaims(), [], '還原失敗維持匯入目的站的保留表為空，不留下部分備份來源');
   failReady = false;
   r = await call(me.token, '/api/admin/restore/finish', 'POST', {});
   assert.equal(r.status, 200, '再按一次收尾：' + JSON.stringify(r.body));

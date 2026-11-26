@@ -24,6 +24,7 @@ import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js
 import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, notRestoringStmt, writeOrdered } from './write-order.js'; // 工作區寫入排序與交易內斷言（ADR 0005）
 import { createProjectIdentity, splitIdentitySettings, displayedIdentity, autoCode, SLUG_DEFAULT, identityReadyStmt, slugFreeCond, codeFreeCond, ownIdentityFreeCond, ensureCond, holdsNow, CODE_RE, CONFLICT_KINDS, projectForCardCode, cardSeqInProject } from './project-identity.js'; // 專案網址英文名與代號
 import { previewProjectIdentity } from './project-identity-preview.js';
+import { readDisputed, routeToken } from './project-identity-claims.js';
 import { createProjectCreation, CREATION_METHOD, readVisibility } from './project-create.js'; // 共用的建立專案邏輯
 import { registerProjectCreationRequests, cancelStmts as pcrCancelStmts, cancelNoticeStmts as pcrCancelNoticeStmts, pendingCountSql as pcrPendingCountSql, requestsTableReady as pcrTableReady, PCR_TABLE, PCR_CANCEL_CODE,
   restoreStaleCountSql as pcrRestoreStaleCountSql, restoreCheckStmts as pcrRestoreCheckStmts, directCreateAllowedCond, activeMemberCond as pcrActiveMemberCond, reviewerCond as pcrReviewerCond } from './project-creation-requests.js'; // 建立專案申請
@@ -369,10 +370,15 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
   // 專案代號（2～5 個英文大寫，卡片顯示 MAIN-12）與網址英文名：存在 app_settings 的 pcode:<專案>、slug:<專案>（啟動正規化後每個專案都有，
   // 見 src/project-identity.js）；還沒存的照升級前的規則推導（displayedIdentity），畫面上的值不變
   let projCodes = {}, oldCodes = {}; // oldCodes＝改代號前的舊代號 → 專案（舊的 PLAT-xxx 照樣查得到）
+  let disputedSlugs = new Set(), disputedCodes = new Set();
   async function loadCodes() {
     // 讀不到就丟（不當作沒有設定，免得推導出不一樣的代號）
-    const shown = displayedIdentity(allProjectRows, splitIdentitySettings(await db.all("SELECT key, value FROM app_settings WHERE (key >= 'pcode:' AND key < 'pcode;') OR (key >= 'pcodeold:' AND key < 'pcodeold;') OR (key >= 'slug:' AND key < 'slug;')")));
+    const settings = await db.all("SELECT key, value FROM app_settings WHERE (key >= 'pcode:' AND key < 'pcode;') OR (key >= 'pcodeold:' AND key < 'pcodeold;') OR (key >= 'slug:' AND key < 'slug;')");
+    const disputes = await readDisputed(db);
+    const shown = displayedIdentity(allProjectRows, splitIdentitySettings(settings));
     oldCodes = shown.olds; projCodes = shown.codes; // 含可復原期內的：它的代碼保留，新專案不能用
+    disputedSlugs = new Set(disputes.filter(r => r.namespace === 'slug').map(r => r.value));
+    disputedCodes = new Set(disputes.filter(r => r.namespace === 'code').map(r => r.value));
   }
   const cardKey = c => (c && c.proj_no && projCodes[c.project] ? `${projCodes[c.project]}-${c.proj_no}` : null);
   const pubNo = c => cardKey(c) || `C-${c.seq + 100}`; // 對外只給專案卡號（沒有專案代號才退回 C-xxx）
@@ -2531,7 +2537,7 @@ ${ending}`;
   const identityWriteFailed = async id => ((await db.get('SELECT 1 AS x FROM projects WHERE id = ? AND deleted_at IS NULL', id)) ? new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。') : new ApiError(404, 'NOT_FOUND', '找不到這個專案'));
   const slugTaken = (slug, used, who = null) => new ApiError(409, 'SLUG_TAKEN', who ? `「${slug}」已經是「${who}」在用的網址名` : `「${slug}」已經有專案在用`, { suggestion: slugFree(slug, used) });
   // 別的專案的代號與所有舊代號（自動產生代號時要避開的；含可復原期內的）
-  const usedCodes = exceptId => new Set([...allProjectRows.filter(r => r.id !== exceptId).map(r => projCodes[r.id]), ...Object.keys(oldCodes).filter(c => oldCodes[c] !== exceptId)].filter(Boolean));
+  const usedCodes = exceptId => new Set([...disputedCodes, ...allProjectRows.filter(r => r.id !== exceptId).map(r => projCodes[r.id]), ...Object.keys(oldCodes).filter(c => oldCodes[c] !== exceptId)].filter(Boolean));
   // 共用的建立專案邏輯（src/project-create.js）：直接建立、核准建立、新站預設專案、示範資料。這裡接上專案快取與識別碼規則
   const creation = createProjectCreation({ db, randId, nowIso, ApiError, auditLog, membership, projEvent, write: writeIdentity,
     nameFreeCond: (name, id) => ({ cond: nameFree(), args: [name, id] }),
@@ -2668,7 +2674,7 @@ ${ending}`;
   }
   async function usedSlugs(exceptId) {
     const all = await slugMap();
-    return new Set(allProjectRows.filter(r => r.id !== exceptId).flatMap(r => [all[r.id], r.id.toLowerCase()])); // 可復原期內的專案的也保留
+    return new Set([...disputedSlugs, ...allProjectRows.filter(r => r.id !== exceptId).flatMap(r => [all[r.id], routeToken(r.id)])]); // 可復原期內的專案的也保留
   }
   async function slugMap() {
     const set = {};
@@ -2681,7 +2687,7 @@ ${ending}`;
     const code = String(raw ?? '').trim().toUpperCase();
     if (!CODE_RE.test(code)) throw invalid('專案代號需為 2～5 個英文字母');
     const clash = allProjectRows.find(r => r.id !== selfId && (projCodes[r.id] === code || oldCodes[code] === r.id)); // 可復原期內的專案的代碼也保留
-    if (!clash && oldCodes[code] !== undefined && oldCodes[code] !== selfId) throw new ApiError(409, 'CODE_TAKEN', `「${code}」已經有專案在用（或是舊代號）`); // 舊代號的專案不在了也保留（跟交易內的斷言一致）
+    if (!clash && ((oldCodes[code] !== undefined && oldCodes[code] !== selfId) || (disputedCodes.has(code) && projCodes[selfId] !== code))) throw new ApiError(409, 'CODE_TAKEN', `「${code}」已經有專案在用（或是舊代號）`);
     if (clash) throw new ApiError(409, 'CODE_TAKEN', discovers(me, clash.id) ? `「${code}」已經是「${clash.name}」的代號（或舊代號）` : `「${code}」已經有專案在用（或是舊代號）`);
     return code;
   }
@@ -2723,8 +2729,8 @@ ${ending}`;
       const all = await slugMap(), used = await usedSlugs(row.id);
       const slug = raw ? checkSlug(raw, row.name, used) : autoSlug(row.name, used); // 留空＝依專案名稱自動產生
       if (slug === all[row.id]) return projectsSeenBy(ctx, me);
-      const clash = allProjectRows.find(r => r.id !== row.id && (all[r.id] === slug || r.id.toLowerCase() === slug));
-      if (clash) throw slugTaken(slug, used, discovers(me, clash.id) ? clash.name : null); // 占用者是看不到的私人專案：不說是哪個
+      const clash = allProjectRows.find(r => r.id !== row.id && (all[r.id] === slug || routeToken(r.id) === slug));
+      if (used.has(slug)) throw slugTaken(slug, used, clash && discovers(me, clash.id) ? clash.name : null); // 不透露看不到的私人專案
       const at = nowIso();
       // 代號還沒存（正規化之後才直接寫進資料庫的專案）：先把現在顯示的代號存下來，改網址英文名不會連帶改代號
       // 存下的代號不能跟別的專案的代號或舊代號重複（ADR 0004：新寫入不得新增衝突）：在同一批斷言
@@ -4769,7 +4775,7 @@ ${ending}`;
       { name: '成員資料轉換', run: () => membership.migrateLegacy({ finishingRestore: true }) }, // 舊版備份：成員資料匯入後轉到新的成員資料表
       { name: '稽核紀錄轉換', run: () => auditLog.migrateLegacy({ finishingRestore: true }) }, // 舊的專案刪除紀錄轉進稽核紀錄
       // 專案網址英文名與代號存進資料庫：不看「已正規化」的標記，一定照備份的資料重算（舊備份沒有存的值照舊規則推導，畫面上的值不變）
-      { name: '專案識別碼正規化', run: ({ raw }) => projectIdentity.normalize({ restoreRaw: raw }) },
+      { name: '專案識別碼正規化', run: ({ state, raw }) => projectIdentity.normalize({ restoreRaw: raw, keepDisputes: state.clearedIdentityClaims === true }) },
       // 待審的建立專案申請：成員轉換之後才看得到正確的成員資格與政策。不再成立的依固定順序取消，有效的保留；不通知、不核准、不建立專案。
       // 取消數跟取消同一批記進 restore_state（累加）：稽核寫入失敗重試時，第一次已取消的不會被數成零
       { name: '檢查待審的建立專案申請', run: async ({ state, keepStmts }) => {
