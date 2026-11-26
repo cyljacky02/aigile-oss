@@ -3540,6 +3540,7 @@ window.AIGILE_EN = {
     "還有 {0} 張暫緩中的決策卡（{1}），先恢復它們，才能拿掉最後一個「受阻」狀態。": "{0} decision cards are on hold ({1}). Resume them before removing the last Blocked status.",
     "「{0}」裡還有 {1} 張卡：請用 moveTo 指定要搬到哪個狀態。": "\"{0}\" still has {1} cards: use moveTo to choose the status to move them to.",
     "剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。": "Someone changed the same data at the same time, so nothing was saved. Reload and try again.",
+    "資料庫正忙，這次沒有存；請稍後再試。": "The database is busy, so nothing was saved. Please try again shortly.",
     "要改到的狀態剛被刪除或改了類別，請重新讀取後再試。": "That status was just deleted or moved to another category. Reload and try again.",
     "看板狀態或裡面的卡片剛好有人同時在改，這次沒有存；請重新讀取後再試。": "Someone changed these statuses or their cards at the same time, so nothing was saved. Reload and try again.",
     "moveTo 要是這個專案的另一個狀態 ID": "moveTo must be the ID of another status in this project",

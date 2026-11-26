@@ -181,6 +181,36 @@ try {
     } finally { try { other.exec('ROLLBACK'); } catch {} other.close(); }
   }
 
+  // 8) 會影響「未封存專案不同名」與建立專案政策的寫入，都在批次第一句取得工作區列鎖（ADR 0005：同一把鎖排隊）
+  {
+    const { adminSession } = await import('./test-admin.js');
+    const admin = (await adminSession(call, boss.token)).token; // 刪除、復原是敏感操作
+    const LOCK = /^UPDATE workspaces SET name = name WHERE id = \?$/;
+    const firstOf = async (re, fn) => {
+      let first = null;
+      const orig = appDb.batch;
+      appDb.batch = async stmts => { if (stmts.some(([sql]) => re.test(sql))) first = stmts[0][0]; return orig(stmts); };
+      try { ok(await fn(), String(re)); } finally { appDb.batch = orig; }
+      assert.ok(first, `有送出含 ${re} 的批次`);
+      assert.match(first.trim(), LOCK, `${re} 那批的第一句要是工作區列鎖`);
+    };
+    await firstOf(CREATE, () => create('未案'));
+    const pid = ok(await create('午案'), '建立午案').id;
+    await firstOf(/^UPDATE projects SET archived = 1/, () => archive(pid));
+    await firstOf(UNARCHIVE, () => unarchive(pid));
+    await firstOf(RENAME, () => rename(pid, '午案二'));
+    await firstOf(/^INSERT INTO app_settings .*VALUES \(\?, \?\) ON CONFLICT\(key\) DO UPDATE/, () => call(boss.token, `/api/projects/${pid}/slug`, 'PUT', { slug: 'wu-an' }));
+    await firstOf(/^INSERT INTO app_settings .*VALUES \(\?, \?\) ON CONFLICT\(key\) DO UPDATE/, () => call(boss.token, `/api/projects/${pid}/code`, 'PUT', { code: 'WUAN' }));
+    await firstOf(/^UPDATE workspaces SET create_projects/, async () => {
+      const cur = ok(await call(admin, '/api/workspace/settings'), '讀政策').createProjects;
+      return call(admin, '/api/workspace/settings', 'PUT', { createProjects: cur === 'admins' ? 'members' : 'admins' });
+    });
+    ok(await archive(pid), '封存午案');
+    ok(await call(admin, `/api/projects/${pid}/delete`, 'POST', { confirmName: '午案二' }), '刪除午案');
+    await firstOf(/^UPDATE projects SET deleted_at = NULL/, () => call(admin, `/api/projects/${pid}/restore`, 'POST'));
+    console.log('✓ 建立、改名、封存、取消封存、復原、改政策、改網址英文名、改代碼：第一句都是工作區列鎖');
+  }
+
   // Postgres：兩個交易用不同的資料庫連線真的同時開著。第一個停在提交前（工作區列鎖還拿著），第二個要等它做完，然後回 409
   if (TEST_PG_URL) {
     const { default: pg } = await import('pg');

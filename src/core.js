@@ -2194,7 +2194,8 @@ ${ending}`;
       stmts.push(...workspace.setDeleteOwnStmts(body.deleteOwnMessages), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以刪除自己的訊息：${DELETE_OWN_LABEL[body.deleteOwnMessages]}`, at),
         auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'deleteOwnMessages', from: delBefore, to: body.deleteOwnMessages } }));
     }
-    await writeStmts(stmts);
+    // 第一句工作區列鎖：建立專案政策跟建立專案（之後的建立專案申請）排隊（ADR 0005）；沒有要寫的就不送
+    if (stmts.length) await writeInWorkspace(stmts);
     workspace.invalidate();
     if (name !== null) await saveGroupName(me, name);
     return groupSettings();
@@ -2457,7 +2458,8 @@ ${ending}`;
     if (code === projCodes[row.id]) return projectsSeenBy(ctx, me);
     const at = nowIso();
     const upsert = "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
-    await db.batch([[upsert, ['pcode:' + row.id, code]], ...(projCodes[row.id] ? [[upsert, ['pcodeold:' + projCodes[row.id], row.id]]] : []), projEvent(row.id, me.id, `${me.name} 把專案代號改成 ${code}`, at)]); // 舊代號留作別名
+    // 第一句工作區列鎖（跟其他動到專案名稱與識別碼的寫入排隊）；代碼的交易內唯一性檢查要等代碼存進資料庫（#42）
+    await writeInWorkspace([[upsert, ['pcode:' + row.id, code]], ...(projCodes[row.id] ? [[upsert, ['pcodeold:' + projCodes[row.id], row.id]]] : []), projEvent(row.id, me.id, `${me.name} 把專案代號改成 ${code}`, at)]); // 舊代號留作別名
     invalidateProjects();
     return projectsSeenBy(ctx, me);
   });
@@ -2474,7 +2476,8 @@ ${ending}`;
     if (clash) throw new ApiError(409, 'SLUG_TAKEN', `「${slug}」已經是「${clash.name}」在用的網址名`, { suggestion: slugFree(slug, used) });
     const at = nowIso();
     const pinCode = (await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', 'pcode:' + row.id)) || !projCodes[row.id] ? [] : [["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", ['pcode:' + row.id, projCodes[row.id]]]];
-    await db.batch([...pinCode, ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['slug:' + row.id, slug]], projEvent(row.id, me.id, `${me.name} 把網址英文名改成 ${slug}`, at)]);
+    // 第一句工作區列鎖；網址英文名的交易內唯一性檢查要等它存進資料庫（#42）
+    await writeInWorkspace([...pinCode, ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['slug:' + row.id, slug]], projEvent(row.id, me.id, `${me.name} 把網址英文名改成 ${slug}`, at)]);
     return projectsSeenBy(ctx, me);
   });
   route('PUT', '/api/projects/:id/dm', async ({ ctx, me, req, params }) => {
@@ -2841,7 +2844,7 @@ ${ending}`;
     if (projectRows.filter(r => !r.archived).length <= 1) throw new ApiError(409, 'LAST_PROJECT', '至少要保留一個專案');
     const open = (await db.get("SELECT COUNT(*) AS n FROM cards WHERE project = ? AND status IN ('待整理','待處理','進行中','待確認','受阻')", row.id)).n;
     if (open) throw new ApiError(409, 'HAS_OPEN_CARDS', `這個專案還有 ${open} 張未結案的卡片，請先結案或把卡片移到別的專案。`);
-    await db.batch([['UPDATE projects SET archived = 1 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 封存專案`, nowIso())]);
+    await writeInWorkspace([['UPDATE projects SET archived = 1 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 封存專案`, nowIso())]); // 第一句工作區列鎖：跟取消封存、建立、改名排隊
     invalidateProjects();
     return projectsSeenBy(ctx, me);
   });
@@ -2964,10 +2967,11 @@ ${ending}`;
     if (Number(row.purge_at) <= now) throw expired();
     const at = nowIso(), pj = { id: row.id, name: row.name }, paused = pausedList(row.paused_ais);
     const people = await peopleMap(ctx), resumed = paused.map(x => people.get(x.id)?.name).filter(Boolean), counts = await projectFootprint(row.id); // 跟刪除那筆一樣記數量
-    // 先鎖這個專案（跟永久清除排隊），再確認還在可復原期內；復原、恢復 AI、專案事件、稽核紀錄、管理員通知同一批。
+    // 先鎖工作區這列（writeInWorkspace 的第一句；跟建立、改名、取消封存排隊），再鎖這個專案（跟永久清除排隊；順序工作區 → 專案），
+    // 再確認還在可復原期內；復原、恢復 AI、專案事件、稽核紀錄、管理員通知同一批。
     // 期限一過，排程就可能已經挑中它：這裡跟排程的「清除前確認到期」互斥，只有一邊會成功
     const inWindow = 'id = ? AND deleted_at IS NOT NULL AND purge_at > ?';
-    const done = await writeTogether([
+    const done = await writeInWorkspace([
       ['UPDATE projects SET name = name WHERE id = ?', [row.id]],
       ensureStmt(`EXISTS (SELECT 1 FROM projects WHERE ${inWindow})`, [row.id, now]),
       [`UPDATE projects SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, paused_ais = NULL WHERE ${inWindow}`, [row.id, now]],
