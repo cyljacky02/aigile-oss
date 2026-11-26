@@ -199,8 +199,10 @@ B. 不接受，等全部完成
   - `routes` 以平台管理員看到的專案清單和正常網址順序（網址英文名、ID、名稱）解析 `/p/…`。`cardReferences` 列受影響的前綴與解析規則。兩者都有 `before`、`after`、`claimants`（目前的專案 ID）、`ambiguous`、`beforeStatus`、`afterStatus`。狀態可為 `reachable`、`archived`、`recoverable` 或 `missing`。封存專案不會開啟專案頁面，但可用其現行代號查卡。可復原期內的專案仍保留識別碼，卡片無法存取。
   - 代號試算從提議變更後的設定重新推導代號。`codeChanges` 列出所有受影響的顯示代號。若某代號只有一個現行持有者，且與另一個專案的歷史代號衝突，可指定 `retireAlias: true`，以該現行持有者為 `projectId`、現行代號為 `replacement`。`retiredAlias` 回報提議停用的舊代號和專案。
   - 主要舊、新前綴每個最多抽樣兩個卡號（`exampleCoverage: sample`）。可指定一個受影響的專案卡號，例如 `reference: "MAIN-12"`，回這一個例子（`requested`），其他前綴只列規則（`none`）。例子的 `outcome` 可為 `lost`、`redirected`、`same_card`、`gained` 或 `missing`。未列出的卡號可用 `reference` 個別檢查。
-  - `state` 綁定提案與專案識別碼快照。`resolutionState` 另綁定本次網址與卡號解析、取樣或指定卡號，以及查過的卡片和移卡別名（含已被現行卡號蓋住的移卡別名）。確認端應以相同提案和 `reference` 重算指紋並在交易內保護實際寫入的前提。
+  - `state` 綁定提案與專案識別碼快照。`resolutionState` 另綁定本次網址與卡號解析、取樣或指定卡號，以及查過的卡片和移卡別名（含已被現行卡號蓋住的移卡別名）。
 - 替換值已被其他專案使用或保留時，預覽回 409 `CODE_TAKEN`、`SLUG_TAKEN` 或 `NAME_TAKEN`，`error.projects` 會列出佔用的專案。指定專案目前的值已不在診斷中時，回 409 `IDENTITY_CONFLICT_CHANGED`。
+- **確認識別碼修復**（限現任平台管理員）。`POST /api/admin/project-identity/confirm { projectId, field, replacement, reference?, retireAlias?, state, resolutionState, acknowledged: true }`：送出畫面上已檢查的同一提案和兩個預覽指紋，明確同意顯示卡號及既有參照的影響。未同意或缺少指紋回 400。替換值不再可用、識別碼或預覽涵蓋的解析已變更時，回 409 `IDENTITY_PREVIEW_STALE`，不寫入任何識別碼變更或稽核紀錄，須重新預覽。成功回 `{ projectId, field, value, retiredAlias }`，並在同一批寫入平台層 `project_identity.repair` 稽核紀錄；重新讀取診斷或正常查詢即可看到結果。
+  - 修復與其他識別碼寫入、平台角色異動共用工作區列鎖。在批次中比對完整的識別碼快照，最後再比對取樣位置及查過的卡片、移卡別名和目的卡。這些例子描述最後一次斷言的解析，不是所有卡號的快照，也不鎖住後續的卡片寫入。移卡目前分開寫入卡片、舊號與新號，可能在讀取時處於中間狀態；若要保證整個移卡操作只呈現前後兩種狀態，需另將移卡寫入合併為一批。
 - 若兩個請求同時新增或改名成同一個狀態名稱，`POST …/statuses` 或 `PATCH …/statuses/:sid` 被名稱的唯一索引擋下的那個會回 409 `CONFLICT`。請重新讀取狀態清單，再選一個名稱重試。
 - **唯讀成員**：所屬人類在某專案是唯讀成員時，你在那裡也只能看（403 `READ_ONLY`）：停下回報，不要重試、不要換專案繞過。
 

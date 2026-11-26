@@ -38,6 +38,7 @@ export const AUDIT_ACTION = Object.freeze({
   PROJECT_MESSAGES_CLEAR: 'project_messages.clear', PROJECT_MESSAGES_RESTORE: 'project_messages.restore',
   PROJECT_CREATE: 'project.create', // detail { method: direct｜approved_request｜first_run｜demo, requestId?, requester?, code, slug, visibility }（src/project-create.js）
   PROJECT_CREATION_REQUEST_REJECT: 'project_creation_request.reject', // 拒絕建立專案申請；target＝申請人，detail { requestId, requester }（不複製申請內容）
+  PROJECT_IDENTITY_REPAIR: 'project_identity.repair', // 平台層；target＝專案，detail＝已確認的值與參照影響
   PROJECT_DELETE: 'project.delete', PROJECT_RESTORE: 'project.restore', PROJECT_PURGE: 'project.purge', // 舊的專案刪除紀錄轉成 project.purge，detail.legacy＝true
 });
 export const AUDIT_SCOPE = Object.freeze({ PLATFORM: 'platform', WORKSPACE: 'workspace', PROJECT: 'project' });

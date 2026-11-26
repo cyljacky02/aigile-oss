@@ -15,6 +15,16 @@ export const SLUG_DEFAULT = { '預設專案': 'main', '第二專案': 'second' }
 // 「已正規化」的標記（app_settings）：不跟著備份搬（backup.js skipSetting），開始匯入時跟著清掉，還原收尾一定重新正規化
 export const IDENTITY_READY_KEY = 'project_identity_ready';
 const SETTINGS_RANGE = "(key >= 'pcode:' AND key < 'pcode;') OR (key >= 'pcodeold:' AND key < 'pcodeold;') OR (key >= 'slug:' AND key < 'slug;')";
+
+// Compare the same fields the preview fingerprints; EXCEPT compares nullable fields without collapsing NULL and ''.
+export const identitySnapshotStmt = ({ rows, settings }) => ensureStmt(`(SELECT COUNT(*) FROM projects) = ?
+  AND NOT EXISTS (SELECT id, name, archived, deleted_at, created_at FROM projects EXCEPT
+    SELECT json_extract(value, '$.id'), json_extract(value, '$.name'), CAST(json_extract(value, '$.archived') AS INTEGER),
+      json_extract(value, '$.deleted_at'), json_extract(value, '$.created_at') FROM json_each(?))
+  AND (SELECT COUNT(*) FROM app_settings WHERE ${SETTINGS_RANGE}) = ?
+  AND NOT EXISTS (SELECT key, value FROM app_settings WHERE ${SETTINGS_RANGE} EXCEPT
+    SELECT json_extract(value, '$.key'), json_extract(value, '$.value') FROM json_each(?))`,
+[rows.length, JSON.stringify(rows), settings.length, JSON.stringify(settings)]);
 const letter = n => String.fromCharCode(65 + (n % 26));
 
 // 識別碼設定列 → { codes: 專案→存的代號, slugs: 專案→存的網址英文名, olds: 舊代號→專案 }

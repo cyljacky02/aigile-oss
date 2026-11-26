@@ -34,12 +34,26 @@ try {
   await submit('NEWM');
   await until(() => js("document.querySelector('#ident-preview-result')?.textContent.includes('MAIN-99')"), 10000, '指定卡號預覽');
   assert.equal((await kit.call(boss.token, '/api/admin/project-identity')).body.conflicts.length, 1, '預覽後衝突還在');
-  await js("document.querySelector('#modal-root .modal-x').click()");
-  console.log('✓ 在平台設定預覽、處理替換值衝突，再預覽成功');
-
-  // 改掉其中一個專案的代號：重新整理後不再顯示
-  assert.equal((await kit.call(boss.token, `/api/projects/${encodeURIComponent('第二專案')}/code`, 'PUT', { code: 'SECO' })).status, 200);
+  const confirmButton = '#ident-preview-form [data-ident-confirm]';
+  await until(() => js(`document.querySelector('${confirmButton}')?.disabled`), 10000, '沒有勾選不能確認');
+  await js("(() => { const f = document.querySelector('#ident-preview-form'); f.elements.projectId.value = '第二專案'; f.elements.reference.value = ''; f.elements.projectId.dispatchEvent(new Event('input', { bubbles: true })); })()");
+  assert.ok(!await js(`!!document.querySelector('${confirmButton}')`), '改動提案後不能確認舊畫面');
+  const readyToConfirm = () => until(() => js(`document.querySelector('#ident-preview-result')?.textContent.includes('SECO-N') && !!document.querySelector('${confirmButton}')`), 10000, '已顯示可確認的預覽');
+  const confirmRepair = () => js(`(() => { document.querySelector('[data-ident-ack]').click(); document.querySelector('${confirmButton}').click(); })()`);
+  await submit('SECO');
+  await readyToConfirm();
+  assert.equal((await kit.call(boss.token, '/api/projects', 'POST', { name: 'Concurrent project', slug: 'concurrent-project', code: 'RACE' })).status, 201);
+  await confirmRepair();
+  await until(() => js("document.querySelector('#ident-preview-error')?.textContent.includes('修復預覽已過期')"), 10000, '出現過期訊息，可以重試');
+  assert.ok(!await js(`!!document.querySelector('${confirmButton}')`), '過期預覽不能再次確認');
+  assert.equal((await kit.call(boss.token, '/api/admin/project-identity')).body.conflicts.length, 1);
+  await submit('SECO');
+  await readyToConfirm();
+  await confirmRepair();
+  await until(() => js("!document.querySelector('#ident-preview-form') && !document.querySelector('.ident-card')"), 10000, '確認後診斷重新讀取');
   assert.equal((await kit.call(boss.token, '/api/admin/project-identity')).body.conflicts.length, 0, '沒有衝突了');
+  assert.equal((await kit.call(boss.token, '/api/projects')).body.items.find(p => p.id === '第二專案').code, 'SECO');
+  console.log('✓ 平台設定確認綁定畫面上的預覽，過期可重試，成功重新讀取診斷');
   // 頁面讀完診斷資料、畫完之後才記一次（讀資料的 then 在 json() 之後的微任務裡畫面，這裡排在它們後面的下一個工作）
   await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { window.__identLoads = 0; const of = window.fetch;
     window.fetch = async (u, o) => { const r = await of(u, o); if (String(u).includes('/api/admin/project-identity')) { const j = r.json.bind(r); r.json = () => j().then(v => { setTimeout(() => { window.__identLoads++; }); return v; }); } return r; }; })()` });
@@ -73,6 +87,21 @@ try {
   await goto('/p/main/messages');
   await until(() => js("location.pathname === '/'"), 10000, '封存專案的網址回到首頁');
   console.log('✓ 先符合網址的封存專案沒有可開啟的專案頁面');
+
+  await goto('/admin/system');
+  await until(() => js("!![...document.querySelectorAll('.ident-list li')].find(li => li.textContent.includes('網址英文名重複'))"), 10000, '找到網址英文名衝突');
+  await js("[...document.querySelectorAll('.ident-list li')].find(li => li.textContent.includes('網址英文名重複')).querySelector('button').click()");
+  await submit('new-main');
+  await until(() => js(`document.querySelector('#ident-preview-result')?.textContent.includes('/p/new-main') && !!document.querySelector('${confirmButton}')`), 10000, '網址英文名修復預覽');
+  await confirmRepair();
+  await until(() => js("!document.querySelector('#ident-preview-form')"), 10000, '已確認網址英文名修復');
+  await goto('/p/main/messages');
+  await until(() => js("document.querySelector('#messages')?.innerText.includes('Route target two')"), 10000, '舊網址依預覽開啟第二專案');
+  await js("localStorage.setItem('aigile-lang', 'en'); true");
+  await login(boss.token, '/admin/platlog');
+  const line = await until(() => js("[...document.querySelectorAll('.alog-table tbody tr')].find(row => row.textContent.includes('Project slug: main → new-main'))?.textContent"), 10000, '英文版平台稽核紀錄');
+  assert.match(line, /Repaired project identifiers/);
+  console.log('✓ 確認後正常網址依預覽解析，英文平台稽核紀錄顯示修復動作');
   console.log('project-identity-ui-test：全部通過');
 } catch (e) {
   console.error('project-identity-ui-test 失敗：', e.stack || e.message);

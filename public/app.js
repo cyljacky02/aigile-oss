@@ -9418,10 +9418,11 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     'message.delete': ['刪除訊息', 'Deleted message'], 'message.restore': ['復原訊息', 'Restored message'], 'message.purge': ['永久清除訊息', 'Purged messages'],
     'project_messages.clear': ['清空專案訊息', 'Cleared project messages'], 'project_messages.restore': ['復原清空的專案訊息', 'Restored cleared project messages'],
     'project_creation_request.reject': ['拒絕建立專案申請', 'Rejected project creation request'],
+    'project_identity.repair': ['修復專案識別碼', 'Repaired project identifiers'],
     'project.create': ['建立專案', 'Created project'], 'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
   };
   const alogAction = k => (ALOG_ACTIONS[k] ? L(...ALOG_ACTIONS[k]) : k);
-  const ALOG_PLATFORM = ['platform_admin.grant', 'platform_admin.revoke', 'account.disable', 'account.enable', 'backup.restore']; // 工作區頁的篩選不列
+  const ALOG_PLATFORM = ['platform_admin.grant', 'platform_admin.revoke', 'account.disable', 'account.enable', 'backup.restore', 'project_identity.repair']; // 工作區頁的篩選不列
   const alogDay = (v, plus = 0) => { const d = new Date(v + 'T00:00'); d.setDate(d.getDate() + plus); return Number.isNaN(d.getTime()) ? '' : d.toISOString(); };
   function alogLoad(more = false) {
     const a = perm.alog, q = new URLSearchParams({ scope: a.kind === 'platlog' ? 'all' : 'workspace' });
@@ -9453,6 +9454,12 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     } else if (e.action === 'recovery_window.update') {
       const zh = v => (v == null ? '跟平台預設' : v === 0 ? '立即永久清除' : `${v} 天`), en = v => (v == null ? 'platform default' : v === 0 ? 'purge immediately' : `${v} days`);
       out.push(L(`可復原期：${zh(d.from)} → ${zh(d.to)}`, `Recovery window: ${en(d.from)} → ${en(d.to)}`));
+    } else if (e.action === 'project_identity.repair') {
+      if (d.retiredAlias) out.push(L(`停用舊代號 ${d.retiredAlias.code}`, `Retired historical code ${d.retiredAlias.code}`));
+      else {
+        const labels = { code: L('專案代號', 'Project code'), slug: L('網址英文名', 'Project slug'), name: L('專案名稱', 'Project name') };
+        out.push(`${labels[d.field] || d.field}: ${d.from} → ${d.to}`);
+      }
     } else if (d.field) out.push(`${d.field}: ${d.from ?? '—'} → ${d.to ?? '—'}`);
     else if ('from' in d || 'to' in d) out.push(`${d.from ?? '—'} → ${d.to ?? '—'}`);
     if (e.action === 'project.create') { // 建立方式與可見度（代號在下面）
@@ -11525,19 +11532,25 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <button class="btn primary" type="submit">預覽修復</button>
       <p id="ident-preview-error" role="alert"></p>
       <div id="ident-preview-result" role="status" class="small"></div>
+      <div id="ident-confirm" class="stack"></div>
     </form>`, { size: 'form', sub: '預覽只讀取資料。' });
     const form = body.querySelector('form'), result = body.querySelector('#ident-preview-result'), error = body.querySelector('#ident-preview-error');
-    const buttonSubmit = form.querySelector('button[type="submit"]');
-    let request = 0;
-    const clear = () => { request++; result.innerHTML = ''; error.textContent = ''; buttonSubmit.disabled = false; };
+    const actions = body.querySelector('#ident-confirm'), buttonSubmit = form.querySelector('button[type="submit"]');
+    const fields = [...form.querySelectorAll('input, select')];
+    let request = 0, saving = false;
+    const clear = () => { request++; result.innerHTML = ''; actions.innerHTML = ''; error.textContent = ''; buttonSubmit.disabled = false; };
     const retire = () => form.elements.repairAction?.value === 'retireAlias';
-    form.addEventListener('input', () => {
+    const editProposal = e => {
+      if (saving || !fields.includes(e.target)) return;
       form.querySelector('#ident-replacement').hidden = retire();
       form.elements.replacement.disabled = retire();
       clear();
-    });
+    };
+    form.addEventListener('input', editProposal);
+    form.addEventListener('change', editProposal);
     form.addEventListener('submit', async ev => {
       ev.preventDefault();
+      if (saving) return;
       clear();
       const version = request;
       buttonSubmit.disabled = true;
@@ -11548,7 +11561,35 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (reference?.trim()) proposal.reference = reference.trim();
       try {
         const plan = await api('/api/admin/project-identity/preview', { method: 'POST', body: proposal });
-        if (version === request && body.isConnected) result.innerHTML = identPreviewHtml(plan);
+        if (version !== request || !body.isConnected) return;
+        result.innerHTML = identPreviewHtml(plan);
+        actions.innerHTML = `<label><input type="checkbox" data-ident-ack> 我了解卡片代號及既有參照可能依照預覽變更。</label>
+          <button class="btn danger" type="button" data-ident-confirm disabled>確認修復</button>`;
+        const ack = actions.querySelector('[data-ident-ack]'), confirm = actions.querySelector('[data-ident-confirm]');
+        ack.addEventListener('change', () => { confirm.disabled = !ack.checked; });
+        confirm.addEventListener('click', async () => {
+          if (saving || !ack.checked || version !== request) return;
+          saving = true;
+          for (const control of [...fields, buttonSubmit, ack, confirm]) control.disabled = true;
+          try {
+            await api('/api/admin/project-identity/confirm', { method: 'POST', body: {
+              ...proposal, state: plan.state, resolutionState: plan.resolutionState, acknowledged: true,
+            } });
+          } catch (err) {
+            clear();
+            error.textContent = err.message;
+            return;
+          } finally {
+            saving = false;
+            for (const control of fields) control.disabled = false;
+            form.elements.replacement.disabled = retire();
+          }
+          if (body.isConnected) closeModal();
+          toast('已修復專案識別碼');
+          ident.data = null;
+          if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm();
+          loadProjectList().catch(err => toast(err.message));
+        });
       } catch (err) {
         if (version !== request || !body.isConnected) return;
         result.textContent = '';
