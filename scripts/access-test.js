@@ -189,6 +189,36 @@ try {
   assert.equal(wsRead, 1, 'check 時重讀工作區設定（別份程式剛改過也算）');
   console.log('✓ 建立專案');
 
+  // 建立專案申請（#44）：政策是 approval；規則本身要求有效的人類，can 與 check 對 AI 都回否
+  const appr = createAccess({
+    ApiError, requireHuman, nameOf: id => id, people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
+    isolatedFrom: () => false, loadProjectAdmins: async () => leaders, projectAdminsOf: pj => leaders[pj] || [],
+    loadReadOnly: async () => readOnly, isReadOnly: () => false, isPlatformAdmin: p => p.platform_role === 'admin',
+    loadWorkspace: async () => {}, membersCreateProjects: () => false, membersRequestProjects: () => true,
+  });
+  const av = await appr.load(ctx);
+  assert.ok(av.can(member, 'request_project_creation', 'workspace'), '一般成員可以申請');
+  assert.ok(!av.can(member, 'create_project', 'workspace'), '但不能直接建立');
+  assert.equal(await code(appr.check(ctx, member, 'create_project', 'workspace')), 'PROJECT_CREATION_REQUIRES_APPROVAL', '直接建立的錯誤代碼');
+  assert.equal(await code(appr.check(ctx, bot, 'create_project', 'workspace')), 'NOT_ADMIN', 'AI 直接建立維持既有拒絕');
+  for (const p of [admin, admin2, plat]) assert.ok(!av.can(p, 'request_project_creation', 'workspace'), `${p.id} 直接建立，不送申請`);
+  for (const p of [admin, admin2, plat]) assert.ok(av.can(p, 'review_project_creation_requests', 'workspace'), `${p.id} 是審核人`);
+  for (const p of [lead, member]) assert.ok(!av.can(p, 'review_project_creation_requests', 'workspace'), `${p.id}（專案管理員也一樣）不是審核人`);
+  for (const action of ['request_project_creation', 'see_own_project_creation_requests', 'withdraw_project_creation_request', 'review_project_creation_requests']) {
+    for (const ai of [bot, { ...bot, owner_id: 'admin' }]) {
+      assert.ok(!av.can(ai, action, { target: ai }), `can：AI 不能 ${action}`);
+      assert.ok(await code(appr.check(ctx, ai, action, { target: ai })), `check：AI 不能 ${action}`);
+    }
+    assert.ok(!av.can({ ...member, status: 'disabled' }, action, { target: member }), `停用的人不能 ${action}`);
+  }
+  assert.ok(av.can(member, 'see_own_project_creation_requests', { target: member }), '看自己的');
+  assert.ok(!av.can(member, 'see_own_project_creation_requests', { target: lead }), '不能看別人的');
+  assert.ok(!av.can(gone, 'see_own_project_creation_requests', { target: gone }), '被移出後看不到自己的');
+  assert.ok(!av.can(gone, 'withdraw_project_creation_request', { target: gone }), '被移出後不能撤回');
+  assert.ok(!av.can(admin, 'withdraw_project_creation_request', { target: member }), '審核人不能代撤回');
+  assert.ok(!ov.can(member, 'request_project_creation', 'workspace'), '政策不是 approval：不能申請');
+  console.log('✓ 建立專案申請');
+
   // 專案可見度：main 開放、side 私人；沒注入（上面的 access）＝審核
   assert.equal(v.visibilityOf('main'), 'review', '沒設可見度＝審核');
   const vis = { main: 'open', side: 'private' };
