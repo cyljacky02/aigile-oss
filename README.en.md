@@ -410,6 +410,7 @@ Click "Clear demo data" in the same place when done: only the demo members, card
 
 ```bash
 npm test             # all tests; npm test -- <keyword> runs only files whose name contains the keyword
+npm run verify:d1    # verify against a local D1 (wrangler --local) before a release; see docs/d1-verification.md
 node scripts/readme-shots.mjs   # retake the README screenshots (docs/images/readme/, 9 each in Chinese and English; needs Chrome or Edge)
 ```
 
