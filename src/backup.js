@@ -17,7 +17,6 @@ import { isConstraintViolation } from './db-errors.js';
 
 export const BACKUP_FORMAT = 'aigile-backup';
 export const BACKUP_FORMAT_VERSION = 1;
-const CLAIM_BACKUP_TABLES = ['project_identity_claims', 'project_identity_claimants']; // 先匯入保留值，再匯入來源
 // 匯出的資料表（順序＝匯入順序）。新增資料表時一定要放進 EXPORT_TABLES 或 SKIP_TABLES（backup-test 會檢查）
 export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'project_events', 'app_settings', 'accounts', 'participants', 'project_members', 'ai_state', 'messages', 'message_recipients', 'notifications', 'dms',
   'decision_resolutions', 'cards', 'card_log', 'card_msgs', 'suggestions', 'avatars', 'avatar_proposals',
@@ -25,12 +24,13 @@ export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'pro
   'project_creation_requests', // 建立專案申請：所有狀態原樣帶（舊備份沒有這張表＝還原後是空的；收尾時檢查待審的，見 core.js 的 restoreSteps）
   'doc_folders', 'docs', 'files', 'file_audit', 'file_chunks',
   'kb_chunks', 'kb_pages', // 知識庫：kb_chunks 是文件抽出的文字（跟著文件走），kb_pages 是 AI 寫的知識頁（一定帶）
-  ...CLAIM_BACKUP_TABLES,
   'audit_log']; // 稽核紀錄：還原時不清掉這個站原本的，備份裡的合併進來（同一筆 id 不重複），結束匯入時再加一筆 backup.restore
 const KEEP_TABLES = ['audit_log']; // 開始匯入時不清的表（稽核紀錄只能新增）
 // 不匯出：登入用的（Token、密碼雜湊、裝置、登入碼、邀請、救援連結、登入通知、失敗次數）
 // schema_migrations：每個站自己套過哪些資料庫升級，不跟著備份搬；legacy_members：升級用的暫存，轉完就是空的
-export const SKIP_TABLES = ['devices', 'invites', 'pair_codes', 'credentials', 'login_fails', 'rescue_links', 'account_notices', 'schema_migrations', 'legacy_members'];
+// 保留表由還原收尾從 projects 與 app_settings 重建，沿用舊備份格式。
+export const SKIP_TABLES = ['devices', 'invites', 'pair_codes', 'credentials', 'login_fails', 'rescue_links', 'account_notices', 'schema_migrations', 'legacy_members',
+  'project_identity_claims', 'project_identity_claimants'];
 const FILE_TABLES = ['docs', 'files', 'kb_chunks']; // 不含附件時整張不帶（kb_chunks 是文件內容，沒文件就不帶）
 const BLOB_COLS = { avatars: ['data'], avatar_proposals: ['data'], file_chunks: ['data'] };
 const DROP_COLS = { participants: ['token', 'token_expires_at'] }; // 匯入時換新：Token 隨機、已過期
@@ -160,15 +160,12 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     const stmts = [lockWorkspaceStmt(DEFAULT_WORKSPACE),
       cur ? ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, cur.raw])
         : ensureStmt(`NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?) AND ${emptyCond}`, [RESTORE_STATE_KEY, me.id]),
-      // 先清掉識別碼來源，再清保留值。收尾只採用這次匯入的爭議來源。
-      ...[...CLAIM_BACKUP_TABLES.toReversed(),
-        ...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES, ...CLAIM_BACKUP_TABLES].includes(t)),
-        'legacy_members'].map(t => [`DELETE FROM ${t}`, []])];
+      ...[...EXPORT_TABLES.filter(t => !['participants', 'accounts', ...KEEP_TABLES].includes(t)), 'legacy_members'].map(t => [`DELETE FROM ${t}`, []])];
     stmts.push(['DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM participants WHERE id = ? AND account_id IS NOT NULL)', [me.id]]); // 你的帳號留著
     stmts.push(['DELETE FROM participants WHERE id != ?', [me.id]]);
     const orig = state ? { name: state.name, code: state.code } : { name: me.name, code: me.code }; // 重來時你已經是暫時的名字：用第一次記下的
     stmts.push(['UPDATE participants SET name = ?, code = ? WHERE id = ?', [`${orig.name}#匯入中${me.id.slice(-6)}`, `R${me.id.slice(-7)}`, me.id]]);
-    stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: orig.name, code: orig.code, appVersion: body.appVersion, clearedIdentityClaims: true })]]);
+    stmts.push(["INSERT INTO app_settings (key, value) VALUES ('restore_state', ?)", [JSON.stringify({ by: me.id, at: nowIso(), name: orig.name, code: orig.code, appVersion: body.appVersion })]]);
     try { await db.batch(stmts); } catch (e) {
       if (!isAssertionFailure(e)) throw e;
       // 用新鮮資料判斷原因（只用來產生回應）
@@ -221,7 +218,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
     for (let i = 0; i < stmts.length; i += 100) {
       try { await db.batch([...samePhaseStmts(raw), ...stmts.slice(i, i + 100)]); } catch (e) {
         if (isAssertionFailure(e)) throw (await restoring())?.you ? finishingError() : notRestoring();
-        if ((ROW_CHECKS[t] || CLAIM_BACKUP_TABLES.includes(t)) && isConstraintViolation(e)) throw rowInvalid(t, null, ROW_INVALID_MSG.constraint);
+        if (ROW_CHECKS[t] && isConstraintViolation(e)) throw rowInvalid(t, null, ROW_INVALID_MSG.constraint);
         throw e;
       }
     }

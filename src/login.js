@@ -7,6 +7,7 @@
 import { hashPassword, verifyPassword, normUsername, validUsername, USERNAME_RULE, PASSWORD_MIN, PASSWORD_MAX } from './password.js';
 import { ACCESS_ROLE } from './access.js';
 import { PROJECT_ROLE, readProjectRole as readRoleOf } from './membership.js';
+import { ensureStmt } from './write-order.js';
 
 // 邀請連結有效時間可選（預設 24 小時）；照舊只能用一次
 export const INVITE_TTLS = { '15m': 15 * 60_000, '1h': 3_600_000, '24h': 86_400_000, '7d': 7 * 86_400_000 };
@@ -36,7 +37,7 @@ export function deviceLabelAs(prefix, ua = '') {
 }
 
 export function registerLogin(d) {
-  const { route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, setInitialRoles, addMemberStmts, loadMembers, enterWorkspaceStmts, projectListOf,
+  const { route, db, ApiError, invalid, readJson, randId, newToken, tokenKey, randomBytes, sha256, nowIso, iso, peopleMap, invalidatePeople, readRole, writeInvite, refreshTitles, concurrentWrite, addMemberStmts, enterWorkspaceStmts, projectListOf,
     adminOf, access, requireHuman, validateName, assertNameFree, newCode, PROJECTS, nameOf, createMessage, publicParticipant,
     groupName, humanTtlMs, failLimit = 10, captcha = { on: false } } = d;
 
@@ -63,12 +64,17 @@ export function registerLogin(d) {
   }
 
   // ---------- 裝置 ----------
-  async function issueDevice(participantId, req, label = deviceLabel(req.headers.get('user-agent') || '')) {
-    await db.run('DELETE FROM app_settings WHERE key = ?', 'relogin:' + participantId); // 登入成功：不再標「要重設登入」
-    const token = DEVICE_PREFIX + newToken();
-    const now = Date.now();
-    await db.run('INSERT INTO devices (id, participant_id, token_hash, label, created_at, last_used_at, expires_at) VALUES (?,?,?,?,?,?,?)',
-      randId('dev'), participantId, await sha256(token), label, now, now, now + humanTtlMs);
+  async function prepareDevice(participantId, req, label = deviceLabel(req.headers.get('user-agent') || '')) {
+    const token = DEVICE_PREFIX + newToken(), now = Date.now();
+    return { token, stmts: [
+      ['DELETE FROM app_settings WHERE key = ?', ['relogin:' + participantId]], // 登入成功：不再標「要重設登入」
+      ['INSERT INTO devices (id, participant_id, token_hash, label, created_at, last_used_at, expires_at) VALUES (?,?,?,?,?,?,?)',
+        [randId('dev'), participantId, await sha256(token), label, now, now, now + humanTtlMs]],
+    ] };
+  }
+  async function issueDevice(participantId, req, label) {
+    const { token, stmts } = await prepareDevice(participantId, req, label);
+    await db.batch(stmts);
     return token;
   }
 
@@ -106,13 +112,15 @@ export function registerLogin(d) {
     const row = await db.get('SELECT participant_id FROM credentials WHERE username = ?', u);
     if (row && row.participant_id !== pid) throw taken();
   }
-  async function saveCred(pid, username, password) {
+  async function credentialStmt(pid, username, password) {
     const now = Date.now();
-    const hash = password ? await hashPassword(password) : null;
-    try {
-      if (hash) await db.run('INSERT INTO credentials (participant_id, username, pwd_hash, updated_at) VALUES (?,?,?,?) ON CONFLICT(participant_id) DO UPDATE SET username = excluded.username, pwd_hash = excluded.pwd_hash, updated_at = excluded.updated_at', pid, username, hash, now);
-      else await db.run('UPDATE credentials SET username = ?, updated_at = ? WHERE participant_id = ?', username, now, pid);
-    } catch (e) { if (/UNIQUE/i.test(e.message)) throw taken(); throw e; }
+    if (!password) return ['UPDATE credentials SET username = ?, updated_at = ? WHERE participant_id = ?', [username, now, pid]];
+    return ['INSERT INTO credentials (participant_id, username, pwd_hash, updated_at) VALUES (?,?,?,?) ON CONFLICT(participant_id) DO UPDATE SET username = excluded.username, pwd_hash = excluded.pwd_hash, updated_at = excluded.updated_at',
+      [pid, username, await hashPassword(password), now]];
+  }
+  async function saveCred(pid, username, password) {
+    const [sql, args] = await credentialStmt(pid, username, password);
+    try { await db.run(sql, ...args); } catch (e) { if (/UNIQUE/i.test(e.message)) throw taken(); throw e; }
   }
   // 同帳號連錯 5 次鎖 15 分鐘；不存在的帳號一樣記、一樣鎖，不透露有沒有這個帳號
   const clearFails = u => db.run('DELETE FROM login_fails WHERE username = ?', u);
@@ -307,7 +315,8 @@ export function registerLogin(d) {
   }
   async function newInviteToken(ivId, ttlMs) {
     const token = newToken(), now = Date.now();
-    await db.run('UPDATE invites SET token_hash = ?, created_at = ?, expires_at = ?, revoked_at = NULL WHERE id = ?', await sha256(token), now, now + ttlMs, ivId);
+    const result = await db.run('UPDATE invites SET token_hash = ?, created_at = ?, expires_at = ?, revoked_at = NULL WHERE id = ? AND used_at IS NULL', await sha256(token), now, now + ttlMs, ivId);
+    if (!result.changes) throw new ApiError(400, 'INVITE_USED', '這個邀請已經用過了');
     return token;
   }
   async function inviteOut(ctx, base, id, token) {
@@ -389,7 +398,10 @@ export function registerLogin(d) {
   route('POST', '/api/invites/:id/cancel', async ({ me, ctx, params }) => {
     const iv = await myInvite(ctx, me, params.id);
     if (iv.used_at) throw new ApiError(400, 'INVITE_USED', '這個邀請已經用過了');
-    if (!iv.revoked_at) await db.run('UPDATE invites SET revoked_at = ? WHERE id = ?', Date.now(), iv.id);
+    if (!iv.revoked_at) {
+      const result = await db.run('UPDATE invites SET revoked_at = ? WHERE id = ? AND used_at IS NULL', Date.now(), iv.id);
+      if (!result.changes) throw new ApiError(400, 'INVITE_USED', '這個邀請已經用過了');
+    }
     return { invite: inviteView(await db.get('SELECT * FROM invites WHERE id = ?', iv.id), await peopleMap(ctx)) };
   });
 
@@ -516,7 +528,8 @@ export function registerLogin(d) {
         const iv = await validInvite(body.token);
         if (!iv) return null;
         const now = Date.now();
-        let pid = iv.participant_id, name = iv.name, created = false;
+        let pid = iv.participant_id, name = iv.name;
+        const newcomer = !pid;
         const rejoin = inviteKind(iv) === 'rejoin';
         if (!pid) {
           name = validateName(body.name ?? iv.name);
@@ -525,7 +538,8 @@ export function registerLogin(d) {
           const t = await db.get("SELECT * FROM participants WHERE id = ? AND status = 'active'", pid);
           if (!t || (rejoin && t.workspace_status !== 'removed')) throw gone(); // 重新加入的連結只給還在「已移出」的人用
           name = t.name;
-          if (rejoin) await signInAs(t, body, req); // 已有帳號：連結本身不讓人登入，要用原本的帳號登入後才接受
+          if (rejoin) await signInAs(t, body, req); // 已有帳號要用原本的帳號登入後才接受
+          else if (access.shutOut(t)) throw notInWorkspace();
         }
         // 選填帳號密碼（新帳號、重設登入）；三格都空＝不設，填了就要都對（在佔用邀請前檢查，錯了連結還能用）
         const any = !rejoin && [body.username, body.password, body.passwordAgain].some(x => x !== undefined && x !== null && x !== '');
@@ -533,44 +547,53 @@ export function registerLogin(d) {
         if (any) {
           cred = await newCred(body, pid);
         }
-        // 先佔用（一次性）：同時按兩次只有一次成功
-        const r = await db.run('UPDATE invites SET used_at = ? WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?', now, iv.id, now);
-        if (!r.changes) throw gone();
-        if (!pid) {
-          pid = randId('p');
-          const ts = nowIso();
-          invalidatePeople();
-          const roles = rolesOf(iv.role);
-          try {
-            // 新的工作區成員（帳號一起建），依邀請預設的專案與專案角色加入；同一批，一起成功或一起失敗
-            await db.batch([[`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at)
-              VALUES (?,?,?,?,?,?,?,?,?,?)`, [pid, 'human', name, roles ? Object.values(roles)[0] || '' : iv.role || '', await newCode(), await tokenKey(newToken()), 0, ts, ts, now]],
-            ...enterWorkspaceStmts(pid, ts), ...presetsOf(iv).flatMap(x => addMemberStmts(pid, x.project, x.role))]);
-          } catch (e) {
-            // 檢查名稱到建人之間，名稱被別人用掉（UNIQUE 失敗）→ 把邀請還回去，換個名稱就能重試（原本邀請已用掉、人沒建、回 500）
-            await db.run('UPDATE invites SET used_at = NULL WHERE id = ? AND used_at = ? AND used_by IS NULL', iv.id, now);
-            await assertNameFree(name);
-            throw e;
-          }
-          await loadMembers(true);
-          await setInitialRoles(pid, roles || Object.fromEntries(listOf(iv.projects).map(pj => [pj, iv.role || ''])));
-          created = true;
-        } else if (rejoin) {
-          // 已移出的人用原本的帳號回到工作區（工作區成員），依邀請預設的專案與專案角色加入；帳密、歷史紀錄照舊，他的 AI 維持停用
-          invalidatePeople();
-          await db.batch([["UPDATE participants SET workspace_status = 'active', workspace_role = 'member', updated_at = ? WHERE id = ? AND workspace_status = 'removed'", [nowIso(), pid]],
-            ...presetsOf(iv).flatMap(x => addMemberStmts(pid, x.project, x.role))]);
-          await loadMembers(true);
-          await setInitialRoles(pid, rolesOf(iv.role) || {});
-          created = true;
+        // 佔用邀請、建成員／回工作區、職稱、帳密和登入裝置一起提交。職稱競態失敗時整個邀請可以重試。
+        if (newcomer) pid = randId('p');
+        const at = nowIso(), created = newcomer || rejoin, roles = rolesOf(iv.role);
+        const device = await prepareDevice(pid, req);
+        // 先鎖邀請這列，跟取消或重發排隊，再檢查仍是同一個可用連結。
+        const stmts = [
+          ['UPDATE invites SET used_at = used_at WHERE id = ?', [iv.id]],
+          ensureStmt('EXISTS (SELECT 1 FROM invites WHERE id = ? AND token_hash = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?)',
+            [iv.id, iv.token_hash, Date.now()]),
+          ['UPDATE invites SET used_at = ?, used_by = ? WHERE id = ?', [now, pid, iv.id]],
+        ];
+        if (newcomer) {
+          stmts.push([`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)`, [pid, 'human', name, roles ? Object.values(roles)[0] || '' : iv.role || '', await newCode(), await tokenKey(newToken()), 0, at, at, now]],
+          ...enterWorkspaceStmts(pid, at));
+        } else {
+          const state = rejoin ? "p.workspace_status = 'removed'" : `(p.workspace_status = 'active' OR EXISTS
+            (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.platform_role = 'admin' AND a.status = 'active'))`;
+          stmts.push(ensureStmt(`EXISTS (SELECT 1 FROM participants p WHERE p.id = ? AND p.kind = 'human' AND p.status = 'active' AND ${state})`, [pid]));
+          if (rejoin) stmts.push(["UPDATE participants SET workspace_status = 'active', workspace_role = 'member', updated_at = ? WHERE id = ?", [at, pid]]);
         }
-        await db.run('UPDATE invites SET used_by = ? WHERE id = ?', pid, iv.id);
-        if (cred) await saveCred(pid, cred.username, cred.password);
-        // 通知邀請的管理員「X 已加入」
+        if (created) {
+          const presets = presetsOf(iv);
+          if (presets.length) stmts.push(ensureStmt(`(SELECT COUNT(*) FROM projects WHERE archived = 0 AND deleted_at IS NULL AND id IN (SELECT value FROM json_each(?))) = ?`,
+            [JSON.stringify(presets.map(x => x.project)), presets.length]));
+          stmts.push(...presets.flatMap(x => addMemberStmts(pid, x.project, x.role)));
+        }
+        if (cred) stmts.push(await credentialStmt(pid, cred.username, cred.password));
+        stmts.push(...device.stmts);
+        const titles = created ? roles || (newcomer ? Object.fromEntries(listOf(iv.projects).map(pj => [pj, iv.role || ''])) : {}) : {};
+        let done;
+        try { done = await writeInvite(pid, stmts, titles); }
+        catch (e) {
+          if (newcomer) await assertNameFree(name);
+          if (cred) await assertUsernameFree(cred.username, pid);
+          throw e;
+        }
+        if (!done) {
+          if (!(await validInvite(body.token))) throw gone();
+          if (rejoin && (await db.get('SELECT workspace_status FROM participants WHERE id = ?', pid))?.workspace_status !== 'removed') throw gone();
+          throw concurrentWrite();
+        }
         invalidatePeople();
         const c2 = {};
         const people = await peopleMap(c2);
         const p = people.get(pid), inviter = people.get(iv.created_by);
+        await refreshTitles();
         if (inviter && inviter.status === 'active') {
           const proj = listOf(iv.projects);
           const text = created
@@ -579,7 +602,7 @@ export function registerLogin(d) {
           await createMessage(c2, p, { text, requestId: `invite_${iv.id}_${now}`, recipientIds: [inviter.id], project: proj.length === 1 ? proj[0] : 'all' }, { systemNotice: true }).catch(e => console.error('join notice failed:', e.message));
         }
         Object.assign(ctx, c2);
-        return p;
+        return { participant: p, token: device.token };
       },
     },
     // 6 位數配對碼：已登入的裝置產生，5 分鐘、一次性
@@ -657,6 +680,7 @@ export function registerLogin(d) {
       throw new ApiError(400, 'LOGIN_FAILED', '帳號密碼或登入碼不對，或不是這個邀請的帳號。', { captchaRequired: needCaptcha(req) });
     }
   }
+  const notInWorkspace = () => new ApiError(403, 'NOT_WORKSPACE_MEMBER', '你已不是這個工作區的成員，要回來請找工作區管理員重新邀請你。');
   const FAIL_MSG = {
     password: '帳號或密碼不對。',
     rescue: '這個救援連結已失效（15 分鐘、只能用一次）。請聯絡管理員。',
@@ -670,13 +694,14 @@ export function registerLogin(d) {
     guard(req);
     const body = await readJson(req);
     if (needCaptcha(req)) await captcha.verify(body.turnstileToken, req);
-    const p = await prov.verify(body, ctx, req);
+    const verified = await prov.verify(body, ctx, req);
+    const p = params.method === 'invite' ? verified?.participant : verified;
     if (!p) { failed(req); throw new ApiError(400, params.method === 'invite' ? 'INVITE_INVALID' : params.method === 'rescue' ? 'RESCUE_INVALID' : 'LOGIN_FAILED', FAIL_MSG[params.method], { captchaRequired: needCaptcha(req) }); }
     // 已移出工作區：帳號還在（沒停用），但進不了這個工作區（平台管理員除外）
-    if (access.shutOut(p)) throw new ApiError(403, 'NOT_WORKSPACE_MEMBER', '你已不是這個工作區的成員，要回來請找工作區管理員重新邀請你。');
+    if (access.shutOut(p)) throw notInWorkspace();
     if (params.method === 'rescue') await signOutOthers(p.id, null); // 救援＝帳號可能被別人拿走：先把別人的登入全部收掉
     const label = prov.device ? deviceLabelAs(prov.device, req.headers.get('user-agent') || '') : undefined;
-    const token = await issueDevice(p.id, req, label);
+    const token = params.method === 'invite' ? verified.token : await issueDevice(p.id, req, label);
     if (prov.notice) await notice(p.id, prov.notice, label).catch(e => console.error('notice failed:', e.message));
     return { token, participant: publicParticipant(p, await peopleMap(ctx)) };
   }, { open: true });

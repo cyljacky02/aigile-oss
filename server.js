@@ -28,7 +28,7 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');
 
 // 資料庫：沒設 DATABASE_URL＝SQLite（DATA_DIR/switch.db，照舊）；設了 postgres://…＝Postgres（要先 npm install）
-// 測試：AIGILE_TEST_PG_URL（只准本機）＋測試模式＝每個 DATA_DIR 用自己的 schema，SQLite 與 Postgres 跑同一套測試
+// 測試：AIGILE_TEST_PG_URL（只准本機）＋測試模式＝每次 run-all 的各個 DATA_DIR 用自己的 schema，SQLite 與 Postgres 跑同一套測試
 const legacyProjects = process.env.AIGILE_TEST_PROJECTS === '1'; // 測試才先建兩個專案
 const usePg = !!(process.env.DATABASE_URL || process.env.AIGILE_TEST_PG_URL);
 let db;

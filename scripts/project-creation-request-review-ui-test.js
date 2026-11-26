@@ -41,11 +41,15 @@ try {
   const groupOf = id => js(`(() => { let e = document.querySelector('.hub-todo [data-hub-todo="r:${id}"]'); while (e && !e.classList.contains('ht-group')) e = e.previousElementSibling; return e?.textContent.trim() || ''; })()`);
   assert.equal(await groupOf(alpha.id), '工作區', '建立專案申請分在「工作區」');
   assert.equal(await text('.hub-todo .ht-head .ps-count'), '3', '「要你處理」的數字＝3 份待審');
+  await login(boss.token, '/p/main/inbox');
+  await until(() => js("!!document.querySelector('.work-head') && document.title.startsWith('(3)')"), 10000, '專案內的「要你處理」已載入');
+  assert.equal(await js("!!document.querySelector('.wpcr')"), false, '工作區的申請不出現在專案內');
   await login(boss.token, '/cross/inbox');
   await until(() => js("!!document.querySelector('.wpcr')"), 10000, '「要你處理」的建立專案申請');
   assert.equal(await text('.wpcr .wsugg-head h3'), '建立專案申請');
   assert.equal(await text('.wpcr .wcount'), '3', '待審總數');
   assert.equal(await js("document.querySelectorAll('.wpcr [data-pcr-rev-row]').length"), 3);
+  assert.match(await text(`[data-pcr-rev-row="${alpha.id}"]`), /Alpha.*工作區 · 陳大文.*Alpha 的原因/, '列出工作區範圍與申請摘要');
 
   // ---------- 審核視窗：內容、預估值、核准並建立 ----------
   await click(`[data-pcr-review="${alpha.id}"]`);

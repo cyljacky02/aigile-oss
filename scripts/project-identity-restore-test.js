@@ -53,6 +53,8 @@ try {
   const readClaims = () => db.all('SELECT namespace, value FROM project_identity_claims ORDER BY namespace, value');
   const oldClaims = await readClaims();
   assert.ok(oldClaims.length > 0);
+  const exported = (await call(me.token, '/api/admin/backup')).body;
+  assert.ok(exported.tables.every(t => !t.name.startsWith('project_identity_claim')), '備份沿用舊設定');
   let r = await call(me.token, '/api/admin/restore/begin', 'POST', { format: backup.format, formatVersion: backup.formatVersion, appVersion: backup.appVersion });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   for (const [table, rows] of Object.entries(backup.tables)) {
@@ -67,7 +69,7 @@ try {
   assert.deepEqual([r.status, r.body.error?.code], [503, 'RESTORE_UNFINISHED'], JSON.stringify(r.body));
   assert.ok(await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'"), '維持還原中');
   assert.deepEqual(await stored(A), [undefined, undefined], '沒有寫入一半');
-  assert.deepEqual(await readClaims(), [], '寫入中途失敗不留下部分保留表，也不帶回目標站原有的資料');
+  assert.deepEqual(await readClaims(), oldClaims, '寫入中途失敗後保留上一份完整的保留表');
   failReady = false;
   r = await call(me.token, '/api/admin/restore/finish', 'POST', {});
   assert.equal(r.status, 200, '再按一次收尾：' + JSON.stringify(r.body));
