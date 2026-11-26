@@ -2370,10 +2370,10 @@ ${ending}`;
   // 每次都用新鮮資料算：改掉其中一個專案的名稱、代號或網址英文名後就不會再列
   route('GET', '/api/admin/project-identity', async ({ ctx, me }) => {
     await access.check(ctx, me, 'manage_platform', 'platform', { what: '看專案識別碼的診斷' });
-    const { normalized, rows, shown, conflicts } = await projectIdentity.diagnose();
+    const { normalized, rows, shown, conflicts, claims } = await projectIdentity.diagnose();
     const byId = new Map(rows.map(r => [r.id, r]));
     const info = id => { const r = byId.get(id); return { id, name: r?.name ?? null, code: shown.codes[id] ?? null, slug: shown.slugs[id] ?? null, archived: !!Number(r?.archived), deleted: !!r?.deleted_at }; };
-    return { normalized, kinds: CONFLICT_KINDS, conflicts: conflicts.map(c => ({ kind: c.kind, value: c.value, projects: c.projects.map(info) })) };
+    return { normalized, kinds: CONFLICT_KINDS, conflicts: conflicts.map(c => ({ kind: c.kind, value: c.value, projects: c.projects.map(info) })), claims };
   });
   route('PUT', '/api/platform/settings', async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'manage_platform', 'platform', { what: '改平台設定' });
@@ -4651,7 +4651,7 @@ ${ending}`;
       { name: '成員資料轉換', run: () => membership.migrateLegacy({ finishingRestore: true }) }, // 舊版備份：成員資料匯入後轉到新的成員資料表
       { name: '稽核紀錄轉換', run: () => auditLog.migrateLegacy({ finishingRestore: true }) }, // 舊的專案刪除紀錄轉進稽核紀錄
       // 專案網址英文名與代號存進資料庫：不看「已正規化」的標記，一定照備份的資料重算（舊備份沒有存的值照舊規則推導，畫面上的值不變）
-      { name: '專案識別碼正規化', run: () => projectIdentity.normalize({ finishingRestore: true }) },
+      { name: '專案識別碼正規化', run: ({ raw }) => projectIdentity.normalize({ restoreRaw: raw }) },
       // 待審的建立專案申請：成員轉換之後才看得到正確的成員資格與政策。不再成立的依固定順序取消，有效的保留；不通知、不核准、不建立專案。
       // 取消數跟取消同一批記進 restore_state（累加）：稽核寫入失敗重試時，第一次已取消的不會被數成零
       { name: '檢查待審的建立專案申請', run: async ({ state, keepStmts }) => {

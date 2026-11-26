@@ -138,6 +138,7 @@ try {
   const schema = fs.readFileSync(path.join(repoRoot, 'src', 'schema.sql'), 'utf8');
   const files = listMigrations(path.join(repoRoot, 'migrations'));
   const PCR_MIGRATION = files.find(f => /_project_creation_requests\.sql$/.test(f.name))?.name;
+  const CLAIMS_MIGRATION = '016_project_identity_claims.sql';
   const migrate = (d, label) => {
     const tables = d.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('participants', 'schema_migrations')").map(r => r.name);
     const fresh = !tables.includes('participants');
@@ -166,13 +167,14 @@ try {
     assert.match(fresh.indexes.find(i => i.name === 'idx_pcr_pending_name').sql, /WHERE state = 'pending'/, '同名待審是部分唯一索引');
     assert.match(A.query("SELECT sql FROM sqlite_master WHERE name = 'project_creation_requests'")[0].sql, /CHECK \(state IN/, '有 CHECK 約束');
     // 模擬 015 之前的舊 D1：拿掉申請資料表與它的升級紀錄，再升級一次
-    A.exec(`DROP TABLE project_creation_requests; DELETE FROM schema_migrations WHERE name = '${PCR_MIGRATION}'`, { label: '模擬舊 D1' });
+    A.exec(`DROP TABLE project_identity_claimants; DROP TABLE project_identity_claims; DROP TABLE project_creation_requests;
+      DELETE FROM schema_migrations WHERE name IN ('${PCR_MIGRATION}', '${CLAIMS_MIGRATION}')`, { label: '模擬舊 D1' });
     const up = migrate(A, '舊 D1');
-    assert.deepEqual(up.plan.apply.map(f => f.name), [PCR_MIGRATION], '舊 D1 只套建立專案申請的升級');
+    assert.deepEqual(up.plan.apply.map(f => f.name), [PCR_MIGRATION, CLAIMS_MIGRATION], '舊 D1 套用申請及識別碼保留表的升級');
     assert.deepEqual(structure(A), fresh, '升級後的表、欄位、索引跟全新建的一樣');
     const again = migrate(A, '重跑');
     assert.deepEqual(again.plan.apply, [], '重跑沒有要套的升級（可安全重跑）');
-    note(`升級 ${files.length} 個；舊 D1 套 ${PCR_MIGRATION}`);
+    note(`升級 ${files.length} 個，舊 D1 套 ${PCR_MIGRATION} 與 ${CLAIMS_MIGRATION}`);
   });
   if (!migrated) blocked = '資料庫升級沒過';
 
@@ -456,6 +458,12 @@ try {
     const diag = ok(await a.call(boss.token, '/api/admin/project-identity'), '診斷');
     assert.equal(diag.normalized, true);
     assert.ok(diag.conflicts.some(c => c.kind === 'duplicate_slug' && c.value === 'legacy-site'), '診斷列出既有的網址英文名衝突：' + JSON.stringify(diag.conflicts));
+    assert.deepEqual(diag.claims, { status: 'stale', disputes: [{ namespace: 'slug', value: 'legacy-site', claimants: [
+      { projectId: 'p_legacy_a', source: 'slug', rawValue: 'legacy-site' }, { projectId: 'p_legacy_b', source: 'slug', rawValue: 'legacy-site' },
+    ] }] }, '保留所有爭議來源，建立專案的舊寫入後標為過時');
+    assert.equal(await a.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE project_id = 'p_legacy_a' AND source IN ('historical_code', 'project_id')"), 2);
+    const duplicate = await a.batch([["INSERT INTO project_identity_claims (namespace, value) VALUES ('slug', 'legacy-site')", []]]);
+    assert.match(duplicate.error, /UNIQUE constraint failed/i, JSON.stringify(duplicate));
     is(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 舊代號', code: 'OLDL' }), 409, 'CODE_TAKEN', '舊代號別名也算占用');
     is(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 撞正規化', code: stored['pcode:p_legacy_b'] }), 409, 'CODE_TAKEN', '正規化寫入的代號也算占用');
     note(`舊專案代號：${stored['pcode:p_legacy_a']}、${stored['pcode:p_legacy_b']}；既有衝突 ${diag.conflicts.length} 處`);
@@ -553,6 +561,12 @@ try {
       ok(within(`匯入 ${t}`, await b.call(admin.token, '/api/admin/restore/rows', 'POST', { table: t, rows: rows.slice(i, i + 1000) })), '匯入 ' + t);
       if (!rows.length) break;
     }
+    const claimsBefore = await b.q('SELECT namespace, value FROM project_identity_claims ORDER BY namespace, value');
+    await b.fault({ re: /^INSERT INTO project_identity_claimants /.source, mode: 'json', times: 1 });
+    is(await b.call(admin.token, '/api/admin/restore/finish', 'POST', {}), 503, 'RESTORE_UNFINISHED', '保留表寫入後失敗');
+    assert.equal((await b.faultStatus()).hits, 1);
+    assert.deepEqual(await b.q('SELECT namespace, value FROM project_identity_claims ORDER BY namespace, value'), claimsBefore, '新保留表整批回復');
+    assert.equal(await b.n("SELECT COUNT(*) AS n FROM app_settings WHERE key = 'project_identity_ready'"), 0, '沒有留下完成標記');
     const fin = within('還原收尾', await b.call(admin.token, '/api/admin/restore/finish', 'POST', {}));
     assert.equal(fin.status, 200, '收尾：' + fin.text.slice(0, 300));
     assert.equal(fin.body.cancelledProjectCreationRequests, 3, '收尾回應：因還原而取消 3 份');
@@ -568,6 +582,7 @@ try {
     assert.equal(Number(audit[0].count), 3, '稽核記下因還原而取消的數量');
     assert.ok(await b.one("SELECT 1 AS x FROM app_settings WHERE key = 'project_identity_ready'"), '收尾後已正規化');
     assert.ok(await b.one("SELECT value FROM app_settings WHERE key = 'pcode:p_legacy_a'"), '拿掉的代號在收尾時重新存進資料庫');
+    assert.equal(await b.n("SELECT COUNT(*) AS n FROM project_identity_claimants WHERE namespace = 'slug' AND value = 'legacy-site' AND source = 'slug'"), 2, '重建爭議識別碼及來源');
     assert.equal(await b.n("SELECT COUNT(*) AS n FROM app_settings WHERE key = 'restore_state'"), 0, '不再是還原中');
     // 還原後照常運作：（登入已改掛到備份裡的平台管理員）有效的那份可以核准
     const ap = await b.call(admin.token, `/api/project-creation-requests/${keep.id}/approve`, 'POST', {});

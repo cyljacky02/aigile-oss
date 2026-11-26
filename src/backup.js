@@ -28,7 +28,9 @@ export const EXPORT_TABLES = ['workspaces', 'projects', 'project_statuses', 'pro
 const KEEP_TABLES = ['audit_log']; // 開始匯入時不清的表（稽核紀錄只能新增）
 // 不匯出：登入用的（Token、密碼雜湊、裝置、登入碼、邀請、救援連結、登入通知、失敗次數）
 // schema_migrations：每個站自己套過哪些資料庫升級，不跟著備份搬；legacy_members：升級用的暫存，轉完就是空的
-export const SKIP_TABLES = ['devices', 'invites', 'pair_codes', 'credentials', 'login_fails', 'rescue_links', 'account_notices', 'schema_migrations', 'legacy_members'];
+// 保留表由還原收尾從 projects 與 app_settings 重建，沿用舊備份格式。
+export const SKIP_TABLES = ['devices', 'invites', 'pair_codes', 'credentials', 'login_fails', 'rescue_links', 'account_notices', 'schema_migrations', 'legacy_members',
+  'project_identity_claims', 'project_identity_claimants'];
 const FILE_TABLES = ['docs', 'files', 'kb_chunks']; // 不含附件時整張不帶（kb_chunks 是文件內容，沒文件就不帶）
 const BLOB_COLS = { avatars: ['data'], avatar_proposals: ['data'], file_chunks: ['data'] };
 const DROP_COLS = { participants: ['token', 'token_expires_at'] }; // 匯入時換新：Token 隨機、已過期
@@ -243,7 +245,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
   // 收尾的固定順序（每一步都要能重跑；任何一步失敗都維持「還原中」、回 503 RESTORE_UNFINISHED，再按一次從第 1 步重跑）：
   //   1. 成員與帳號轉換：登入改掛、其他人要重設登入，跟「已轉移」的記號同一批（重跑時已轉移就略過）；Postgres 接續流水號
   //   2. 收尾修整步驟 restoreSteps（依序；這時還在還原中，其他會動到共同不變量的寫入都被擋下）。
-  //      每一步拿到 { state, keepStmts }：state 是目前的 restore_state（前一次收尾記下的結果也在）；keepStmts(patch) 回把 patch 記進 restore_state 的語句，
+  //      每一步拿到 { state, raw, keepStmts }：state 是目前的 restore_state（前一次收尾記下的結果也在）；keepStmts(patch) 回把 patch 記進 restore_state 的語句，
   //      放進那一步自己的那一批（跟那一步的修改一起提交或一起不做）。重試時不能從現況重算的結果（例：這次還原取消了幾份申請）就這樣跨次保留
   //   3. 寫入 backup.restore 稽核（含檢查待審申請時因還原而取消的數量），跟解除「還原中」同一批（稽核只會有一筆）
   //   4. 清快取
@@ -259,7 +261,7 @@ export function registerBackup({ route, db, ApiError, invalid, readJson, readBod
         // 斷言 restore_state 沒被別的收尾改過，再寫入新的值（同時按兩次收尾：後提交的那批整批不做）
         const keepStmts = patch => [ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, cur.raw]),
           ['UPDATE app_settings SET value = ? WHERE key = ?', [JSON.stringify({ ...cur.st, ...patch }), RESTORE_STATE_KEY]]];
-        if ((await step.run({ state: cur.st, keepStmts })) === false) throw new Error(`還原收尾的「${step.name}」沒有做完`);
+        if ((await step.run({ state: cur.st, raw: cur.raw, keepStmts })) === false) throw new Error(`還原收尾的「${step.name}」沒有做完`);
       }
       state = (await readState())?.st || state;
       // 檢查待審申請時因還原而取消的數量：記在 restore_state（第一次收尾已取消、之後重試的不會被數成零）

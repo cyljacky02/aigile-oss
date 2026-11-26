@@ -31,6 +31,12 @@ try {
   await until(() => js('window.__identLoads > 0'), 10000, '頁面讀完專案識別碼的診斷');
   assert.ok(!(await js("!!document.querySelector('.ident-card')")), '沒有衝突就不顯示');
   console.log('✓ 沒有衝突就不顯示');
+
+  // 既有的網址英文名以及改網址英文名之前的專案 id 書籤都能開同一個專案。
+  for (const token of ['second', '第二專案']) {
+    await login(boss.token, `/p/${encodeURIComponent(token)}/messages`);
+    await until(() => js("document.querySelector('#crumbs')?.textContent.includes('第二專案')"), 10000, `開啟書籤 ${token}`);
+  }
   console.log('project-identity-ui-test：全部通過');
 } catch (e) {
   console.error('project-identity-ui-test 失敗：', e.stack || e.message);
