@@ -1690,7 +1690,7 @@ ${ending}`;
   const restoringError = () => new ApiError(503, 'RESTORING', '正在還原備份，這次沒有存；還原完成後再試。', { retryAfter: 5 });
   const writeInWorkspace = list => writeOrdered(db, [lockWorkspaceStmt(DEFAULT_WORKSPACE), ...list], { busy: busyError, restoring: restoringError });
   // 成員資格的寫入（升降管理員、停用／恢復帳號、移出、離開）：list 的第一句就是工作區列鎖（membership 的 *Stmts 自己帶），
-  // 跟 writeInWorkspace 一樣在鎖之後斷言不在還原中（503 RESTORING）、忙磌時整批重試；交易內斷言不成立回 false（什麼都沒寫）
+  // 跟 writeInWorkspace 一樣在鎖之後斷言不在還原中（503 RESTORING）、忙碌時整批重試；交易內斷言不成立回 false（什麼都沒寫）
   const writeMembership = list => writeOrdered(db, list, { busy: busyError, restoring: restoringError });
   // 建立專案申請的系統取消（#46；GLOSSARY「取消」）：掛在觸發它的操作那一批（政策切走、移出、離開、停用帳號），取消交易內實際待審的申請。
   // 觸發的操作失敗（最後一位管理員保護…）整批回復，就沒有任何申請被取消。沒有公開的取消 API。
