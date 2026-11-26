@@ -1,7 +1,10 @@
 // 驗收測試（ADR 0004、0005）：共同不變量的寫入在交易內重新確認前提，交易前讀到的資料不算數
 // 做法：攔下第一個請求的寫入（db.batch），先讓別的操作整個做完、或直接改資料，再放行第一個（SQLite、D1 一次只做一個交易，這就是會發生的交錯）。
 // - 直接建立：交易前有權建立，寫入前政策剛改成「成員申請」或執行者剛被降級 → 不建立
-// SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres（交錯一樣是先後執行）。用法：node scripts/workspace-write-guards-test.js
+// - 改建立專案政策：操作者剛被降級 → 不存；只有這個政策改變才加鎖、才受還原中阻擋
+// - 刪除、復原、封存、永久清除、示範資料清除、改網址英文名：工作區列鎖在前，交易內用現況確認
+// SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres（交錯一樣是先後執行；另外用兩個資料庫連線真的讓政策切換與直接建立同時開著）。
+// 用法：node scripts/workspace-write-guards-test.js
 import './test-home.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,16 +12,18 @@ import path from 'node:path';
 import assert from 'node:assert';
 import { createApp } from '../src/core.js';
 import { dbStorage } from '../src/storage-db.js';
-import { openTestDb } from './test-db.js';
+import { openTestDb, TEST_PG_URL } from './test-db.js';
 import { appCaller } from './test-call.js';
 import { adminSession } from './test-admin.js';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigile-wguard-'));
 const db = await openTestDb(path.join(dataDir, 'switch.db'));
 // before：下一個含有符合 re 那句的寫入送出前，先執行 run()（只作用一次）
-let before = null;
+// pause：Postgres 在符合 re 的那句之後停住（等 advisory lock），等測試放行（只作用一次）
+let before = null, pause = null;
 const appDb = { ...db, batch: async stmts => {
   if (before && stmts.some(([sql]) => before.re.test(sql))) { const b = before; before = null; await b.run(stmts); }
+  if (pause && stmts.some(([sql]) => pause.re.test(sql))) { const p = pause; pause = null; stmts = stmts.flatMap(st => (p.re.test(st[0]) ? [st, [`SELECT pg_advisory_xact_lock(${p.key})`, []]] : [st])); }
   return db.batch(stmts);
 } };
 const app = createApp({ db: appDb, storage: dbStorage(db), docText: '', config: { openJoin: '1', rateLimitPerMin: '100000', teamCacheMs: '0', joinLimitPerHour: '100000' } });
@@ -197,6 +202,36 @@ try {
     is(r1, 409, 'LAST_PROJECT', '寫入前剩下它是唯一未封存的');
     assert.equal(await n('SELECT COUNT(*) AS n FROM projects WHERE archived = 0 AND deleted_at IS NULL'), 1, '留一個未封存的專案');
     console.log('✓ 同時封存最後兩個專案：至少留一個');
+  }
+
+  // Postgres：兩個連線真的同時開著。政策切換拿著工作區列鎖停在提交前，成員的直接建立被鎖擋住；政策提交後，建立那一批的斷言看到新政策 → 403
+  if (TEST_PG_URL) {
+    const { default: pg } = await import('pg');
+    const ctl = new pg.Client({ connectionString: TEST_PG_URL });
+    await ctl.connect();
+    try {
+      const until = async (fn, ms, label) => { const end = Date.now() + ms; let v; while (!(v = await fn())) { if (Date.now() > end) throw new Error('等太久：' + label); await new Promise(r => setTimeout(r, 25)); } return v; };
+      // 只看被指定連線擋住的等待（同一個資料庫裡別的測試也可能在等鎖）
+      const waiter = (like, blocker) => ctl.query("SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE $1 AND $2 = ANY(pg_blocking_pids(pid))", [like, blocker]).then(r => r.rows[0]?.pid ?? null);
+      const me = (await ctl.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      ok(await setPolicy('members'), '政策：所有成員');
+      ok(await call(chen.token, '/api/me'), '先讀一次（在線時間先寫掉）');
+      const key = 4_236_900_900;
+      await ctl.query('SELECT pg_advisory_lock($1)', [key]);
+      pause = { re: /^UPDATE workspaces SET create_projects/, key };
+      const p1 = setPolicy('approval');
+      const first = await until(() => waiter('%pg_advisory_xact_lock%', me), 10000, '政策切換停在交易中');
+      let done2 = false;
+      const p2 = call(chen.token, '/api/projects', 'POST', { name: '同時切政策' }).finally(() => { done2 = true; });
+      await until(async () => done2 || await waiter('%UPDATE workspaces%', first), 10000, '直接建立被工作區列鎖擋住');
+      const blocked = !done2;
+      await ctl.query('SELECT pg_advisory_unlock($1)', [key]);
+      ok(await p1, '政策切換');
+      assert.ok(blocked, '直接建立要等政策切換做完');
+      is(await p2, 403, 'PROJECT_CREATION_REQUIRES_APPROVAL', '政策先提交：直接建立擋下');
+      assert.equal(await named('同時切政策'), 0, '沒有建立專案');
+      console.log('✓ Postgres：政策切換與直接建立同時進行，建立等政策提交後 403');
+    } finally { await ctl.end(); }
   }
 
   console.log('workspace-write-guards-test：全部通過');
