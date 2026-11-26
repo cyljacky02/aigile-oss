@@ -16,6 +16,7 @@
 //     自動產生的網址英文名或代號因競態被用掉：重讀重算整批重試（次數有限）；指定的值被用掉、同名：409，不改值
 //   creation.stmts({ id, at, actor, beneficiary, method, requestId, spec: { name, visibility, slug, code, statuses }, eventText? }) → 這一批的斷言與寫入（不含鎖）
 //     給自己管寫入與重試的呼叫端用（新站預設專案、示範資料）
+//   creation.preview({ name, slug|null, code|null }) → { slug, code, slugEstimated, codeEstimated, conflicts }：審核畫面的預估值與衝突欄位（#45）
 import { ensureStmt } from './write-order.js';
 import { slugFreeCond, codeFreeCond, ensureCond, holdsNow } from './project-identity.js';
 import { DEFAULT_WORKSPACE } from './membership.js';

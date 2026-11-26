@@ -10,7 +10,8 @@
 //     撤回（這裡）、核准與拒絕（#45）都走它；放進呼叫端那一批（第一句工作區列鎖之後）
 //   cancelStmts({ workspaceId, requesterId?, cancelCode, at })：取消（系統依規則，不是使用者動作，沒有公開 API）。
 //     政策切走、移出、離開、停用帳號（#46）、還原後檢查（#47）在自己的交易裡呼叫；pendingCountSql 給稽核的 countOf 與預覽數字
-//   activeMemberCond／directCreateCond／policyCond：交易內斷言的條件（核准要斷言申請人仍是有效成員、政策仍是 approval）
+//   activeMemberCond／directCreateCond／policyCond／reviewerCond／pendingCond：交易內斷言的條件（核准要斷言申請人仍是有效成員、政策仍是 approval、審核人仍有管理權）
+//   核准與拒絕（#45）：POST …/:id/approve、…/:id/reject；核准用 creation.create（src/project-create.js）在同一批建立專案
 //   registerProjectCreationRequests 回傳的 visibleTo(v, me, row)、view(row, ...)：審核清單與單筆的審核人欄位（#45）沿用同一套可見範圍與輸出
 //
 // 交易（ADR 0005）：送出與撤回都在 writeInWorkspace（第一句工作區列鎖 → 不在還原中 → 斷言 → 寫入）；即時事件在提交後才發。
