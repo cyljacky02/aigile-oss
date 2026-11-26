@@ -1819,7 +1819,7 @@
     for (const { list, last: n } of dmGroups((work.notes || []).filter(x => x.dm))) items.push({ p: n.project ?? null, kind: n.sender?.system ? '通知' : '私訊', title: (n.sender?.system ? `平台通知：${oneLine(dmGist(n.preview, true), 60)}` : `${n.sender?.name || ''} 回你了`) + (list.length > 1 ? `（${list.length} 則）` : ''), key: 'n:' + n.notificationId }); // PLAT-388 E：連發的合併成一項
     for (const j of (work.joins || []).filter(j => dueForMe(j.project, j.createdAt))) items.push({ p: myProjects().includes(j.project) ? j.project : null, kind: '申請', title: `${j.name} 申請加入${j.projectName}`, key: 'j:' + j.id }); // PLAT-381 先給 leader
     for (const k of (work.skillRev || []).filter(k => dueForMe(k.project, k.uploadedAt))) items.push({ p: myProjects().includes(k.project) ? k.project : null, kind: '核准', title: `技能待核准：${k.name} v${k.version}`, key: 'k:' + k.skillId }); // PLAT-381
-    for (const r of work.pcrRev?.items || []) items.push({ p: null, kind: '建立專案', title: `${r.requesterName || ''} 申請建立「${r.name}」`, key: 'r:' + r.id }); // 建立專案申請（#45）：工作區層，不屬於任何專案
+    for (const r of work.pcrRev?.items || []) items.push({ p: null, ws: true, kind: '建立專案', title: `${r.requesterName || ''} 申請建立「${r.name}」`, key: 'r:' + r.id }); // 建立專案申請（#45）：工作區層，不屬於任何專案（「要你處理」分在「工作區」）
     return items.filter(x => !x.p || myProjects().includes(x.p));
   }
   const todoInView = (x, v = projectView()) => v === 'hub' || (v === 'cross' ? !x.p : x.p === v);
@@ -4210,11 +4210,11 @@
   const hubTodoItems = () => todoItems(); // 跟數字同一個來源
   function hubTodoHtml(inModal = false) {
     const items = hubTodoItems();
-    const groups = [...myProjects(), null].map(p => [p, items.filter(x => x.p === p)]).filter(([, l]) => l.length);
+    const groups = [...myProjects().map(p => [p, items.filter(x => x.p === p)]), [null, items.filter(x => !x.p && !x.ws)], ['ws', items.filter(x => x.ws)]].filter(([, l]) => l.length); // ws＝工作區層（建立專案申請）
     const cls = { 決策: 'dec', 需確認: 'ask', 建議: 'sg', 驗收: 'ver', 回覆: 'ask', 私訊: 'sg', 通知: 'sg', 申請: 'ver', 核准: 'ver', 建立專案: 'ver' };
     return `${inModal ? '' : `<div class="ht-head"><h3>要你處理</h3>${items.length ? `<span class="ps-count">${items.length}</span>` : ''}<span class="grow"></span><span class="muted small">各專案彙總</span></div>`}
-      ${groups.length ? groups.map(([p, l]) => `<div class="ht-group">${esc(p ? projName(p) : '跨專案頻道')}</div>
-        ${l.map(x => `<button type="button" class="ht-row" data-hub-todo="${esc(x.key)}" data-hub-proj="${esc(p || 'cross')}"><span class="ht-tag ${cls[x.kind]}">${x.kind}</span><span class="ht-title">${esc(x.title)}</span><span class="ht-go" aria-hidden="true">›</span></button>`).join('')}`).join('')
+      ${groups.length ? groups.map(([p, l]) => `<div class="ht-group">${esc(p === 'ws' ? '工作區' : p ? projName(p) : '跨專案頻道')}</div>
+        ${l.map(x => `<button type="button" class="ht-row" data-hub-todo="${esc(x.key)}" data-hub-proj="${esc(p && p !== 'ws' ? p : 'cross')}"><span class="ht-tag ${cls[x.kind]}">${x.kind}</span><span class="ht-title">${esc(x.title)}</span><span class="ht-go" aria-hidden="true">›</span></button>`).join('')}`).join('')
         : '<p class="muted small ht-empty">目前沒有要你處理的事。</p>'}
       <p class="muted small ht-note">點一項＝進那個專案的「要你處理」並打開那一項；選項、回覆都在專案裡做，這裡只列、不在這裡決定。</p>`;
   }

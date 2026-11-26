@@ -144,12 +144,20 @@ const ROW_SHAPE = {
   [PCR_STATE.WITHDRAWN]: r => filled(r.ended_at) && filled(r.ended_by) && r.ended_by === r.requester_id && none(r.project_id) && none(r.reject_reason) && none(r.cancel_code),
   [PCR_STATE.CANCELLED]: r => filled(r.ended_at) && none(r.ended_by) && none(r.project_id) && none(r.reject_reason) && PCR_CANCEL_CODES.includes(r.cancel_code),
 };
+// 說明的句型放在表裡（英文字典整句比對，{0} 是欄位名稱或值）
+const ROW_PROBLEM_MSG = {
+  missing: '缺少必要欄位：{0}',
+  state: '不認得的狀態：{0}',
+  visibility: '不認得的可見度：{0}',
+  shape: '狀態 {0} 的結束時間、處理人、專案、拒絕理由或取消原因不合',
+};
+const problem = (k, v) => ROW_PROBLEM_MSG[k].replace('{0}', String(v));
 export function restoreRowProblem(r) {
   const missing = ['id', 'workspace_id', 'requester_id', 'request_id', 'name', 'reason', 'created_at'].filter(k => !filled(r[k]));
-  if (missing.length) return `缺少必要欄位：${missing.join('、')}`;
-  if (!PCR_STATES.includes(r.state)) return `不認得的狀態：${r.state ?? '（空）'}`;
-  if (r.visibility !== undefined && !['open', 'review', 'private'].includes(r.visibility)) return `不認得的可見度：${r.visibility}`;
-  if (!ROW_SHAPE[r.state](r)) return `狀態 ${r.state} 的結束時間、處理人、專案、拒絕理由或取消原因不合`;
+  if (missing.length) return problem('missing', missing.join(', '));
+  if (!PCR_STATES.includes(r.state)) return problem('state', r.state ?? 'null');
+  if (r.visibility !== undefined && !['open', 'review', 'private'].includes(r.visibility)) return problem('visibility', r.visibility);
+  if (!ROW_SHAPE[r.state](r)) return problem('shape', r.state);
   return null;
 }
 // 待審申請的數量（[sql, args]；放在 cancelStmts 之前的稽核 countOf，或交易外的預覽）
