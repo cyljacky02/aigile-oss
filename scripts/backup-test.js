@@ -104,7 +104,7 @@ try {
   const retiredTemplate = await A.call(liu.token, templates, 'POST', { name: '要停用的範本', ...defaults });
   assert.equal(activeTemplate.status, 201, JSON.stringify(activeTemplate.body));
   assert.equal(retiredTemplate.status, 201, JSON.stringify(retiredTemplate.body));
-  assert.equal((await A.call(liu.token, `${templates}/${retiredTemplate.body.id}`, 'DELETE')).status, 200);
+  assert.equal((await A.call(liu.token, `${templates}/${retiredTemplate.body.id}`, 'DELETE', { expected: retiredTemplate.body })).status, 200);
   await A.db.run("INSERT INTO app_settings (key, value) VALUES ('olink:p_x', '{\"h\":\"secret\"}')");
   // 建立專案申請：待審與已撤回各一份，原樣跟著備份走。政策是 approval、申請人是有效成員：還原後的待審檢查保留待審核
   await A.db.run("UPDATE workspaces SET create_projects = 'approval' WHERE id = 'default'");
@@ -162,6 +162,14 @@ try {
   assert.ok(!settingsDuringRestore.body.rows.some(r => r.key === 'project_roles'), '還原期間不初始化職稱設定');
   assert.equal((await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'participants', rows: backup.tables.participants })).status, 200);
   assert.equal((await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'devices', rows: [{}] })).status, 400, '不收登入用的表');
+  const [firstTemplate, secondTemplate] = backup.tables.project_templates;
+  const malformedStatuses = JSON.parse(secondTemplate.statuses_json);
+  malformedStatuses[0].name = 42; // 看板狀態驗證會轉成字串，但不能把原本的數字存進範本
+  const badTemplate = { ...secondTemplate, statuses_json: JSON.stringify(malformedStatuses) };
+  const malformed = await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'project_templates', rows: [firstTemplate, badTemplate] });
+  assert.equal(malformed.status, 400, JSON.stringify(malformed.body));
+  assert.equal(malformed.body.error.code, 'BACKUP_ROW_INVALID');
+  assert.equal((await B.call(dev, '/api/admin/restore/rows', 'POST', { table: 'project_templates', rows: [firstTemplate] })).body.inserted, 1, '不合法的批次沒有留下前一筆');
   const fin = await importAll(B, dev, backup);
   assert.equal(fin.status, 200, JSON.stringify(fin.body));
   assert.equal(fin.body.admin.name, '王小明', '管理員是備份裡的');

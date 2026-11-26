@@ -45,6 +45,9 @@ const pragmaInfo = t => `SELECT column_name AS name FROM information_schema.colu
 export function queryToPg(sql) {
   const pragma = /^\s*PRAGMA\s+table_info\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;?\s*$/i.exec(sql);
   if (pragma) return { text: pragmaInfo(pragma[1]), arrays: [] };
+  // SQLite/D1 的資料表存在判斷，放在比對結構是否同時改變的交易內斷言也適用。
+  sql = sql.replace(/\bSELECT 1 FROM sqlite_master WHERE type = 'table' AND name = \?/gi,
+    "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' AND table_name = ?");
   let n = 0;
   const arrays = [];
   let orIgnore = false;

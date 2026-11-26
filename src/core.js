@@ -2366,7 +2366,7 @@ ${ending}`;
     if (await pcrTableReady(db)) { const [sql, args] = pcrPendingCountSql({}); pending = Number((await db.get(sql.replace('COUNT(*)', 'COUNT(*) AS n'), ...args))?.n ?? 0); }
     return { createProjects: ws.createProjects, pendingProjectCreationRequests: pending };
   });
-  registerProjectTemplates({ route, db, ApiError, invalid, readJson, requireHuman, access, randId, nowIso, writeInWorkspace });
+  registerProjectTemplates({ route, db, ApiError, invalid, readJson, requireHuman, access, randId, nowIso, writeInWorkspace, auditLog, adminNotify });
   route('GET', '/api/group/events', async ({ ctx, me, url }) => {
     await access.check(ctx, me, 'manage_workspace', 'workspace', { what: '查看工作區異動紀錄' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);

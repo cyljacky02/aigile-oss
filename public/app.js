@@ -3849,6 +3849,9 @@
       : n.kind === 'admin_account_enable' ? `${a} 恢復了 ${t} 的帳號 · ${when}。`
       : n.kind === 'admin_project_messages_clear' ? `${a} 清空了專案「${p}」的訊息 · ${when}。`
       : n.kind === 'admin_project_messages_restore' ? `${a} 復原了專案「${p}」被清空的訊息 · ${when}。`
+      : n.kind === 'admin_project_template_create' ? `${a} 新增了專案範本「${t}」· ${when}。`
+      : n.kind === 'admin_project_template_edit' ? `${a} 編輯了專案範本「${t}」· ${when}。`
+      : n.kind === 'admin_project_template_retire' ? `${a} 停用了專案範本「${t}」· ${when}。`
       : n.kind === 'admin_project_delete' ? `${a} 刪除了專案「${p}」· ${when}。`
       : n.kind === 'admin_project_restore' ? `${a} 復原了專案「${p}」· ${when}。`
       : `${a} 做了一項管理操作 · ${when}。`;
@@ -9416,6 +9419,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     'workspace_policy.update': ['修改工作區政策', 'Changed workspace policy'], 'recovery_window.update': ['修改可復原期', 'Changed recovery window'],
     'message.delete': ['刪除訊息', 'Deleted message'], 'message.restore': ['復原訊息', 'Restored message'], 'message.purge': ['永久清除訊息', 'Purged messages'],
     'project_messages.clear': ['清空專案訊息', 'Cleared project messages'], 'project_messages.restore': ['復原清空的專案訊息', 'Restored cleared project messages'],
+    'project_template.create': ['新增專案範本', 'Created project template'], 'project_template.edit': ['編輯專案範本', 'Edited project template'], 'project_template.retire': ['停用專案範本', 'Retired project template'],
     'project_creation_request.reject': ['拒絕建立專案申請', 'Rejected project creation request'],
     'project.create': ['建立專案', 'Created project'], 'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
   };
@@ -10172,6 +10176,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   }
   function bindProjectTemplate(form, editor, submit) {
     const picker = form.elements.template, field = picker.closest('.field'), error = form.querySelector('#np-template-error');
+    const visibilityFields = form.querySelector('.np-vis'), statusFields = form.querySelector('#np-st');
     let selected = '', loading = false;
     const showError = msg => { error.textContent = msg; error.hidden = !msg; };
     api(PROJECT_TEMPLATES_API).then(({ items }) => {
@@ -10182,9 +10187,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (submit.disabled) { picker.value = selected; return; }
       const id = picker.value;
       showError('');
-      loading = picker.disabled = submit.disabled = true;
+      loading = picker.disabled = submit.disabled = visibilityFields.disabled = statusFields.disabled = true;
       try {
-        const spec = id ? await api(`${PROJECT_TEMPLATES_API}/${encodeURIComponent(id)}`) : { visibility: 'review', statuses: ST_DEFAULT };
+        const spec = id ? await api(`${PROJECT_TEMPLATES_API}/${encodeURIComponent(id)}`, { timeoutMs: 10000 }) : { visibility: 'review', statuses: ST_DEFAULT };
         form.elements.visibility.value = spec.visibility;
         editor.apply(spec.statuses);
         form.querySelector('.np-st').open = !!id;
@@ -10192,7 +10197,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       } catch (err) {
         picker.value = selected;
         showError(err.message);
-      } finally { loading = picker.disabled = submit.disabled = false; }
+      } finally { loading = picker.disabled = submit.disabled = visibilityFields.disabled = statusFields.disabled = false; }
     });
     return { loading: () => loading, selected: () => !!selected };
   }
@@ -10225,16 +10230,19 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       save.disabled = true;
       const path = template ? `${PROJECT_TEMPLATES_API}/${encodeURIComponent(template.id)}` : PROJECT_TEMPLATES_API;
       try {
-        await api(path, { method: template ? 'PUT' : 'POST', body: { name: form.name.value, visibility: form.visibility.value, statuses: editor.values() } });
+        await api(path, { method: template ? 'PUT' : 'POST', body: { name: form.name.value, visibility: form.visibility.value, statuses: editor.values(), ...(template ? { expected: template } : {}) } });
         if (body.isConnected) closeModal();
         await loadGroupSettings();
-      } catch (e2) { err.textContent = e2.message; }
+      } catch (e2) {
+        err.textContent = e2.message;
+        if (e2.code === 'TEMPLATE_CHANGED') await loadGroupSettings();
+      }
       finally { save.disabled = false; }
     });
   }
   async function retireProjectTemplate(template) {
     if (!(await confirmDialog({ title: '停用範本', message: `<b data-nt>${esc(template.name)}</b><p>已送出的申請與已建立的專案不受影響。</p>`, confirmText: '停用範本', danger: true }))) return;
-    try { await api(`${PROJECT_TEMPLATES_API}/${encodeURIComponent(template.id)}`, { method: 'DELETE' }); }
+    try { await api(`${PROJECT_TEMPLATES_API}/${encodeURIComponent(template.id)}`, { method: 'DELETE', body: { expected: template } }); }
     catch (err) { toast(err.message); }
     await loadGroupSettings();
   }
@@ -10252,7 +10260,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         ${request ? `<label class="field">申請原因<textarea name="reason" required maxlength="200" rows="3" placeholder="這個專案要做什麼、為什麼需要（審核人會看到）"></textarea></label>${visHtml}${slugFieldHtml('np-slug', '')}` : `${slugFieldHtml('np-slug', '')}${visHtml}
         <label class="field">程式庫連結（選填）<input name="url" maxlength="300" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://github.com/帳號/專案"></label>
         <label class="field">分支（選填）<input name="branch" maxlength="100" autocomplete="off" spellcheck="false" placeholder="main"></label>`}
-        <details class="np-st"><summary>看板狀態</summary>${ST_HELP}<div id="np-st"></div></details>
+        <details class="np-st"><summary>看板狀態</summary>${ST_HELP}<fieldset id="np-st" aria-label="看板狀態"></fieldset></details>
         <p class="muted small" id="pm-new-hint">${request ? '送出後由工作區管理員審核；核准時專案才會建立，你會成為這個專案的專案管理員。程式庫等設定在核准後由你自己設定。' : `${esc(newProjText())}，其他成員請到「成員」分頁加入。`}</p>
         <p class="error" id="np-err" role="alert"></p>
       </form>`, { size: 'narrow', foot: `<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="np-form" id="np-submit">${request ? '送出申請' : '新增專案'}</button>` });
