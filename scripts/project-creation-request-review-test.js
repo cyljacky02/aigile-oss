@@ -29,11 +29,15 @@ const code = r => r.body?.error?.code;
 const ok = (r, label) => { assert.ok(r.status < 400, `${label}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r.body; };
 const is = (r, status, errCode, label) => { assert.equal(r.status, status, `${label}：${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); if (errCode) assert.equal(code(r), errCode, label); return r.body; };
 const dbs = [];
-// hooks：before＝下一個含符合 re 那句的寫入送出前先執行 run()；fail＝那一批丟錯（都只作用一次）
+// hooks 只作用一次：在讀取資格或送出批次之前插入另一個操作，也可以讓批次丟錯。
 function harness(db) {
-  const hooks = { before: null, fail: null };
+  const hooks = { beforeRead: null, before: null, fail: null };
   const hit = (slot, stmts) => (hooks[slot] && stmts.some(([sql]) => hooks[slot].re.test(sql)) ? hooks[slot] : null);
-  const wrapped = { ...db, batch: async stmts => {
+  const wrapped = { ...db, get: async (sql, ...args) => {
+    const hook = hooks.beforeRead;
+    if (hook?.matches(sql, args)) { hooks.beforeRead = null; await hook.run(); }
+    return db.get(sql, ...args);
+  }, batch: async stmts => {
     const b = hit('before', stmts); if (b) { hooks.before = null; await b.run(); }
     const f = hit('fail', stmts); if (f) { hooks.fail = null; throw new Error('模擬的資料庫寫入失敗'); }
     return db.batch(stmts);
@@ -370,6 +374,20 @@ try {
     assert.equal(await n(db2, 'SELECT COUNT(*) AS n FROM projects'), projects0, '沒有建立專案');
     assert.equal((await db2.get('SELECT state FROM project_creation_requests WHERE id = ?', q.id)).state, 'pending');
     is(await c2(b2.token, '/api/projects', 'POST', { name: '空窗期直接建立' }), 201, null, '直接建立照常（部署相容的例外）');
+  }
+  // 在核准讀到待審後，移出申請人並取消申請。回應要反映已取消的狀態與原因。
+  {
+    const applicant = await join('交錯申請人');
+    const request = await submit(applicant, { name: '同時取消的專案' });
+    const other = harness(db).call;
+    hooks.beforeRead = {
+      matches: (sql, args) => sql.startsWith('SELECT 1 AS x WHERE EXISTS (SELECT 1 FROM participants p') && args[0] === applicant.id,
+      run: async () => ok(await other(boss.token, `/api/participants/${applicant.id}/remove`, 'POST'), '移出申請人'),
+    };
+    const res = await approve(boss, request.id);
+    assert.equal(hooks.beforeRead, null, '資格檢查前已移出申請人');
+    assert.deepEqual([res.status, code(res), res.body.error?.cancelCode], [409, 'REQUEST_NOT_PENDING', 'workspace_member_removed']);
+    assert.ok(!(await projByName(request.name)), '沒有建立專案');
   }
   console.log('建立專案申請（核准、拒絕）測試通過');
 } finally {

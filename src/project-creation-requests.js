@@ -394,9 +394,17 @@ export function registerProjectCreationRequests(d) {
     if (!now || now.workspace_id !== workspaceId) return notFound();
     if (now.state === PCR_STATE.APPROVED) return new ApprovedMeanwhile(now);
     if (now.state !== PCR_STATE.PENDING) return ended(now);
-    if (!(await holds(policyCond(workspaceId)))) return policyChanged();
-    if (!(await holds(activeMemberCond(now.requester_id, workspaceId)))) return requesterGone();
-    return null;
+    let blocked;
+    if (!(await holds(policyCond(workspaceId)))) blocked = policyChanged();
+    else if (!(await holds(activeMemberCond(now.requester_id, workspaceId)))) blocked = requesterGone();
+    else return null;
+
+    // 政策或資格可能在讀到待審後才變。重讀申請，優先回傳當前狀態與取消原因。
+    const latest = await byId(id);
+    if (!latest || latest.workspace_id !== workspaceId) return notFound();
+    if (latest.state === PCR_STATE.APPROVED) return new ApprovedMeanwhile(latest);
+    if (latest.state !== PCR_STATE.PENDING) return ended(latest);
+    return blocked;
   }
   // 已核准：回原本的結果（200，不再寫任何東西）。結果專案依呼叫者現行的專案權限（專案後來封存、刪除、清除也不重建）
   async function approvedResult(ctx, me, row, duplicate) {
