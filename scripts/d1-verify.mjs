@@ -9,7 +9,7 @@
 //
 // 怎麼驗證：
 //   1. 資料庫升級：用 scripts/migrate.js 的同一個純函式 d1Steps 產生 SQL，經 wrangler d1 execute --local 套到空的 D1（全新），
-//      再模擬「015 之前」的舊 D1 套升級，確認兩條路得到一樣的表、欄位與索引。
+//      再模擬「017 之前」的舊 D1 套升級，確認兩條路得到一樣的表、欄位與索引。
 //   2. 其餘全部經 HTTP 打 wrangler dev --local 跑的真 Worker（scripts/d1-verify-worker.mjs 原樣轉給 worker.js），
 //      資料庫是 Worker 綁定的 env.DB（D1 的 prepare／batch，不是 node:sqlite）。HTTP 表達不了的（直接寫入違反 CHECK 的列、
 //      在正式程式的那一批中間注入失敗、事後核對資料）用同一個 Worker 的 /__d1verify/* 控制端點（隨機 token，只存在這個驗證入口）。
@@ -138,6 +138,7 @@ try {
   const schema = fs.readFileSync(path.join(repoRoot, 'src', 'schema.sql'), 'utf8');
   const files = listMigrations(path.join(repoRoot, 'migrations'));
   const PCR_MIGRATION = files.find(f => /_project_creation_requests\.sql$/.test(f.name))?.name;
+  const ACTOR_MIGRATION = files.find(f => /_account_review_actors\.sql$/.test(f.name))?.name;
   const migrate = (d, label) => {
     const tables = d.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('participants', 'schema_migrations')").map(r => r.name);
     const fresh = !tables.includes('participants');
@@ -154,7 +155,7 @@ try {
 
   // ===== D1-01 資料庫升級 =====
   const A = localD1({ wrangler, tmpRoot, repoRoot, name: 'site-a', main });
-  const migrated = await check('D1-01', '資料庫升級：全新的 D1 與「015 之前」的舊 D1 都用 d1Steps 升到最新，結構相同', async note => {
+  const migrated = await check('D1-01', '資料庫升級：全新的 D1 與「017 之前」的舊 D1 都用 d1Steps 升到最新，結構相同', async note => {
     assert.ok(PCR_MIGRATION, 'migrations/ 裡有建立專案申請的升級');
     const plan = migrate(A, '全新');
     assert.equal(plan.plan.fresh, true, '空的 D1 走全新路線');
@@ -165,14 +166,22 @@ try {
     for (const ix of ['idx_pcr_request', 'idx_pcr_pending_name', 'idx_pcr_project', 'idx_pcr_state', 'idx_pcr_requester']) assert.ok(fresh.indexes.some(i => i.name === ix), `有索引 ${ix}`);
     assert.match(fresh.indexes.find(i => i.name === 'idx_pcr_pending_name').sql, /WHERE state = 'pending'/, '同名待審是部分唯一索引');
     assert.match(A.query("SELECT sql FROM sqlite_master WHERE name = 'project_creation_requests'")[0].sql, /CHECK \(state IN/, '有 CHECK 約束');
-    // 模擬 015 之前的舊 D1：拿掉申請資料表與它的升級紀錄，再升級一次
-    A.exec(`DROP TABLE project_creation_requests; DELETE FROM schema_migrations WHERE name = '${PCR_MIGRATION}'`, { label: '模擬舊 D1' });
+    assert.ok(ACTOR_MIGRATION);
+    // 還原 015 的資料表，再確認 017 保留既有的 participant 審核紀錄。
+    A.exec(`DROP TABLE project_creation_requests; ALTER TABLE audit_log DROP COLUMN actor_account_id; DELETE FROM schema_migrations WHERE name = '${ACTOR_MIGRATION}'; ${files.find(f => f.name === PCR_MIGRATION).sql}`, { label: '模擬舊 D1' });
+    const oldDecision = `INSERT INTO project_creation_requests (id, workspace_id, requester_id, request_id, name, reason, state, created_at, ended_at, ended_by, reject_reason)
+      VALUES ('pcr_legacy', 'default', 'p_requester', 'legacy', 'Legacy', 'Request', 'rejected', 't', 't', 'p_reviewer', 'Reason')`;
+    A.exec(oldDecision, { label: '舊審核紀錄' });
     const up = migrate(A, '舊 D1');
-    assert.deepEqual(up.plan.apply.map(f => f.name), [PCR_MIGRATION], '舊 D1 只套建立專案申請的升級');
+    assert.deepEqual(up.plan.apply.map(f => f.name), [ACTOR_MIGRATION]);
     assert.deepEqual(structure(A), fresh, '升級後的表、欄位、索引跟全新建的一樣');
+    assert.deepEqual(A.query("SELECT ended_by, ended_by_account_id FROM project_creation_requests WHERE id = 'pcr_legacy'")[0], { ended_by: 'p_reviewer', ended_by_account_id: null });
+    A.exec("UPDATE project_creation_requests SET ended_by = NULL, ended_by_account_id = 'acct_test' WHERE id = 'pcr_legacy'", { label: '帳號審核欄位' });
+    assert.throws(() => A.exec("UPDATE project_creation_requests SET ended_by = 'p_reviewer' WHERE id = 'pcr_legacy'", { label: '拒絕雙重審核身分' }), /CHECK constraint failed/i);
+    A.exec("DELETE FROM project_creation_requests WHERE id = 'pcr_legacy'", { label: '清理升級測試資料' });
     const again = migrate(A, '重跑');
     assert.deepEqual(again.plan.apply, [], '重跑沒有要套的升級（可安全重跑）');
-    note(`升級 ${files.length} 個；舊 D1 套 ${PCR_MIGRATION}`);
+    note(`升級 ${files.length} 個；舊 D1 套 ${ACTOR_MIGRATION}`);
   });
   if (!migrated) blocked = '資料庫升級沒過';
 

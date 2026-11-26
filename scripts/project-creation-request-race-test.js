@@ -59,7 +59,7 @@ try {
   {
     const r = await submit({ name: '同時核准' });
     let first = null;
-    afterGet = { re: /^SELECT id, name FROM participants WHERE id = \?$/, run: async () => { first = await approve(boss, r.id); } };
+    afterGet = { re: /^SELECT id, name FROM participants WHERE id = \? AND workspace_id = \?$/, run: async () => { first = await approve(boss, r.id); } };
     const late = await approve(ann, r.id);
     assert.equal(afterGet, null, '真的有交錯');
     const won = ok(first, '先完成的核准');

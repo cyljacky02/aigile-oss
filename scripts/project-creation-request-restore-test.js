@@ -55,7 +55,7 @@ async function importRows(s, tok, bk) {
 }
 const finish = (s, tok) => s.call(tok, '/api/admin/restore/finish', 'POST', {});
 const newcomer = async (s, name) => (await s.call(null, '/api/join', 'POST', { name, role: 'PO' })).body;
-const requests = async db => Object.fromEntries((await db.all('SELECT id, state, cancel_code, ended_at, ended_by, project_id, reject_reason FROM project_creation_requests ORDER BY id')).map(r => [r.id, { ...r }]));
+const requests = async db => Object.fromEntries((await db.all('SELECT id, state, cancel_code, ended_at, ended_by, ended_by_account_id, project_id, reject_reason FROM project_creation_requests ORDER BY id')).map(r => [r.id, { ...r }]));
 const restoreAudits = db => db.all("SELECT count, detail FROM audit_log WHERE action = 'backup.restore'");
 const restoring = async db => !!(await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'"));
 const n = async (db, sql, ...a) => Number((await db.get(sql, ...a)).n);
@@ -98,7 +98,8 @@ try {
     row('pcr_ai', { requester_id: ai.participantId }), // 申請人不是人類
     row('pcr_nows_disabled', { workspace_id: 'ws_gone', requester_id: lee.id }), // 關聯無效又停用：先看關聯 → restore_invalid
     row('pcr_approved_gone', { state: 'approved', ended_at: at, ended_by: boss.id, project_id: 'p_gone' }), // 已核准、專案找不到：不重建、不取消
-    row('pcr_rejected', { state: 'rejected', ended_at: at, ended_by: boss.id, reject_reason: '再想想' }),
+    row('pcr_rejected', { state: 'rejected', ended_at: at, ended_by: boss.id, ended_by_account_id: undefined, reject_reason: '再想想' }), // 017 之前的備份沒有帳號欄位
+    row('pcr_account_rejected', { state: 'rejected', ended_at: at, ended_by_account_id: accountOf(boss.id).id, reject_reason: '再想想' }),
     row('pcr_cancelled', { state: 'cancelled', ended_at: at, cancel_code: 'workspace_member_left' }),
     row('pcr_withdrawn_ghost', { requester_id: 'p_ghost', state: 'withdrawn', ended_at: at, ended_by: 'p_ghost' }), // 終止的申請就算關聯無效也不動
   );
@@ -117,8 +118,8 @@ try {
     }
     for (const [id, r] of Object.entries(terminal)) {
       const g = got[id];
-      assert.deepEqual([g.state, g.ended_at, g.ended_by ?? null, g.cancel_code ?? null, g.project_id ?? null, g.reject_reason ?? null],
-        [r.state, r.ended_at, r.ended_by ?? null, r.cancel_code ?? null, r.project_id ?? null, r.reject_reason ?? null], `${label}：終止的 ${id} 原樣保留`);
+      assert.deepEqual([g.state, g.ended_at, g.ended_by ?? null, g.ended_by_account_id ?? null, g.cancel_code ?? null, g.project_id ?? null, g.reject_reason ?? null],
+        [r.state, r.ended_at, r.ended_by ?? null, r.ended_by_account_id ?? null, r.cancel_code ?? null, r.project_id ?? null, r.reject_reason ?? null], `${label}：終止的 ${id} 原樣保留`);
     }
     assert.equal(Object.keys(got).length, T.project_creation_requests.length, `${label}：申請一份不多不少`);
     assert.equal(await n(s.db, 'SELECT COUNT(*) AS n FROM projects'), projectsInBackup, `${label}：沒有建立任何專案（已核准但找不到專案的也不重建）`);
@@ -207,6 +208,8 @@ try {
       待審卻有結束時間: { ...good, ended_at: at },
       核准卻沒有專案: { ...good, state: 'approved', ended_at: at, ended_by: boss.id },
       拒絕卻沒有理由: { ...good, state: 'rejected', ended_at: at, ended_by: boss.id, reject_reason: ' ' },
+      拒絕卻沒有審核人: { ...good, state: 'rejected', ended_at: at, reject_reason: 'x' },
+      拒絕有兩個審核身分: { ...good, state: 'rejected', ended_at: at, ended_by: boss.id, ended_by_account_id: accountOf(boss.id).id, reject_reason: 'x' },
       撤回的人不是申請人: { ...good, state: 'withdrawn', ended_at: at, ended_by: boss.id },
       不認得的取消原因: { ...good, state: 'cancelled', ended_at: at, cancel_code: 'because' },
       取消卻記了操作者: { ...good, state: 'cancelled', ended_at: at, ended_by: boss.id, cancel_code: 'policy_changed' },

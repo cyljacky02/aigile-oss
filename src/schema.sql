@@ -417,18 +417,19 @@ CREATE TABLE IF NOT EXISTS project_creation_requests (
   state TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected | withdrawn | cancelled
   created_at TEXT NOT NULL,
   ended_at TEXT,                           -- 結束時間（pending 時 NULL）
-  ended_by TEXT,                           -- 審核人（approved、rejected）或申請人本人（withdrawn）；cancelled 是系統，NULL
+  ended_by TEXT,                           -- 審核人的工作區成員 id，或撤回的申請人 id
+  ended_by_account_id TEXT,                -- 沒有工作區成員資格的審核人帳號（ADR 0007）
   reject_reason TEXT,                      -- 拒絕理由（只有 rejected）
   cancel_code TEXT,                        -- 取消原因代碼（只有 cancelled）
   project_id TEXT,                         -- 核准時建立的專案（只有 approved；專案之後被清除也保留）
   CHECK (visibility IN ('open', 'review', 'private')),
   CHECK (state IN ('pending', 'approved', 'rejected', 'withdrawn', 'cancelled')),
   CHECK (
-    (state = 'pending' AND ended_at IS NULL AND ended_by IS NULL AND project_id IS NULL AND reject_reason IS NULL AND cancel_code IS NULL)
-    OR (state = 'approved' AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND project_id IS NOT NULL AND reject_reason IS NULL AND cancel_code IS NULL)
-    OR (state = 'rejected' AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND project_id IS NULL AND reject_reason IS NOT NULL AND length(trim(reject_reason)) > 0 AND cancel_code IS NULL)
-    OR (state = 'withdrawn' AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND ended_by = requester_id AND project_id IS NULL AND reject_reason IS NULL AND cancel_code IS NULL)
-    OR (state = 'cancelled' AND ended_at IS NOT NULL AND ended_by IS NULL AND project_id IS NULL AND reject_reason IS NULL AND cancel_code IS NOT NULL
+    (state = 'pending' AND ended_at IS NULL AND ended_by IS NULL AND ended_by_account_id IS NULL AND project_id IS NULL AND reject_reason IS NULL AND cancel_code IS NULL)
+    OR (state = 'approved' AND ended_at IS NOT NULL AND ((ended_by IS NULL) <> (ended_by_account_id IS NULL)) AND project_id IS NOT NULL AND reject_reason IS NULL AND cancel_code IS NULL)
+    OR (state = 'rejected' AND ended_at IS NOT NULL AND ((ended_by IS NULL) <> (ended_by_account_id IS NULL)) AND project_id IS NULL AND reject_reason IS NOT NULL AND length(trim(reject_reason)) > 0 AND cancel_code IS NULL)
+    OR (state = 'withdrawn' AND ended_at IS NOT NULL AND ended_by IS NOT NULL AND ended_by = requester_id AND ended_by_account_id IS NULL AND project_id IS NULL AND reject_reason IS NULL AND cancel_code IS NULL)
+    OR (state = 'cancelled' AND ended_at IS NOT NULL AND ended_by IS NULL AND ended_by_account_id IS NULL AND project_id IS NULL AND reject_reason IS NULL AND cancel_code IS NOT NULL
       AND cancel_code IN ('policy_changed', 'workspace_member_removed', 'workspace_member_left', 'account_disabled', 'restore_invalid'))
   )
 );
@@ -548,7 +549,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   at TEXT NOT NULL,                    -- ISO 時間
   actor_id TEXT,                       -- 操作者；系統操作是 system
   actor_name TEXT NOT NULL DEFAULT '', -- 寫入當時的名字（系統）
-  actor_kind TEXT NOT NULL DEFAULT 'human', -- human | ai | system
+  actor_kind TEXT NOT NULL DEFAULT 'human', -- human | ai | system | account
   action TEXT NOT NULL,                -- src/audit.js 的 AUDIT_ACTION（例 platform_admin.grant）
   scope_kind TEXT NOT NULL,            -- platform | workspace | project；平台層的只有平台管理員看得到
   workspace_id TEXT,                   -- 非平台層的事件所屬工作區（第一階段只有 default）；平台層 NULL
@@ -558,7 +559,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
   target_id TEXT,
   target_name TEXT,                    -- 寫入當時的名字
   count INTEGER,                       -- 摘要數字（例：清除了幾則訊息）
-  detail TEXT                          -- 細節 JSON；不放訊息原文
+  detail TEXT,                         -- 細節 JSON；不放訊息原文
+  actor_account_id TEXT                -- 審核人的帳號（ADR 0007）；不佔用 actor_id
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log (at);
 CREATE INDEX IF NOT EXISTS idx_audit_log_workspace ON audit_log (workspace_id, seq);

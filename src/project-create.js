@@ -8,7 +8,7 @@
 //
 // 介面（core.js 建一個，傳給需要的地方）：
 //   creation.create({ actor, beneficiary, method, requestId?, spec, guards?, extra?, explain?, workspaceId? }) → { id, name, slug, code, visibility }
-//     actor：執行者（participant 列；寫進稽核與專案的 created_by）。beneficiary：成為唯一初始專案管理員的人（participant 列）
+//     actor：執行者（participant 列或 { kind: 'account', id, name }）；beneficiary：成為唯一初始專案管理員的人（participant 列）
 //     method：CREATION_METHOD.DIRECT（直接建立，beneficiary＝actor）或 APPROVED_REQUEST（核准建立，beneficiary＝申請人、actor＝審核人，帶 requestId）
 //     spec：已驗證的內容 { name, visibility, slug｜null（自動）, code｜null（自動）, statuses｜null（預設） }
 //     guards：呼叫端的交易內斷言（ensureStmt），放在所有寫入之前；extra({ id, at, slug, code })：同一批的其他寫入（例：申請轉為已核准、通知）
@@ -54,14 +54,15 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
 
   function stmts({ id, at, actor = null, beneficiary = null, method, requestId = null, spec, eventText = null, workspaceId = DEFAULT_WORKSPACE }) {
     const { name, visibility = DEFAULT_VISIBILITY, slug, code, statuses = null } = spec;
+    const participantActorId = actor?.kind === 'account' ? null : actor?.id ?? 'system';
     const audit = auditLog.stmt({ actor, action: AUDIT_ACTION.PROJECT_CREATE, scope: AUDIT_SCOPE.PROJECT, workspaceId, project: { id, name }, target: { kind: 'project', id, name }, // 稽核時間＝現在（示範專案的 created_at 是假的過去時間）
       detail: { method, ...(requestId ? { requestId } : {}), ...(method === CREATION_METHOD.APPROVED_REQUEST && beneficiary ? { requester: { id: beneficiary.id, name: beneficiary.name } } : {}), code, slug, visibility } });
     if (!audit && AUDIT_REQUIRED.has(method)) throw auditNotReady();
-    const nf = nameFreeCond(name, id);
+    const nf = nameFreeCond(name, id, workspaceId);
     return [
       ensureStmt(nf.cond, nf.args), ensureCond(slugFreeCond(slug, id)), ensureCond(codeFreeCond(code, id)),
-      ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at, visibility) VALUES (?,?,0,?,?,?,?)', [id, name, workspaceId, actor?.id ?? 'system', at, visibility]],
-      projEvent(id, actor?.id ?? 'system', eventText ?? `${actor?.name ?? '系統'} 建立專案`, at),
+      ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at, visibility) VALUES (?,?,0,?,?,?,?)', [id, name, workspaceId, participantActorId, at, visibility]],
+      projEvent(id, participantActorId, eventText ?? `${actor?.name ?? '系統'} 建立專案`, at),
       // 看板狀態跟專案同一批：沒指定就寫預設狀態組。每個狀態一句單列 INSERT（D1 一個複合 SELECT 最多 5 段，不用 UNION ALL）
       ...(statuses || DEFAULT_STATUSES).map((st, i) => ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [id, st.name, st.category, i, st.color]]),
       ['INSERT INTO app_settings (key, value) VALUES (?, ?)', ['slug:' + id, slug]],
@@ -81,7 +82,7 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
     for (let attempt = 1; ; attempt++) {
       // 交易前讀到的資料只用來準備候選值與友善的錯誤；保證靠下面那一批的交易內斷言
       await names.refresh();
-      if (names.nameInUse(name)) throw new ApiError(409, 'NAME_TAKEN', '已有同名的專案');
+      if (await names.nameInUse(name, workspaceId)) throw new ApiError(409, 'NAME_TAKEN', '已有同名的專案');
       if (spec.code) names.checkCode(spec.code, actor);
       const used = await names.usedSlugs();
       const slug = spec.slug || names.autoSlug(name, used);
@@ -89,11 +90,11 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
       const code = spec.code || names.autoCode(slug);
       const id = randId('prj'), at = nowIso();
       const list = [...guards, ...stmts({ id, at, actor, beneficiary, method, requestId, spec: { name, visibility, slug, code, statuses }, workspaceId }), ...extra({ id, at, slug, code })];
-      if (await write(list)) { await names.afterWrite?.(); return { id, name, slug, code, visibility }; }
+      if (await write(list, workspaceId)) { await names.afterWrite?.(); return { id, name, slug, code, visibility }; }
       // 斷言沒過：先看呼叫端的前提，再用新鮮資料判斷名稱與識別碼。同名 → NAME_TAKEN；指定的值被用掉 → SLUG_TAKEN／CODE_TAKEN；自動產生的被用掉 → 重算重試
       const mine = await explain();
       if (mine) throw mine;
-      const why = await names.nameWriteFailed(id, name);
+      const why = await names.nameWriteFailed(id, name, workspaceId);
       if (why.code === 'NAME_TAKEN') throw why;
       const slugLost = !(await holdsNow(db, slugFreeCond(slug, id))), codeLost = !(await holdsNow(db, codeFreeCond(code, id)));
       await names.refresh();
@@ -104,11 +105,11 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
   }
   // 審核畫面用的預估：沒指定的網址英文名與代號現在會產生什麼（只是預估，建立時重算）、哪些欄位現在有衝突。
   // conflicts 只列欄位（name、slug、code），不說被哪個專案占用；自動產生的值會避開已用的，不算衝突
-  async function preview({ name, slug = null, code = null }) {
+  async function preview({ name, slug = null, code = null }, workspaceId = DEFAULT_WORKSPACE) {
     await names.refresh();
     const used = await names.usedSlugs();
     const conflicts = [];
-    if (names.nameInUse(name)) conflicts.push('name');
+    if (await names.nameInUse(name, workspaceId)) conflicts.push('name');
     if (slug && used.has(slug)) conflicts.push('slug');
     if (code) { try { names.checkCode(code, null); } catch (e) { if (e?.code !== 'CODE_TAKEN') throw e; conflicts.push('code'); } }
     const s = slug || names.autoSlug(name, used);

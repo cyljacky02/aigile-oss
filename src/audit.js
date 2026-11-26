@@ -24,7 +24,7 @@
 // 不寫的情況：沒有真的改到東西（no-op）、競態檢查擋下來（409）都不寫
 
 // 動作（存在 action 欄位；網頁的篩選與顯示文字照這張表）
-import { isMissingTable } from './db-errors.js';
+import { isMissingColumn, isMissingTable } from './db-errors.js';
 
 export const AUDIT_ACTION = Object.freeze({
   PLATFORM_ADMIN_GRANT: 'platform_admin.grant', PLATFORM_ADMIN_REVOKE: 'platform_admin.revoke',
@@ -47,6 +47,7 @@ const SYSTEM = { id: 'system', name: '系統', kind: 'system' }; // 系統操作
 const DEFAULT_WS = 'default';
 const COLS = 'id, at, actor_id, actor_name, actor_kind, action, scope_kind, workspace_id, project_id, project_name, target_kind, target_id, target_name, count, detail';
 const INSERT = `INSERT INTO audit_log (${COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+const INSERT_ACCOUNT = `INSERT INTO audit_log (${COLS}, actor_account_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
 const LEGACY_FROM = 'pdel:', LEGACY_TO = 'pdel;'; // 舊的專案刪除紀錄：app_settings 的 pdel:<時間>:<專案 id>
 const str = v => (v == null ? null : String(v));
 const parse = s => { if (s == null) return null; try { return JSON.parse(s); } catch { return null; } };
@@ -54,15 +55,16 @@ const parse = s => { if (s == null) return null; try { return JSON.parse(s); } c
 // 一筆的欄位值（照 COLS 的順序）
 function values(evt, id, at) {
   const a = evt.actor || SYSTEM, platform = evt.scope === AUDIT_SCOPE.PLATFORM, t = evt.target || null;
-  return [id, at, str(a.id), String(a.name ?? ''), a.kind === 'ai' ? 'ai' : a.kind === 'system' || !evt.actor ? 'system' : 'human', evt.action, evt.scope,
+  return [id, at, a.kind === 'account' ? null : str(a.id), String(a.name ?? ''), ['ai', 'system', 'account'].includes(a.kind) ? a.kind : 'human', evt.action, evt.scope,
     platform ? null : evt.workspaceId || DEFAULT_WS, str(evt.project?.id), str(evt.project?.name),
     t ? str(t.kind) : null, t ? str(t.id) : null, t ? str(t.name) : null,
     Number.isInteger(evt.count) ? evt.count : null, evt.detail == null ? null : JSON.stringify(evt.detail)];
 }
 // API 輸出的一筆
+const actorView = r => ({ id: r.actor_account_id ?? r.actor_id, name: r.actor_name, kind: r.actor_kind });
 const view = r => ({
   id: r.id, at: r.at, action: r.action,
-  actor: { id: r.actor_id, name: r.actor_name, kind: r.actor_kind },
+  actor: actorView(r),
   scope: { kind: r.scope_kind, workspaceId: r.workspace_id ?? null, projectId: r.project_id ?? null, projectName: r.project_name ?? null },
   target: r.target_kind ? { kind: r.target_kind, id: r.target_id, name: r.target_name } : null,
   count: r.count ?? null, detail: parse(r.detail),
@@ -75,9 +77,12 @@ export function createAudit({ db, randId, nowIso }) {
   const stmt = evt => {
     if (!ready || !evt?.action) return null;
     const v = values(evt, evt.id || randId('aud'), evt.at || nowIso());
-    if (!evt.countOf) return [INSERT, v];
-    const [sql, args = []] = evt.countOf; // count 是倒數第二欄
-    return [INSERT.replace(/\?,\?\)$/, `(${sql}),?)`), [...v.slice(0, -2), ...args, v[v.length - 1]]];
+    const account = evt.actor?.kind === 'account' ? evt.actor.id : null;
+    const insert = account ? INSERT_ACCOUNT : INSERT;
+    const args = account ? [...v, account] : v;
+    if (!evt.countOf) return [insert, args];
+    const [sql, bindings = []] = evt.countOf;
+    return [insert.replace(account ? /\?,\?,\?\)$/ : /\?,\?\)$/, `(${sql}),?${account ? ',?' : ''})`), [...v.slice(0, -2), ...bindings, ...args.slice(v.length - 1)]];
   };
   async function write(evt) {
     const s = stmt(evt);
@@ -86,25 +91,28 @@ export function createAudit({ db, randId, nowIso }) {
 
   // 查詢（新的在前）。看得到哪些：platform＝平台管理員看全部；否則只有 workspaceId 這個工作區、非平台層的
   // only：'workspace'＝只要工作區（含專案）事件、'platform'＝只要平台層事件；before：上一頁的 next 游標（時間|序號）
-  async function list({ platform = false, workspaceId = DEFAULT_WS, only = null, action, actor, from, to, before, limit = 50, withActors = false }) {
+  async function list({ platform = false, workspaceId = DEFAULT_WS, only = null, action, actor, from, to, before, limit = 50, withActors = false }, accountColumn = true) {
     const vis = [], args = [];
     if (!platform || only === 'workspace') { vis.push("scope_kind != 'platform'", 'workspace_id = ?'); args.push(workspaceId); }
     if (only === 'platform') vis.push("scope_kind = 'platform'");
     const where = [...vis], wargs = [...args];
     if (action) { where.push('action = ?'); wargs.push(action); }
-    if (actor) { where.push('actor_id = ?'); wargs.push(actor); }
+    if (actor) {
+      where.push(accountColumn ? '(actor_id = ? OR actor_account_id = ?)' : 'actor_id = ?');
+      wargs.push(actor, ...(accountColumn ? [actor] : []));
+    }
     if (from) { where.push('at >= ?'); wargs.push(from); }
     if (to) { where.push('at < ?'); wargs.push(to); }
     if (before) { where.push('(at < ? OR (at = ? AND seq < ?))'); wargs.push(before.at, before.at, before.seq); }
     const cond = where.length ? 'WHERE ' + where.join(' AND ') : '';
-    const rows = await db.all(`SELECT seq, ${COLS} FROM audit_log ${cond} ORDER BY at DESC, seq DESC LIMIT ?`, ...wargs, limit + 1);
+    const rows = await db.all(`SELECT * FROM audit_log ${cond} ORDER BY at DESC, seq DESC LIMIT ?`, ...wargs, limit + 1);
     const more = rows.length > limit, page = rows.slice(0, limit), last = page[page.length - 1];
     const out = { items: page.map(view), next: more ? `${last.at}|${last.seq}` : null };
     if (withActors) { // 篩選用：看得到的紀錄裡出現過的操作者（名字取最新一筆）
       const vc = vis.length ? 'WHERE ' + vis.join(' AND ') : '';
-      const as = await db.all(`SELECT actor_id, actor_name, actor_kind FROM audit_log ${vc} ORDER BY seq DESC LIMIT 5000`, ...args);
+      const as = await db.all(`SELECT actor_id, actor_name, actor_kind${accountColumn ? ', actor_account_id' : ''} FROM audit_log ${vc} ORDER BY seq DESC LIMIT 5000`, ...args);
       const seen = new Map();
-      for (const a of as) if (!seen.has(a.actor_id)) seen.set(a.actor_id, { id: a.actor_id, name: a.actor_name, kind: a.actor_kind });
+      for (const r of as) { const a = actorView(r); if (!seen.has(a.id)) seen.set(a.id, a); }
       out.actors = [...seen.values()];
     }
     return out;
@@ -112,7 +120,7 @@ export function createAudit({ db, randId, nowIso }) {
 
   // 某個專案在 at 之前（含）最後一筆 action 紀錄（沒有回 null）：例如永久清除前最後按刪除的人
   async function latestForProject({ action, projectId, at }) {
-    const r = await db.get(`SELECT ${COLS} FROM audit_log WHERE action = ? AND project_id = ? AND at <= ? ORDER BY at DESC, seq DESC LIMIT 1`, action, projectId, at);
+    const r = await db.get(`SELECT * FROM audit_log WHERE action = ? AND project_id = ? AND at <= ? ORDER BY at DESC, seq DESC LIMIT 1`, action, projectId, at);
     return r ? view(r) : null;
   }
 
@@ -138,5 +146,7 @@ export function createAudit({ db, randId, nowIso }) {
     if (rows.length) console.log(`舊的專案刪除紀錄轉進稽核紀錄：${rows.length} 筆`);
     return true;
   }
-  return { stmt, write, list, latestForProject, migrateLegacy };
+  return { stmt, write, list: async q => {
+    try { return await list(q); } catch (e) { if (isMissingColumn(e, 'actor_account_id')) return list(q, false); throw e; }
+  }, latestForProject, migrateLegacy };
 }

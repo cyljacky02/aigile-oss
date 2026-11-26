@@ -99,7 +99,8 @@ const AVATAR_UPSERT = 'INSERT INTO avatars (participant_id, mime, data, updated_
 
 // ---------- 應用程式 ----------
 // storage（選用，上傳文件用）：put(key, Uint8Array)、get(key) → Uint8Array|null、delete(key)
-export function createApp({ db, docText, apiRefText = '', flowsText = '', releases = null, config = {}, storage = null, docStorage = null, scriptHashes = {}, live = null }) { // live：內建即時通道（本機／Docker，見 src/live.js）；Workers 沒有
+// resolveReviewWorkspace：只供建立專案申請審核的測試注入；正式 app 未設定，沒有工作區切換。
+export function createApp({ db, docText, apiRefText = '', flowsText = '', releases = null, config = {}, storage = null, docStorage = null, scriptHashes = {}, live = null, resolveReviewWorkspace = null }) {
   const ROOM_CODE = config.roomCode || '';
   // 人類可以自己註冊（OPEN_JOIN 沒設＝開）；設 OPEN_JOIN=0 就只有第一位（建立者）能自己加入，其他人要邀請連結
   const OPEN_JOIN = !(config.openJoin === false || config.openJoin === '0');
@@ -1687,7 +1688,7 @@ ${ending}`;
   const busyError = () => new ApiError(503, 'RETRY_LATER', '資料庫正忙，這次沒有存；請稍後再試。', { retryAfter: 1 });
   // 還原備份還沒收尾完（鎖之後的「不在還原中」斷言失敗）：什麼都沒寫，還原完成後再送一次
   const restoringError = () => new ApiError(503, 'RESTORING', '正在還原備份，這次沒有存；還原完成後再試。', { retryAfter: 5 });
-  const writeInWorkspace = list => writeOrdered(db, [lockWorkspaceStmt(DEFAULT_WORKSPACE), ...list], { busy: busyError, restoring: restoringError });
+  const writeInWorkspace = (list, workspaceId = DEFAULT_WORKSPACE) => writeOrdered(db, [lockWorkspaceStmt(workspaceId), ...list], { busy: busyError, restoring: restoringError });
   // 成員資格的寫入（升降管理員、停用／恢復帳號、移出、離開）：list 的第一句就是工作區列鎖（membership 的 *Stmts 自己帶），
   // 跟 writeInWorkspace 一樣在鎖之後斷言不在還原中（503 RESTORING）、忙碌時整批重試；交易內斷言不成立回 false（什麼都沒寫）
   const writeMembership = list => writeOrdered(db, list, { busy: busyError, restoring: restoringError });
@@ -1725,8 +1726,8 @@ ${ending}`;
   const identityNotReady = () => new ApiError(503, 'IDENTITY_NOT_READY', '專案的網址英文名與代號還在整理，這次沒有存；請稍後再試。', { retryAfter: 5 });
   // 會動到專案名稱或識別碼命名空間的寫入：工作區列鎖 → 不在還原中 → 已正規化（沒有就 503 IDENTITY_NOT_READY，什麼都沒寫）→ 呼叫端的斷言與寫入。
   // 回 false＝呼叫端的斷言不成立
-  async function writeIdentity(list) {
-    const done = await writeInWorkspace([identityReadyStmt(), ...list]);
+  async function writeIdentity(list, workspaceId = DEFAULT_WORKSPACE) {
+    const done = await writeInWorkspace([identityReadyStmt(), ...list], workspaceId);
     if (!done && !(await projectIdentity.isNormalized())) { identityReady = undefined; throw identityNotReady(); }
     return done;
   }
@@ -2512,14 +2513,16 @@ ${ending}`;
   // 「未封存專案不同名」（ADR 0005）：直接建立、改名、取消封存在交易內斷言「沒有其他未封存、未刪除的專案用這個名稱」。
   // 名稱已去頭尾空白，比對跟交易外的預檢一樣逐字（Postgres 的 TEXT 是 COLLATE "C"）；條件是 NOT EXISTS，不會是 SQL NULL
   // nameExpr：名稱（預設是參數 ?；取消封存用子查詢讀這個專案目前的名稱，要先另外斷言專案存在，子查詢才不會是 NULL）
-  const nameFree = (nameExpr = '?') => `NOT EXISTS (SELECT 1 FROM projects o WHERE o.name = ${nameExpr} AND o.id != ? AND o.archived = 0 AND o.deleted_at IS NULL)`;
+  const nameFree = (nameExpr = '?', scoped = false) => `NOT EXISTS (SELECT 1 FROM projects o WHERE o.name = ${nameExpr} AND o.id != ? AND o.archived = 0 AND o.deleted_at IS NULL${scoped ? ' AND o.workspace_id = ?' : ''})`;
+  const creationNameFree = (name, id, scope) => scope === DEFAULT_WORKSPACE ? { cond: nameFree(), args: [name, id] }
+    : { cond: nameFree('?', true), args: [name, id, scope] };
   const nameTaken = () => new ApiError(409, 'NAME_TAKEN', '已有同名的專案');
   // 交易內斷言沒過：用新鮮資料（直接讀資料庫，不用快取）判斷原因。專案剛好被刪或清除 → 404；名稱被別的專案用了 → NAME_TAKEN；
   // 判斷不出（例：對方又剛好改掉了）→ 一般的 409。只用來產生回應；existing：是不是既有的專案（建立時是新的 id）
-  async function nameWriteFailed(id, name, { existing = true } = {}) {
+  async function nameWriteFailed(id, name, { existing = true, workspaceId = DEFAULT_WORKSPACE } = {}) {
     invalidateProjects();
     if (existing && !(await db.get('SELECT 1 AS x FROM projects WHERE id = ? AND deleted_at IS NULL', id))) return new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    if (await db.get('SELECT 1 AS x FROM projects WHERE name = ? AND id != ? AND archived = 0 AND deleted_at IS NULL', name, id)) return nameTaken();
+    if (!(await holdsNow(db, creationNameFree(name, id, workspaceId)))) return nameTaken();
     return new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
   }
   // 識別碼（網址英文名、代號）的寫入（ADR 0005）：交易內斷言沒被別的專案用掉。自動產生的值剛好被搬走：重讀重算，整批重試（次數有限）；
@@ -2534,16 +2537,16 @@ ${ending}`;
   const usedCodes = exceptId => new Set([...allProjectRows.filter(r => r.id !== exceptId).map(r => projCodes[r.id]), ...Object.keys(oldCodes).filter(c => oldCodes[c] !== exceptId)].filter(Boolean));
   // 共用的建立專案邏輯（src/project-create.js）：直接建立、核准建立、新站預設專案、示範資料。這裡接上專案快取與識別碼規則
   const creation = createProjectCreation({ db, randId, nowIso, ApiError, auditLog, membership, projEvent, write: writeIdentity,
-    nameFreeCond: (name, id) => ({ cond: nameFree(), args: [name, id] }),
+    nameFreeCond: creationNameFree,
     names: {
       refresh: () => loadProjects(true),
-      nameInUse: name => projectRows.some(r => !r.archived && r.name === name),
+      nameInUse: (name, workspaceId) => projectRows.some(r => (workspaceId === DEFAULT_WORKSPACE || r.workspace_id === workspaceId) && !r.archived && r.name === name),
       usedSlugs: () => usedSlugs(null),
       autoSlug, // 網址英文名選填，跟引導同一套規則
       autoCode: slug => autoCode(slug, usedCodes(null), allProjectRows.length), // 代號一定存：沒指定就照推導規則挑一個沒被用的
       checkCode: (code, actor) => readCode(code, null, actor),
       slugTaken: (slug, used) => slugTaken(slug, used),
-      nameWriteFailed: (id, name) => nameWriteFailed(id, name, { existing: false }),
+      nameWriteFailed: (id, name, workspaceId) => nameWriteFailed(id, name, { existing: false, workspaceId }),
       afterWrite: async () => { invalidatePeople(); invalidateProjects(); await membership.loadMembers(true); },
     } });
   // 建立專案的內容（直接建立與建立專案申請共用同一套驗證與正規化）：名稱、可見度、網址英文名與代號（沒指定＝null，自動）、看板狀態（沒指定＝null，預設狀態組）
@@ -2586,8 +2589,8 @@ ${ending}`;
   });
   // 建立專案申請（src/project-creation-requests.js）：送出、查看自己的、撤回。核准與拒絕、取消接它回傳的介面
   const creationRequests = registerProjectCreationRequests({ route, db, ApiError, invalid, readJson, randId, nowIso, requireHuman, access, peopleMap,
-    writeInWorkspace, readSpec: readCreationSpec, loadProjects: force => loadProjects(!!force), creation, auditLog, // creation、auditLog：核准與拒絕
-    projectInfo: id => { const r = projectRows.find(x => x.id === id); return r ? { id: r.id, name: r.name } : null; },
+    writeInWorkspace, readSpec: readCreationSpec, loadProjects: force => loadProjects(!!force), creation, auditLog, resolveReviewWorkspace,
+    projectInfo: id => { const r = projectRows.find(x => x.id === id && (x.workspace_id ?? DEFAULT_WORKSPACE) === DEFAULT_WORKSPACE); return r ? { id: r.id, name: r.name } : null; },
     liveTo: (ids, type, data) => live?.toPeople(ids, type, data) });
   route('PATCH', '/api/projects/:id', async ({ ctx, me, req, params }) => {
     await access.check(ctx, me, 'manage_project', { project: params.id }, { what: '改專案名稱' });
