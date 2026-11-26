@@ -4148,10 +4148,12 @@
     return `<section class="wsugg ${sectionClass}" aria-labelledby="${id}"><div class="wsugg-head"><span class="wdot"></span><h3 id="${id}">${title}</h3><span class="wcount ora">${count}</span>${hint ? `<span class="muted small">${hint}</span>` : ''}</div>
       ${rows.join('')}${more}</section>`;
   }
-  function approvalRowHtml({ rowClass, attr, id, icon, title, scope, at, details = [], late = '', actions }) {
-    const parts = [`<span>${esc(scope)}</span>`, ...details, `<time datetime="${esc(at)}">${agoText(at)}</time>`];
+  function approvalRowHtml({ rowClass, attr, id, icon, title, scope, projectId, at, details = [], lateBadgeHtml = '', actions }) {
+    const preset = scope === projectId && (projectId === '預設專案' || projectId === '第二專案');
+    const keepName = projectId != null && !preset ? ' data-nt' : '';
+    const parts = [`<span${keepName}>${esc(scope)}</span>`, ...details.filter(Boolean), `<time datetime="${esc(at)}">${agoText(at)}</time>`];
     return `<div class="sugg-row approval-row ${rowClass}" ${attr}="${esc(id)}"><span class="lead-ic" aria-hidden="true">${icon}</span>
-      <div class="sugg-main"><b data-nt>${esc(title)}</b><span class="muted small">${late}${parts.join(' · ')}</span></div>
+      <div class="sugg-main"><b data-nt>${esc(title)}</b><span class="muted small">${lateBadgeHtml}${parts.join(' · ')}</span></div>
       <div class="sugg-actions">${actions}</div></div>`;
   }
   const approvalExcerpt = text => text ? `<span data-nt>「${esc(oneLine(text, 60))}」</span>` : '';
@@ -4162,7 +4164,7 @@
       hint: '成員申請的新專案：核准後立即建立，申請人成為專案管理員',
       rows: items.map(r => approvalRowHtml({
         rowClass: 'pcr-rev-row', attr: 'data-pcr-rev-row', id: r.id, icon: '🗂️', title: r.name, scope: '工作區', at: r.createdAt,
-        details: [r.requesterName ? `<span data-nt>${esc(r.requesterName)}</span>` : '', approvalExcerpt(r.reason)].filter(Boolean),
+        details: [r.requesterName ? `<span data-nt>${esc(r.requesterName)}</span>` : '', approvalExcerpt(r.reason)],
         actions: `<button type="button" class="btn small primary" data-pcr-review="${esc(r.id)}">查看並處理</button>`,
       })),
       more: next ? `<button type="button" class="link small" data-pcr-rev-more${loading ? ' disabled' : ''}>載入更多</button>` : '',
@@ -4347,17 +4349,17 @@
     const joinSection = approvalSectionHtml('approval-join-title', {
       sectionClass: 'wlead', title: '加入申請', count: joins.length,
       rows: joins.map(j => approvalRowHtml({
-        rowClass: 'lead-row', attr: 'data-join-row', id: j.id, icon: '🙋', title: j.name, scope: j.projectName, at: j.createdAt,
-        details: [approvalExcerpt(j.note)].filter(Boolean), late: late(j.project),
+        rowClass: 'lead-row', attr: 'data-join-row', id: j.id, icon: '🙋', title: j.name, scope: j.projectName, projectId: j.project, at: j.createdAt,
+        details: [approvalExcerpt(j.note)], lateBadgeHtml: late(j.project),
         actions: `<button type="button" class="btn small" data-lead-jno="${esc(j.id)}">${L('拒絕', 'Reject')}</button><button type="button" class="btn small primary" data-join-review="${esc(j.project)}">${L('核准', 'Approve')}</button>`,
       })),
     });
     const skillSection = approvalSectionHtml('approval-skill-title', {
       sectionClass: 'wlead', title: '技能審核', count: skRev.length,
       rows: skRev.map(k => approvalRowHtml({
-        rowClass: 'lead-row', attr: 'data-skrev-row', id: k.skillId, icon: '🧩', title: k.name, scope: projName(k.project), at: k.uploadedAt,
+        rowClass: 'lead-row', attr: 'data-skrev-row', id: k.skillId, icon: '🧩', title: k.name, scope: projName(k.project), projectId: k.project, at: k.uploadedAt,
         details: [k.scripts ? `<span>${esc(L(`含腳本 ${k.scripts} 個`, `${k.scripts} script${k.scripts > 1 ? 's' : ''}`))}</span>` : '',
-          k.uploadedBy?.name ? `<span>${esc(L(`${k.uploadedBy.name}上傳`, `uploaded by ${k.uploadedBy.name}`))}</span>` : ''].filter(Boolean), late: late(k.project),
+          k.uploadedBy?.name ? `<span>${esc(L(`${k.uploadedBy.name}上傳`, `uploaded by ${k.uploadedBy.name}`))}</span>` : ''], lateBadgeHtml: late(k.project),
         actions: `<button type="button" class="btn small" data-lead-skview="${esc(k.skillId)}">${L('看內容', 'View')}</button><button type="button" class="btn small primary" data-lead-skok="${esc(k.skillId)}">${L('核准', 'Approve')}</button>`,
       })),
     });

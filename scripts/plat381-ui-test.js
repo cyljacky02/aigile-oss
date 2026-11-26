@@ -3,7 +3,7 @@
 // B. 頭像選單：leader 有「📁 專案管理 · 你負責的 N 個專案」；管理員照舊（管理員設定、專案管理捷徑）；一般成員沒有「管理」區
 // C. leader 的專案管理頁（/projects）：只列自己當 leader 的專案，沒有新增；⋯ 有改名、程式庫、成員、封存，刪除灰掉
 // D. 專案旁 ⚙：leader 跟管理員一樣有改名、程式庫與分支、成員與本專案角色；封存不放 ⚙（昱志 11/21 選 A），只在專案管理頁
-// E. 要你處理：加入申請、技能審核各有區塊；管理員 1 天內看不到，超過 1 天才出現並註明「專案管理員還沒處理」
+// E. 要你處理：加入申請、技能審核各有區塊；工作區管理員 1 天內看不到，超過 1 天才出現並註明「專案管理員還沒處理」
 // F. 1280、375 不橫向捲動
 // 本機暫存資料庫＋無頭 Chrome／Edge，不連正式站。設 PLAT381_SHOTS=資料夾 會另外截圖。用法：node scripts/plat381-ui-test.js
 import fs from 'node:fs';
@@ -192,6 +192,13 @@ try {
   assert.match(enL, /You're a project admin of "Default project"/, '英文優先審核說明');
   assert.deepEqual(zhLeft(enL), [], '審核區塊沒有中文殘留：' + enL);
   await shot('PLAT-381-9-電腦-英文-leader-要你處理');
+  assert.equal((await call(wang.token, '/api/projects/預設專案', 'PATCH', { name: '技能審核' })).status, 200);
+  await login(wang.token, '/p/main/inbox');
+  await until(async () => (await txt('.wlead h3')) === 'Join requests', 10000, '改名後的英文要你處理');
+  for (const selector of ['[data-join-row]', '[data-skrev-row]']) {
+    assert.match(await txt(selector), /技能審核/, '英文介面保留使用者輸入的專案名稱');
+  }
+  assert.equal((await call(wang.token, '/api/projects/預設專案', 'PATCH', { name: '預設專案' })).status, 200);
   await login(wang.token, '/');
   await js("localStorage.setItem('aigile-lang', 'zh'); true");
 

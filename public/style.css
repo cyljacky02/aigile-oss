@@ -3658,7 +3658,7 @@ body.viewer-open .confirm-root:not(.under-viewer) .overlay { z-index: 1001; } /*
 .approval-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
 @media (max-width: 640px) { .approval-row { grid-template-columns: auto minmax(0, 1fr); } .approval-row .sugg-actions { grid-column: 2; } }
 .lead-ic { font-size: 22px; flex: 0 0 auto; }
-/* PLAT-381：專案管理頁 */
+/* 專案管理頁 */
 .pm-more-menu .pm-off, .pm-more-menu .pm-off .pm-sub { color: var(--muted); cursor: not-allowed; }
 .pset-menu [role="menuitem"] .muted.small { margin-left: auto; padding-left: 12px; }
 .pm-lead-note { padding: 12px 16px; }
