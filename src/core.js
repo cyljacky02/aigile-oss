@@ -21,7 +21,7 @@ import { createAccess, ACCESS_ROLE, isWorkspaceAdmin, hasWorkspaceAdminRights, i
 import { createWorkspaceSettings, CREATE_PROJECTS, DELETE_OWN_MESSAGES } from './workspace-settings.js'; // 工作區設定（誰可以建立專案、誰可以刪除自己的訊息）
 import { createAudit, AUDIT_ACTION, AUDIT_ACTIONS, AUDIT_SCOPE } from './audit.js'; // 稽核紀錄（管理操作）
 import { createAdminNotify, ADMIN_NOTICE, NOTIFY_SCOPE } from './admin-notify.js'; // 管理員異動通知
-import { isNotNullViolation } from './db-errors.js';
+import { lockWorkspaceStmt, ensureStmt, isAssertionFailure, writeOrdered } from './write-order.js'; // 工作區寫入排序與交易內斷言（ADR 0005）
 import { optionWarnings } from './questions.js';
 import { wakeHintWarnings } from './wake-hint.js';
 import { formatProblems, dbBlockCounter, blockMessage, passWarning } from './post-format.js';
@@ -1107,7 +1107,7 @@ export function createApp({ db, docText, apiRefText = '', flowsText = '', releas
     // 新加入的人類：工作區成員，預設沒有專案，只看得到「全部專案」，等被加入或自己加入開放專案。
     // 平台還沒有任何平台管理員時，這位是平台管理員兼工作區管理員（INSERT 時工作區角色是 admin，enterWorkspaceStmts 照它寫平台角色），所有專案靠隱含權限。
     // 「有沒有平台管理員」在同一條 INSERT 裡判斷，先鎖工作區這列：兩人同時註冊排隊（Postgres），只有一位是管理員
-    await db.batch([['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    await db.batch([lockWorkspaceStmt(DEFAULT_WORKSPACE),
       [`INSERT INTO participants (id, kind, name, role, code, token, token_expires_at, created_at, updated_at, last_seen_at, workspace_role)
       SELECT ?,?,?,?,?,?,?,?,?,?,
         CASE WHEN EXISTS (SELECT 1 FROM accounts a JOIN participants o ON o.account_id = a.id
@@ -1677,12 +1677,15 @@ ${ending}`;
   const writeStmts = list => { const s = list.filter(Boolean); return s.length ? db.batch(s) : Promise.resolve(); };
   // 資料、稽核紀錄、管理員通知同一批寫入（一起成功或一起不寫；失敗後重試會從頭再做一次）。
   // 批次裡的前提：ensureStmt(條件) 不成立時這句違反 NOT NULL，整批回復；成立時什麼都不寫。放在要檢查的那句之後
-  // （例：「這次的 UPDATE 有改到」＝之後的列是這次寫的值；別人剛好先改了就不成立）。
+  // （例：「這次的 UPDATE 有改到」＝之後的列是這次寫的值；別人剛好先改了就不成立）。條件不得是 SQL NULL（見 write-order.js 的使用規則）。
   // writeTogether 回 false＝前提不成立、什麼都沒寫（呼叫端照情況回 404／409／410 或「沒有變」）
-  const ensureStmt = (cond, args = []) => [`INSERT INTO app_settings (key, value) SELECT NULL, NULL WHERE NOT (${cond})`, args];
   async function writeTogether(list) {
-    try { await writeStmts(list); return true; } catch (e) { if (isNotNullViolation(e, 'app_settings')) return false; throw e; }
+    try { await writeStmts(list); return true; } catch (e) { if (isAssertionFailure(e)) return false; throw e; }
   }
+  // 共同不變量的寫入（ADR 0005）：第一句一定是工作區列鎖；交易內斷言不成立回 false（什麼都沒寫）。
+  // SQLite 忙碌、PostgreSQL 可重試的交易錯誤：整批重試幾次，還是不行回 503 RETRY_LATER（整批已回復，沒有部分寫入）
+  const busyError = () => new ApiError(503, 'RETRY_LATER', '資料庫正忙，這次沒有存；請稍後再試。', { retryAfter: 1 });
+  const writeInWorkspace = list => writeOrdered(db, [lockWorkspaceStmt(DEFAULT_WORKSPACE), ...list], { busy: busyError });
   const { adminOf } = access; // 管理員是誰（顯示姓名、通知對象）；「能不能」一律用 access.can／check
   // 寫入檢查（權限模組的 write）；pj 沒有（全部專案頻道等）：只要在任何專案是唯讀就擋
   const assertWritable = (me, pj) => access.check({}, me, 'write', { project: pj || null });
@@ -2191,7 +2194,8 @@ ${ending}`;
       stmts.push(...workspace.setDeleteOwnStmts(body.deleteOwnMessages), projEvent(GROUP_EVT, me.id, `${me.name} 設定誰可以刪除自己的訊息：${DELETE_OWN_LABEL[body.deleteOwnMessages]}`, at),
         auditLog.stmt({ actor: me, action: AUDIT_ACTION.WORKSPACE_POLICY_UPDATE, scope: AUDIT_SCOPE.WORKSPACE, detail: { field: 'deleteOwnMessages', from: delBefore, to: body.deleteOwnMessages } }));
     }
-    await writeStmts(stmts);
+    // 第一句工作區列鎖：建立專案政策跟建立專案（之後的建立專案申請）排隊（ADR 0005）；沒有要寫的就不送
+    if (stmts.length) await writeInWorkspace(stmts);
     workspace.invalidate();
     if (name !== null) await saveGroupName(me, name);
     return groupSettings();
@@ -2309,12 +2313,25 @@ ${ending}`;
     if (!name || name.length > 20 || /[,\n]/.test(name)) throw invalid('name 需為 1～20 字，不可含逗號或換行');
     return name;
   };
+  // 「未封存專案不同名」（ADR 0005）：直接建立、改名、取消封存在交易內斷言「沒有其他未封存、未刪除的專案用這個名稱」。
+  // 名稱已去頭尾空白，比對跟交易外的預檢一樣逐字（Postgres 的 TEXT 是 COLLATE "C"）；條件是 NOT EXISTS，不會是 SQL NULL
+  // nameExpr：名稱（預設是參數 ?；取消封存用子查詢讀這個專案目前的名稱，要先另外斷言專案存在，子查詢才不會是 NULL）
+  const nameFree = (nameExpr = '?') => `NOT EXISTS (SELECT 1 FROM projects o WHERE o.name = ${nameExpr} AND o.id != ? AND o.archived = 0 AND o.deleted_at IS NULL)`;
+  const nameTaken = () => new ApiError(409, 'NAME_TAKEN', '已有同名的專案');
+  // 交易內斷言沒過：用新鮮資料（直接讀資料庫，不用快取）判斷原因。專案剛好被刪或清除 → 404；名稱被別的專案用了 → NAME_TAKEN；
+  // 判斷不出（例：對方又剛好改掉了）→ 一般的 409。只用來產生回應；existing：是不是既有的專案（建立時是新的 id）
+  async function nameWriteFailed(id, name, { existing = true } = {}) {
+    invalidateProjects();
+    if (existing && !(await db.get('SELECT 1 AS x FROM projects WHERE id = ? AND deleted_at IS NULL', id))) return new ApiError(404, 'NOT_FOUND', '找不到這個專案');
+    if (await db.get('SELECT 1 AS x FROM projects WHERE name = ? AND id != ? AND archived = 0 AND deleted_at IS NULL', name, id)) return nameTaken();
+    return new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
+  }
   route('POST', '/api/projects', async ({ ctx, me, req }) => {
     await access.check(ctx, me, 'create_project', 'workspace');
     const body = await readJson(req);
     const name = readProjectName(body.name);
     await loadProjects(true);
-    if (projectRows.some(r => !r.archived && r.name === name)) throw new ApiError(409, 'NAME_TAKEN', '已有同名的專案');
+    if (projectRows.some(r => !r.archived && r.name === name)) throw nameTaken(); // 友善的錯誤；保證靠下面交易內的 nameFree
     const code = body.code ? readCode(body.code, null, me) : null;
     const used = await usedSlugs(null), rawSlug = String(body.slug ?? '').trim();
     const slug = rawSlug ? checkSlug(rawSlug, name, used) : autoSlug(name, used); // 網址英文名選填，跟引導同一套規則
@@ -2322,14 +2339,16 @@ ${ending}`;
     const id = randId('prj'), at = nowIso();
     // 看板狀態（選填）：建立時直接給整份清單；沒給就是預設狀態組（第一次讀狀態時補上）
     const initial = body.statuses === undefined || body.statuses === null ? [] : readStatusList(body.statuses, invalid);
-    const stmts = [['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at) VALUES (?,?,0,?,?,?)', [id, name, DEFAULT_WORKSPACE, me.id, at]], projEvent(id, me.id, `${me.name} 建立專案`, at),
+    // 第一句工作區列鎖（writeInWorkspace 加）、接著斷言名稱沒被佔用，才寫入
+    const stmts = [ensureStmt(nameFree(), [name, id]),
+      ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at) VALUES (?,?,0,?,?,?)', [id, name, DEFAULT_WORKSPACE, me.id, at]], projEvent(id, me.id, `${me.name} 建立專案`, at),
       ...initial.map((st, i) => ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [id, st.name, st.category, i, st.color]]),
       ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['slug:' + id, slug]]];
     if (code) stmts.push(["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['pcode:' + id, code]]);
     // 新專案只含建立者；其他人由專案管理員從工作區成員挑人加入
     stmts.push(...setProjectsStmts(me.id, [...listOf(me), id], at));
     stmts.push(...membership.makeProjectAdminStmts(me.id, id)); // 建立專案的人是該專案的專案管理員
-    await db.batch(stmts);
+    if (!(await writeInWorkspace(stmts))) throw await nameWriteFailed(id, name, { existing: false });
     invalidatePeople(); invalidateProjects();
     await membership.loadMembers(true);
     return { __status: 201, ...(await projectsSeenBy(ctx, me)), id };
@@ -2340,10 +2359,15 @@ ${ending}`;
     await loadProjects(true);
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
-    if (projectRows.some(r => !r.archived && r.id !== row.id && r.name === name)) throw new ApiError(409, 'NAME_TAKEN', '已有同名的專案');
+    if (projectRows.some(r => !r.archived && r.id !== row.id && r.name === name)) throw nameTaken();
     if (name !== row.name) {
-      await db.batch([['UPDATE projects SET name = ? WHERE id = ?', [name, row.id]], projEvent(row.id, me.id, `${me.name} 改名：${row.name} → ${name}`, nowIso())]);
+      // 第一句工作區列鎖；專案還在（沒被刪除）、新名稱沒被別的未封存專案用掉，才改名
+      const done = await writeInWorkspace([
+        ensureStmt('EXISTS (SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NULL)', [row.id]),
+        ensureStmt(nameFree(), [name, row.id]),
+        ['UPDATE projects SET name = ? WHERE id = ?', [name, row.id]], projEvent(row.id, me.id, `${me.name} 改名：${row.name} → ${name}`, nowIso())]);
       invalidateProjects();
+      if (!done) throw await nameWriteFailed(row.id, name);
     }
     return projectsSeenBy(ctx, me);
   });
@@ -2434,7 +2458,8 @@ ${ending}`;
     if (code === projCodes[row.id]) return projectsSeenBy(ctx, me);
     const at = nowIso();
     const upsert = "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
-    await db.batch([[upsert, ['pcode:' + row.id, code]], ...(projCodes[row.id] ? [[upsert, ['pcodeold:' + projCodes[row.id], row.id]]] : []), projEvent(row.id, me.id, `${me.name} 把專案代號改成 ${code}`, at)]); // 舊代號留作別名
+    // 第一句工作區列鎖（跟其他動到專案名稱與識別碼的寫入排隊）；代碼的交易內唯一性檢查要等代碼存進資料庫（#42）
+    await writeInWorkspace([[upsert, ['pcode:' + row.id, code]], ...(projCodes[row.id] ? [[upsert, ['pcodeold:' + projCodes[row.id], row.id]]] : []), projEvent(row.id, me.id, `${me.name} 把專案代號改成 ${code}`, at)]); // 舊代號留作別名
     invalidateProjects();
     return projectsSeenBy(ctx, me);
   });
@@ -2451,7 +2476,8 @@ ${ending}`;
     if (clash) throw new ApiError(409, 'SLUG_TAKEN', `「${slug}」已經是「${clash.name}」在用的網址名`, { suggestion: slugFree(slug, used) });
     const at = nowIso();
     const pinCode = (await db.get('SELECT 1 AS x FROM app_settings WHERE key = ?', 'pcode:' + row.id)) || !projCodes[row.id] ? [] : [["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", ['pcode:' + row.id, projCodes[row.id]]]];
-    await db.batch([...pinCode, ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['slug:' + row.id, slug]], projEvent(row.id, me.id, `${me.name} 把網址英文名改成 ${slug}`, at)]);
+    // 第一句工作區列鎖；網址英文名的交易內唯一性檢查要等它存進資料庫（#42）
+    await writeInWorkspace([...pinCode, ["INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", ['slug:' + row.id, slug]], projEvent(row.id, me.id, `${me.name} 把網址英文名改成 ${slug}`, at)]);
     return projectsSeenBy(ctx, me);
   });
   route('PUT', '/api/projects/:id/dm', async ({ ctx, me, req, params }) => {
@@ -2818,7 +2844,7 @@ ${ending}`;
     if (projectRows.filter(r => !r.archived).length <= 1) throw new ApiError(409, 'LAST_PROJECT', '至少要保留一個專案');
     const open = (await db.get("SELECT COUNT(*) AS n FROM cards WHERE project = ? AND status IN ('待整理','待處理','進行中','待確認','受阻')", row.id)).n;
     if (open) throw new ApiError(409, 'HAS_OPEN_CARDS', `這個專案還有 ${open} 張未結案的卡片，請先結案或把卡片移到別的專案。`);
-    await db.batch([['UPDATE projects SET archived = 1 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 封存專案`, nowIso())]);
+    await writeInWorkspace([['UPDATE projects SET archived = 1 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 封存專案`, nowIso())]); // 第一句工作區列鎖：跟取消封存、建立、改名排隊
     invalidateProjects();
     return projectsSeenBy(ctx, me);
   });
@@ -2828,8 +2854,15 @@ ${ending}`;
     const row = projectRows.find(r => r.id === params.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', '找不到這個專案');
     if (row.archived) {
-      await db.batch([['UPDATE projects SET archived = 0 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 還原專案`, nowIso())]);
+      // 名稱已經被別的未封存專案用掉了：不能取消封存（先改名或封存那個）。交易外先檢查給友善的錯誤，寫入那批再斷言一次
+      if (projectRows.some(r => !r.archived && r.id !== row.id && r.name === row.name)) throw nameTaken();
+      // 第一句工作區列鎖；專案還在（沒被刪除）、名稱沒被別的未封存專案用掉，才取消封存
+      const done = await writeInWorkspace([
+        ensureStmt('EXISTS (SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NULL)', [row.id]),
+        ensureStmt(nameFree('(SELECT p.name FROM projects p WHERE p.id = ?)'), [row.id, row.id]),
+        ['UPDATE projects SET archived = 0 WHERE id = ?', [row.id]], projEvent(row.id, me.id, `${me.name} 還原專案`, nowIso())]);
       invalidateProjects();
+      if (!done) throw await nameWriteFailed(row.id, (await db.get('SELECT name FROM projects WHERE id = ?', row.id))?.name ?? row.name);
     }
     return projectsSeenBy(ctx, me);
   });
@@ -2934,10 +2967,11 @@ ${ending}`;
     if (Number(row.purge_at) <= now) throw expired();
     const at = nowIso(), pj = { id: row.id, name: row.name }, paused = pausedList(row.paused_ais);
     const people = await peopleMap(ctx), resumed = paused.map(x => people.get(x.id)?.name).filter(Boolean), counts = await projectFootprint(row.id); // 跟刪除那筆一樣記數量
-    // 先鎖這個專案（跟永久清除排隊），再確認還在可復原期內；復原、恢復 AI、專案事件、稽核紀錄、管理員通知同一批。
+    // 先鎖工作區這列（writeInWorkspace 的第一句；跟建立、改名、取消封存排隊），再鎖這個專案（跟永久清除排隊；順序工作區 → 專案），
+    // 再確認還在可復原期內；復原、恢復 AI、專案事件、稽核紀錄、管理員通知同一批。
     // 期限一過，排程就可能已經挑中它：這裡跟排程的「清除前確認到期」互斥，只有一邊會成功
     const inWindow = 'id = ? AND deleted_at IS NOT NULL AND purge_at > ?';
-    const done = await writeTogether([
+    const done = await writeInWorkspace([
       ['UPDATE projects SET name = name WHERE id = ?', [row.id]],
       ensureStmt(`EXISTS (SELECT 1 FROM projects WHERE ${inWindow})`, [row.id, now]),
       [`UPDATE projects SET deleted_at = NULL, deleted_by = NULL, purge_at = NULL, paused_ais = NULL WHERE ${inWindow}`, [row.id, now]],
@@ -3281,7 +3315,7 @@ ${ending}`;
     // 通知寫入前算：恢復的人是平台管理員的話，恢復後他也是收件人
     const platformRole = (await db.get('SELECT platform_role FROM accounts WHERE id = ?', t.account_id).catch(() => null))?.platform_role;
     const ok = await writeTogether([
-      ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+      lockWorkspaceStmt(DEFAULT_WORKSPACE),
       ensureStmt("EXISTS (SELECT 1 FROM participants WHERE id = ? AND status = 'disabled')", [t.id]),
       ["UPDATE participants SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?", [at, t.id]], ...membership.accountStatusStmts(t.id, 'active', at),
       auditLog.stmt({ actor: me, action: AUDIT_ACTION.ACCOUNT_ENABLE, scope: AUDIT_SCOPE.PLATFORM, target: auditTarget(t) }),
@@ -3313,7 +3347,7 @@ ${ending}`;
     // 一批寫完：先鎖工作區這列（跟升降、停用排隊），確認還沒被移出（別人剛好先移出了：不重複記），改完確認真的移出了（最後一位管理員的檢查擋下來就整批不寫）
     const removed = "EXISTS (SELECT 1 FROM participants WHERE id = ? AND workspace_status = 'removed')";
     const ok = await writeTogether([
-      ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+      lockWorkspaceStmt(DEFAULT_WORKSPACE),
       ensureStmt(`NOT ${removed}`, [t.id]),
       ...(isWorkspaceAdmin(t) ? membership.setWorkspaceRoleStmts(t.id, WORKSPACE_ROLE.MEMBER, at).slice(1) : []), // 移出的人不再是工作區管理員（最後一位時這句不改，下一句也就不移出）
       ["UPDATE participants SET workspace_status = 'removed', updated_at = ?, version = version + 1 WHERE id = ? AND workspace_role = 'member'", [at, t.id]],
@@ -3630,7 +3664,9 @@ ${ending}`;
     return total;
   }
   async function purgeMessageBatch(ids) {
-    const at = nowIso(), due = 'deleted_at IS NOT NULL AND purged_at IS NULL AND purge_at <= ?'; // 已刪除、還沒清除、已到期（可復原期 0 天的刪除當下就到期）
+    // 已刪除、還沒清除、已到期（可復原期 0 天的刪除當下就到期）。purge_at IS NOT NULL 要明寫：下面的交易內斷言用 NOT (due)，
+    // purge_at 是 NULL 時 due 會是 SQL NULL、NOT (NULL) 也是 NULL，那則就被當成「沒問題」放行
+    const at = nowIso(), due = 'deleted_at IS NOT NULL AND purged_at IS NULL AND purge_at IS NOT NULL AND purge_at <= ?';
     const rows = await db.all(`SELECT id, project, file_id FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND ${due}`, JSON.stringify(ids), at);
     if (!rows.length) return 0;
     const mids = JSON.stringify(rows.map(m => m.id));

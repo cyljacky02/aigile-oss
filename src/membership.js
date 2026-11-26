@@ -10,6 +10,7 @@
 // 寫：回傳 [sql, args] 語句陣列，呼叫端跟卡片退回、專案事件放進同一個 db.batch（一起成功或一起失敗）；執行後呼叫 load(true)。
 // PROJECTS：未封存專案 id 的陣列（core.js 原地更新的同一個陣列）。
 // onChange：模組自己改了資料（升級轉換）後通知呼叫端（core.js 清成員快取）。
+import { lockWorkspaceStmt } from './write-order.js'; // 工作區列鎖（ADR 0005：同一批的第一句）
 export const DEFAULT_WORKSPACE = 'default';
 export const PROJECT_ROLE = Object.freeze({ ADMIN: 'admin', MEMBER: 'member', VIEWER: 'viewer' });
 const PR = PROJECT_ROLE;
@@ -181,7 +182,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 沒有就什麼都不改（呼叫端再讀一次看有沒有改到）。第一句先鎖工作區這列：兩位管理員同時互降時排隊，後到的看得到前一位的結果（Postgres）。
   // 平台角色另外管（setPlatformRoleStmts）
   const setWorkspaceRoleStmts = (id, role, at) => [
-    ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    lockWorkspaceStmt(DEFAULT_WORKSPACE),
     role === WR.ADMIN
       ? [`UPDATE participants SET workspace_role = '${WR.ADMIN}', updated_at = ? WHERE id = ? AND kind = 'human' AND status = 'active' AND workspace_role != '${WR.ADMIN}'`, [at, id]]
       : [`UPDATE participants SET workspace_role = '${WR.MEMBER}', updated_at = ? WHERE id = ? AND workspace_role = '${WR.ADMIN}'
@@ -192,7 +193,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 升降平台管理員（role：admin | none；只有啟用中的人類帳號能升）。跟工作區管理員一樣：降級在同一句檢查「還有別的啟用中平台管理員」，
   // 沒有就不改（呼叫端再讀一次）；先鎖工作區這列讓同時互降的人排隊（第一階段只有一個工作區，拿它當全平台的鎖）
   const setPlatformRoleStmts = (id, role, at) => [
-    ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    lockWorkspaceStmt(DEFAULT_WORKSPACE),
     role === 'admin'
       ? ["UPDATE accounts SET platform_role = 'admin', updated_at = ? WHERE platform_role != 'admin' AND status = 'active' AND id IN (SELECT account_id FROM participants WHERE id = ? AND kind = 'human' AND status = 'active')", [at, id]]
       : [`UPDATE accounts SET platform_role = 'none', updated_at = ? WHERE platform_role = 'admin' AND id IN (SELECT account_id FROM participants WHERE id = ?)
@@ -202,7 +203,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 他是工作區管理員時還有別的啟用中工作區管理員、他是平台管理員時還有別的啟用中平台管理員；不然什麼都不改（呼叫端再讀一次）。
   // 帳號狀態只在真的停用了才跟著改。token：換上的新登入碼雜湊（舊的立刻失效）
   const disableStmts = (id, at, token) => [
-    ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    lockWorkspaceStmt(DEFAULT_WORKSPACE),
     [`UPDATE participants SET status = 'disabled', token = ?, updated_at = ?, version = version + 1 WHERE id = ? AND kind = 'human' AND status = 'active'
       AND (workspace_role != '${WR.ADMIN}' OR EXISTS (SELECT 1 FROM participants o WHERE o.workspace_id = ? AND o.workspace_role = '${WR.ADMIN}' AND o.kind = 'human' AND o.status = 'active' AND o.id != participants.id))
       AND (NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = participants.account_id AND a.platform_role = 'admin' AND a.status = 'active')

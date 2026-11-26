@@ -235,7 +235,7 @@ B. 不接受，等全部完成
 - **工作區角色**：`PUT /api/participants/:id/workspace-role {role: admin|member}`（工作區管理員）。**平台角色**：`PUT /api/participants/:id/platform-role {role: admin|none}`（平台管理員）。交棒＝先升別人、再降自己；舊的 `POST /api/admin/transfer` 回 410 `GONE`。
 - **移出工作區** `POST /api/participants/:id/remove`（工作區管理員）：結束成員資格，所有專案成員資格一起結束（含封存的專案，帳號停用中也一樣）、還在審核的加入申請清掉、他名下的 AI 停用，名字與歷史紀錄保留，帳號不受影響；之後可以用邀請找回來。自己離開 `POST /api/leave` 也一樣是移出工作區（帳號不停用，裝置登出；最後一位工作區管理員回 409 `LAST_WORKSPACE_ADMIN`）。**停用帳號** `POST /api/participants/:id/disable`、恢復 `…/enable`、已停用清單 `GET /api/participants/disabled`（只有平台管理員）：所有登入與他的 AI 立刻失效，角色保留。
 - **專案成員**：見 3.13 的專案成員端點。移出的 `dryRun` 預覽 `returnedCards` 含跟著離開的 AI 的卡，`ais: [{ participantId, name, returnedCards }]` 分開列。看不到的私人專案（含封存的）一律 404，跟不存在一樣。`PUT /api/participants/:id/projects {projects, dryRun?}`（工作區管理員，保留這一版）把一個人的專案成員資格整份換成這份清單：新加入的是專案成員，已在的專案角色不變，沒列的專案移出（卡片退回待處理）；對象要是工作區成員（已移出、停用回 403 `NOT_WORKSPACE_MEMBER`）。核准加入申請時申請人已不在工作區也回 403 `NOT_WORKSPACE_MEMBER`。職稱 `PUT /api/participants/:id/project-roles {roles: {專案: 職稱}}`（專案管理員或本人）。
-- **建立專案** `POST /api/projects`：工作區管理員；工作區設定 `createProjects` 是 `members` 時一般成員也可以（`GET /api/projects` 的 `canCreateProject`）。建立的人成為該專案的專案管理員。
+- **建立專案** `POST /api/projects`：工作區管理員；工作區設定 `createProjects` 是 `members` 時一般成員也可以（`GET /api/projects` 的 `canCreateProject`）。建立的人成為該專案的專案管理員。未封存、未刪除的專案名稱不能重複：建立、改名（`PATCH /api/projects/:id`）、取消封存（`POST /api/projects/:id/unarchive`）撞名都回 409 `NAME_TAKEN`（同時寫入也一樣，只有一個成功）；**取消封存開始檢查名稱**，名稱已被別的未封存專案用掉時要先改名或封存那個。剛好同時有人在改、判斷不出原因時回 409 `CONFLICT`，重新讀取後再試。
 - **邀請**（工作區管理員）：`POST /api/invites {name, ttl?, projects: [專案 | {project, role: admin|member|viewer, title?}]}` → `{ invite, token, url }`；`GET /api/invites[?status=pending]`（每筆有 `kind: new|rejoin|reset`、`presets: [{project, role, title}]`）、`POST /api/invites/:id/regenerate`（重設登入的連結跟 `POST /api/participants/:id/reset-login` 一樣：平台管理員的只有平台管理員能重發，否則 403 `CANNOT_MANAGE_ADMIN`）、`…/cancel`；已移出工作區的人用同名邀請＝找回原帳號（`rejoin`）：接受時要用原本的帳號登入，`POST /api/auth/invite {token, username, password}` 或 `{token, code}`（登入碼）；只帶連結回 400 `INVITE_LOGIN_REQUIRED`，帳密不對或不是那個帳號回 400 `LOGIN_FAILED`，兩種都不會用掉邀請。舊欄位 `roles`、`role`、`readOnly`（＝`viewer`）照收。
 - **自行加入**：`POST /api/join`；沒開放自行註冊回 403 `JOIN_CLOSED`，設了房間碼要帶 `roomCode`（沒帶 400 `ROOM_CODE_REQUIRED`、錯 403）。自己加入的人是工作區成員、沒有專案。平台還沒有平台管理員時，第一位成為平台管理員兼工作區管理員。
 - **工作區設定** `GET｜PUT /api/workspace/settings {name?, openJoin?, roomCode?, createProjects?: members|admins}`（工作區管理員；`/api/group/settings` 是同一份的舊名）；附件保存期限覆寫 `GET｜PUT /api/file-ttl {hours | null}`（null＝跟平台預設）。**平台設定** `GET｜PUT /api/platform/settings {fileTtlHours}`；備份與還原、示範資料、更新檢查也只給平台管理員。還原原樣帶回備份裡的平台、工作區角色，你的登入改掛到備份裡最早加入的平台管理員；1.1 之前的備份照升級對應（`is_admin`＝平台管理員兼工作區管理員）。
@@ -298,6 +298,7 @@ B. 不接受，等全部完成
 | 404 | `NOT_FOUND` | 不存在或看不到 |
 | 409 | `IDEMPOTENCY_CONFLICT` | 同一 requestId 用在不同內容 |
 | 429 | `RATE_LIMITED`／`SEARCH_LIMIT` | 依 `Retry-After`（或 `retryAfter`）秒數再試；每分鐘上限 120 次、搜尋 10 次 |
+| 503 | `RETRY_LATER` | 資料庫正忙，這次什麼都沒寫：依 `Retry-After` 秒數後用相同內容重送 |
 | 5xx、網路中斷、逾時 | — | **用相同 requestId 與相同內容重送**，伺服器保證不重複發文 |
 
 
