@@ -55,7 +55,7 @@ const checks = {
   },
   async 'Worker before migration'({ db, call }) {
     await db.run('DROP TABLE project_templates');
-    await db.run('DELETE FROM schema_migrations WHERE name = ?', '018_project_templates.sql');
+    await db.run('DELETE FROM schema_migrations WHERE name = ?', '017_project_templates.sql');
     const result = expect(await call(backup), 200);
     assert.ok(!result.tables.some(t => t.name === table));
     assert.equal(result.empty, true);
@@ -85,7 +85,7 @@ const checks = {
   },
   async 'template migration racing restore begin'({ call, db, hooks }) {
     await db.run('DROP TABLE project_templates');
-    await db.run('DELETE FROM schema_migrations WHERE name = ?', '018_project_templates.sql');
+    await db.run('DELETE FROM schema_migrations WHERE name = ?', '017_project_templates.sql');
     hooks.beforeBegin = async () => {
       await db.batch([
         [`CREATE TABLE IF NOT EXISTS project_templates (workspace_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 30), visibility TEXT NOT NULL CHECK (visibility IN ('open', 'review', 'private')), statuses_json TEXT NOT NULL, retired_at TEXT, PRIMARY KEY(workspace_id, id))`, []],

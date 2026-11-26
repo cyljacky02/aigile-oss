@@ -100,12 +100,12 @@ try {
   const beforeTemplates = openNodeDb(oldFile, { legacyProjects: false });
   await beforeTemplates.run("UPDATE workspaces SET name = '原工作區' WHERE id = 'default'");
   await beforeTemplates.run('DROP TABLE project_templates');
-  await beforeTemplates.run('DELETE FROM schema_migrations WHERE name = ?', '018_project_templates.sql');
+  await beforeTemplates.run('DELETE FROM schema_migrations WHERE name = ?', '017_project_templates.sql');
   beforeTemplates.close();
   const upgraded = openNodeDb(oldFile, { legacyProjects: false });
   assert.equal((await upgraded.get("SELECT name FROM workspaces WHERE id = 'default'")).name, '原工作區');
   assert.equal((await upgraded.get('SELECT COUNT(*) AS n FROM project_templates')).n, 0, '舊站新增空範本表');
-  assert.ok(await upgraded.get('SELECT 1 AS x FROM schema_migrations WHERE name = ?', '018_project_templates.sql'));
+  assert.ok(await upgraded.get('SELECT 1 AS x FROM schema_migrations WHERE name = ?', '017_project_templates.sql'));
   upgraded.close();
   const odb = openNodeDb(path.join(tmp, 'open.db'), { legacyProjects: false });
   assert.ok(await odb.get("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"), 'openNodeDb 走升級機制');
