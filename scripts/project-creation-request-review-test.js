@@ -205,7 +205,8 @@ try {
     is(await approve(ann, w.id), 409, 'REQUEST_NOT_PENDING', '已撤回不能核准');
     const cx = await submit(wang, { name: '要取消' });
     await db.batch([lockWorkspaceStmt('default'), ...cancelStmts({ requesterId: wang.id, cancelCode: 'policy_changed', at: new Date().toISOString() })]);
-    is(await approve(ann, cx.id), 409, 'REQUEST_NOT_PENDING', '已取消不能核准');
+    const cxErr = is(await approve(ann, cx.id), 409, 'REQUEST_NOT_PENDING', '已取消不能核准');
+    assert.deepEqual([cxErr.error.state, cxErr.error.cancelCode], ['cancelled', 'policy_changed'], '錯誤帶目前的狀態與取消原因（分得出政策已改變）：' + JSON.stringify(cxErr));
     is(await reject(ann, cx.id), 409, 'REQUEST_NOT_PENDING', '已取消不能拒絕');
   }
 

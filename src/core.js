@@ -4896,7 +4896,7 @@ ${ending}`;
         e = new ApiError(500, 'INTERNAL', '伺服器錯誤');
       }
       const headers = e.extra.retryAfter ? { 'Retry-After': String(e.extra.retryAfter) } : {};
-      return json(e.status, { error: { code: e.code, message: e.message, ...(e.extra.captchaRequired ? { captchaRequired: true } : {}), ...(e.extra.suggestion ? { suggestion: e.extra.suggestion } : {}), ...(e.extra.field ? { field: e.extra.field } : {}), ...(e.extra.cards ? { cards: e.extra.cards } : {}) } }, headers);
+      return json(e.status, { error: { code: e.code, message: e.message, ...(e.extra.captchaRequired ? { captchaRequired: true } : {}), ...(e.extra.suggestion ? { suggestion: e.extra.suggestion } : {}), ...(e.extra.field ? { field: e.extra.field } : {}), ...(e.extra.state ? { state: e.extra.state } : {}), ...(e.extra.cancelCode ? { cancelCode: e.extra.cancelCode } : {}), ...(e.extra.cards ? { cards: e.extra.cards } : {}) } }, headers);
     }
   }
 }

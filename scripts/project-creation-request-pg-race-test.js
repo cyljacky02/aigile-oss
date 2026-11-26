@@ -7,7 +7,7 @@
 // 3. 移出申請人 vs 政策切換：先完成的取消（workspace_member_removed），政策切換只取消剩下的
 // 4. 申請人撤回 vs 停用申請人：撤回先完成 → 停用取消 0 份（已撤回的不變）
 // 5. 停用申請人 vs 政策切換：停用先完成（account_disabled），政策切換只取消剩下的
-// 6. 核准 vs 政策切換：TODO(#48) —— 核准在 #45；見下面的 approveVsPolicyChange
+// 核准 vs 政策切換、停用、移出（兩個順序）在 project-creation-request-approve-pg-race-test.js（用不同的連線池）
 // 用法：AIGILE_TEST_PG_URL=postgres://…@127.0.0.1/… node scripts/project-creation-request-pg-race-test.js
 import './test-home.mjs';
 import fs from 'node:fs';
@@ -66,14 +66,6 @@ let seq = 0;
 const rid = () => `race-${++seq}-${Math.random().toString(36).slice(2, 8)}`;
 const states = async () => Object.fromEntries((await db.all('SELECT name, state, cancel_code FROM project_creation_requests')).map(r => [r.name, `${r.state}${r.cancel_code ? ':' + r.cancel_code : ''}`]));
 const pendingCount = async () => Number((await db.get("SELECT COUNT(*) AS n FROM project_creation_requests WHERE state = 'pending'")).n);
-
-// TODO(#48)：核准 vs 政策切換（核准在 #45）。兩個順序都要測：
-//   - 核准先完成（停在核准那一批），政策切換被擋住 → 放行後：申請 approved、專案存在；政策切換的 cancelledProjectCreationRequests 不含它
-//   - 政策切換先完成（停在 POLICY），核准被擋住 → 放行後：核准 409（政策已改變），申請 cancelled:policy_changed、沒有專案
-// 也要補：核准 vs 停用申請人、核准 vs 移出申請人（申請人不符資格 → 409；先核准的不受影響）。用上面的 race() 就行
-async function approveVsPolicyChange() {
-  console.log('… 核准 vs 政策切換：TODO(#48)（核准在 #45，整合時補上）');
-}
 
 try {
   const join = async name => { const b = ok(await call(null, '/api/join', 'POST', { name, role: 'PG' }), name); return { ...b, id: b.participant.participantId }; };
@@ -152,9 +144,6 @@ try {
     assert.deepEqual([s['菲菲的申請'], s['陳的申請']], ['cancelled:account_disabled', 'cancelled:policy_changed'], '每份只有一個結局');
     console.log('✓ 停用申請人 vs 政策切換：先完成的取消，另一個只取消剩下的');
   }
-
-  // 6) 核准 vs 政策切換：TODO(#48)
-  await approveVsPolicyChange();
 
   console.log('project-creation-request-pg-race-test：全部通過');
 } catch (e) {

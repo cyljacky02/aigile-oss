@@ -194,7 +194,7 @@ export function registerProjectCreationRequests(d) {
   const notFound = () => new ApiError(404, 'NOT_FOUND', '找不到這份建立專案申請');
   const notReady = () => new ApiError(503, 'PROJECT_CREATION_REQUESTS_NOT_READY', '建立專案申請還沒準備好（資料庫還沒升級），請稍後再試。', { retryAfter: 5 });
   const conflict = () => new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
-  const ended = r => new ApiError(409, 'REQUEST_NOT_PENDING', '這份申請已經結束（不是待審核），不能再變更。', { state: r.state });
+  const ended = r => new ApiError(409, 'REQUEST_NOT_PENDING', '這份申請已經結束（不是待審核），不能再變更。', { state: r.state, ...(r.state === PCR_STATE.CANCELLED ? { cancelCode: r.cancel_code } : {}) }); // 帶目前的狀態與取消原因（呼叫者已經看得到這份申請）
   // 申請相關資料表還沒建立（程式先部署、資料庫還沒升級）：503，可以重試；直接建立專案照常
   const guarded = fn => async args => { try { return await fn(args); } catch (e) { if (isMissingTable(e)) throw notReady(); throw e; } };
 
