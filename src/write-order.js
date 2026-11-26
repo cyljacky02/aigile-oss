@@ -7,7 +7,7 @@
 // 3. 加鎖順序固定：工作區 → 專案 → 其他資源。同一批要鎖多樣東西時一律照這個順序，避免死結。
 // 4. 前提用 ensureStmt 在交易內斷言；交易前讀到的資料只用來準備候選值與錯誤訊息，不用來保證一致性。
 // 5. 持久的東西（資料、事件、稽核、通知）同一批提交；即時事件與快取更新在提交成功之後才做。
-// 6. 還原備份收尾完之前（restore_state 在）不得介入：writeOrdered 帶 restoring 時，鎖之後第二句斷言不在還原中。
+// 6. 還原備份收尾完之前（restore_state 在）不得介入：writeOrdered 帶 restoring 時，工作區列鎖全部拿到後斷言不在還原中。
 import { isNotNullViolation } from './db-errors.js';
 
 // 工作區列鎖：對工作區這一列做一次沒有變化的 UPDATE。PostgreSQL 拿到列鎖直到交易結束；SQLite、D1 本來就一次只做一個寫入交易
@@ -45,8 +45,12 @@ export const RETRY_WAITS_MS = [20, 60, 150]; // 重試前等多久（次數有�
 export async function writeOrdered(db, list, { busy, restoring, waits = RETRY_WAITS_MS } = {}) {
   let stmts = list.filter(Boolean); // 稽核等沒有要寫的回 null
   if (!stmts.length) return true;
-  if (stmts[0]?.[0] !== lockWorkspaceStmt('')[0]) throw new Error('共同不變量的寫入：第一句要是 lockWorkspaceStmt');
-  if (restoring) stmts = [stmts[0], notRestoringStmt(), ...stmts.slice(1)];
+  const lockSql = lockWorkspaceStmt('')[0];
+  if (stmts[0][0] !== lockSql) throw new Error('共同不變量的寫入：第一句要是 lockWorkspaceStmt');
+  if (restoring) {
+    const firstNonLock = stmts.findIndex(([sql]) => sql !== lockSql);
+    stmts.splice(firstNonLock < 0 ? stmts.length : firstNonLock, 0, notRestoringStmt());
+  }
   for (let attempt = 0; ; attempt++) {
     try { await db.batch(stmts); return true; } catch (e) {
       if (isAssertionFailure(e)) { if (restoring && await isRestoring(db)) throw restoring(); return false; }

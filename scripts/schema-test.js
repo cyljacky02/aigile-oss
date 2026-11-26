@@ -23,8 +23,9 @@ try {
     for (const [, t, c] of sql.matchAll(/ALTER TABLE\s+(\w+)\s+ADD COLUMN\s+(\w+)/gi)) {
       if (!cols(t).has(c) && !droppedCols.has(`${t}.${c}`)) miss.push(`${f}: ${t}.${c}`);
     }
+    const renamed = new Map([...sql.matchAll(/ALTER TABLE\s+(\w+)\s+RENAME TO\s+(\w+)/gi)].map(([, from, to]) => [from, to]));
     for (const [, t] of sql.matchAll(/CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(\w+)/gi)) {
-      if (!cols(t).size) miss.push(`${f}: 表 ${t}`);
+      if (!cols(renamed.get(t) ?? t).size) miss.push(`${f}: 表 ${t}`);
     }
     for (const [, name] of sql.matchAll(/CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF NOT EXISTS\s+)?(\w+)/gi)) {
       if (!idx.has(name) && !dropped.has(name)) miss.push(`${f}: 索引 ${name}`);
