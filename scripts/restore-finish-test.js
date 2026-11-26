@@ -33,7 +33,7 @@ const site = async name => {
   return { db, call: appCaller(app), trace, fail: r => { rule = r; }, armed: () => !!rule };
 };
 const sqlIs = re => s => re.test(s[0]);
-const restoreAudits = db => db.all("SELECT actor_id, actor_name, detail FROM audit_log WHERE action = 'backup.restore'");
+const restoreAudits = db => db.all("SELECT actor_id, actor_name, count, detail FROM audit_log WHERE action = 'backup.restore'");
 const restoring = async db => !!(await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'"));
 
 async function exportAll(s, tok) {
@@ -116,7 +116,8 @@ try {
     const audits = await restoreAudits(B.db);
     assert.equal(audits.length, 1, 'A：backup.restore 只有一筆');
     assert.deepEqual([audits[0].actor_id, audits[0].actor_name], [ME, '新站管理員'], 'A：操作者是按還原的人（開始匯入時的身分與名字）');
-    assert.deepEqual(JSON.parse(audits[0].detail), { appVersion: backup.appVersion, humans: 2, ais: 1 }, 'A：稽核內容正確');
+    assert.deepEqual(JSON.parse(audits[0].detail), { appVersion: backup.appVersion, humans: 2, ais: 1, counted: 'cancelledProjectCreationRequests' }, 'A：稽核內容正確');
+    assert.equal(Number(audits[0].count), 0, 'A：沒有待審申請，因還原而取消 0 份');
     // 既有行為不變：其他人類要重設登入、自己不用；舊的登入不能用；流水號接續
     const ppl = (await B.call(me.token, '/api/participants')).body.items;
     assert.equal(ppl.find(p => p.participantId === CHEN)?.needsLogin, true, 'A：其他人類標要重設登入');
@@ -149,7 +150,7 @@ try {
     assert.equal(await restoring(C.db), false, 'B：解除還原中');
     const audits = await restoreAudits(C.db);
     assert.equal(audits.length, 1, 'B：backup.restore 只有一筆');
-    assert.deepEqual(JSON.parse(audits[0].detail), { appVersion: backup.appVersion, humans: 2, ais: 1 }, 'B：稽核內容正確');
+    assert.deepEqual(JSON.parse(audits[0].detail), { appVersion: backup.appVersion, humans: 2, ais: 1, counted: 'cancelledProjectCreationRequests' }, 'B：稽核內容正確');
   }
   // ---- C. 舊版備份（第一階段之前）：成員資料轉換做到一半失敗（每個人已轉、跨專案角色還沒轉），重試後跟一次成功一樣 ----
   {

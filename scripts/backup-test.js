@@ -99,7 +99,8 @@ try {
   const att = await A.call(liu.token, `/api/files?name=note.txt&declared=true&project=${pj}`, 'POST', null, enc('附件內容'));
   assert.equal(att.status, 201, JSON.stringify(att.body));
   await A.db.run("INSERT INTO app_settings (key, value) VALUES ('olink:p_x', '{\"h\":\"secret\"}')");
-  // 建立專案申請（#44）：待審與已撤回各一份，原樣跟著備份走（還原後的待審檢查在 #47）
+  // 建立專案申請（#44）：待審與已撤回各一份，原樣跟著備份走。政策是 approval、申請人是有效成員：還原後的待審檢查（#47）保留待審核
+  await A.db.run("UPDATE workspaces SET create_projects = 'approval' WHERE id = 'default'");
   const pcrAt = new Date().toISOString(), Cn = chen.participant.participantId;
   await A.db.run("INSERT INTO project_creation_requests (id, workspace_id, requester_id, request_id, name, reason, visibility, slug, code, statuses_json, state, created_at) VALUES ('pcr_bk1','default',?,'r1','行動版','要做 app','private','mobile','MOB',NULL,'pending',?)", Cn, pcrAt);
   await A.db.run("INSERT INTO project_creation_requests (id, workspace_id, requester_id, request_id, name, reason, visibility, state, created_at, ended_at, ended_by) VALUES ('pcr_bk2','default',?,'r2','舊申請','x','review','withdrawn',?,?,?)", Cn, pcrAt, pcrAt, Cn);
