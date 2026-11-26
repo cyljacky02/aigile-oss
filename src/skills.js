@@ -5,6 +5,10 @@
 //   - 執行照工具權限，不另外問；技能只發給該專案、指定的 AI（所有 AI／指定角色／指定 AI，MAIN-249）；新版或下架由平台私訊主人（每位主人一則）
 import { ROLES } from './roles.js';
 import { ACCESS_ROLE } from './access.js';
+import { DEFAULT_WORKSPACE, PROJECT_ROLE } from './membership.js';
+import { activeMemberCond, reviewerCond } from './project-creation-requests.js';
+import { ensureCond, holdsNow } from './project-identity.js';
+import { ensureStmt } from './write-order.js';
 import { SKILL_TEMPLATES, TEMPLATE_CATEGORIES, templateByName, templateIn, templateMarkOf, TEMPLATE_MARK } from './skill-templates.js';
 export const SKILL_MAX_BYTES = 1024 * 1024;
 export const SKILL_MAX_FILES = 100;
@@ -51,7 +55,7 @@ export const PACK_MAX_FILES = 800;
 export const packMeta = r => { const s = r?.files ?? r?.pack_meta; if (typeof s !== 'string' || s[0] !== '{') return null; try { return JSON.parse(s).pack || null; } catch { return null; } };
 
 export function registerSkills({ route, db, ApiError, invalid, readJson, randId, nowIso, sha256, peopleMap, projectsOf, PROJECTS, nameOf,
-  access, assertNoSecret, writeDm, myAi, requireHuman, setupSha = '', roleDefsMap = async () => ({}), storage = null }) {
+  access, assertNoSecret, writeInWorkspace, writeDm, myAi, requireHuman, setupSha = '', roleDefsMap = async () => ({}), storage = null }) {
   const bytes = s => new TextEncoder().encode(s).length;
   const TPL_HINT = `CASE WHEN substr(files, 1, 1) = '[' AND instr(files, '\\n  ${TEMPLATE_MARK}:') > 0 THEN substr(files, instr(files, '\\n  ${TEMPLATE_MARK}:'), 100) END AS tpl`; // 範本標記那一小段（PLAT-365；JSON 裡 frontmatter 縮排那一行，其他檔隨口提到不算）
   // 這個技能發不發給這隻 AI——安裝、私訊主人、同名檢查、待允許數、安裝統計都用這一個判斷
@@ -199,12 +203,24 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
     for (const { human, ais } of byOwner.values()) await writeDm({ human, ai: ais[0], from: 'system', text: text(ais.length), project: pj, requestId: `skill_${key}_${human.id}` }).catch(() => {});
   }
   const syncLink = base => (base ? `${base}/my-ai?sync=1` : '「我的 AI」');
-  async function publish(ctx, r, by, base) {
-    const at = nowIso();
-    await db.batch([
-      ["UPDATE skills SET status = 'superseded' WHERE project = ? AND name = ? AND status = 'published' AND id != ?", [r.project, r.name, r.id]],
-      ["UPDATE skills SET status = 'published', reviewed_by = COALESCE(?, reviewed_by), reviewed_at = COALESCE(?, reviewed_at) WHERE id = ?", [by, by ? at : null, r.id]],
-    ]);
+  const notPending = () => new ApiError(409, 'NOT_PENDING', '這個版本已經處理過了');
+  const busy = () => new ApiError(409, 'BUSY', '剛好有人同時變更技能，請再按一次送出');
+  const notLeader = action => new ApiError(403, 'NOT_LEADER', action === 'remove' ? '只有這個專案的專案管理員能下架技能' : '只有這個專案的專案管理員能核准');
+  // 管理且可寫：隱含管理權優先於唯讀角色；明確的專案管理員須仍是有效成員。封存專案仍可審核。
+  const managerCond = (id, project) => {
+    const admin = reviewerCond(id), member = activeMemberCond(id);
+    return {
+      cond: `EXISTS (SELECT 1 FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL)
+        AND (${admin.cond} OR (${member.cond} AND EXISTS (SELECT 1 FROM project_members WHERE project_id = ? AND participant_id = ? AND role = ?)))`,
+      args: [project, DEFAULT_WORKSPACE, ...admin.args, ...member.args, project, id, PROJECT_ROLE.ADMIN],
+    };
+  };
+  const pendingCond = id => ({ cond: "EXISTS (SELECT 1 FROM skills WHERE id = ? AND status = 'pending')", args: [id] });
+  const publishStmts = (r, by = null, note = null) => [
+    ["UPDATE skills SET status = 'superseded' WHERE project = ? AND name = ? AND status = 'published' AND id != ?", [r.project, r.name, r.id]],
+    ["UPDATE skills SET status = 'published', reviewed_by = ?, reviewed_at = ?, review_note = ? WHERE id = ? AND status = 'pending'", [by, by ? nowIso() : null, note, r.id]],
+  ];
+  async function notifyPublished(ctx, r, base) {
     await tellOwners(ctx, r, n => `🧩 技能有新版：${nameOf(r.project)} 的「${r.name}」第 ${r.version} 版${r.has_scripts ? `（含腳本 ${r.has_scripts} 個，要你允許才會安裝）` : ''}，你有 ${n} 隻 AI 會用到。前往同步（按「全部同步」一次處理）：${syncLink(base)}`, r.id);
   }
 
@@ -285,19 +301,24 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
     if (v.pack) await storage.put(PACK_KEY(id), new TextEncoder().encode(JSON.stringify(v.files)), { mime: 'application/json', name: v.name });
     const files = v.pack ? JSON.stringify({ pack: { key: PACK_KEY(id), ...v.pack } }) : JSON.stringify(v.files);
     const r = { id, project: pj, name: v.name, description: v.description, files, sha256: sha, size: v.size, has_scripts: v.scripts, roles: encTarget(target), uploaded_by: me.id, uploaded_at: at };
-    // 版本號在同一句 SQL 算（MAX+1），加上唯一索引；兩人同時上傳時後到的那個會撞索引 → 請他再按一次
+    const direct = !v.scripts || manage; // 純文字，或 leader／管理員上傳 → 直接上架
+    // 和審核、下架共用工作區鎖。新增、作廢舊待核准版、直接上架一起提交。
     try {
-      await db.run('INSERT INTO skills (id, project, name, version, description, files, sha256, size, has_scripts, roles, status, uploaded_by, uploaded_at) SELECT ?,?,?, COALESCE(MAX(version), 0) + 1, ?,?,?,?,?,?,?,?,? FROM skills WHERE project = ? AND name = ?',
-        r.id, r.project, r.name, r.description, r.files, r.sha256, r.size, r.has_scripts, r.roles, 'pending', r.uploaded_by, r.uploaded_at, pj, v.name);
+      const done = await writeInWorkspace([
+        v.scripts && direct ? ensureCond(managerCond(me.id, pj)) : null,
+        ['INSERT INTO skills (id, project, name, version, description, files, sha256, size, has_scripts, roles, status, uploaded_by, uploaded_at) SELECT ?,?,?, COALESCE(MAX(version), 0) + 1, ?,?,?,?,?,?,?,?,? FROM skills WHERE project = ? AND name = ?',
+          [r.id, r.project, r.name, r.description, r.files, r.sha256, r.size, r.has_scripts, r.roles, 'pending', r.uploaded_by, r.uploaded_at, pj, v.name]],
+        ["UPDATE skills SET status = 'superseded' WHERE project = ? AND name = ? AND status = 'pending' AND id != ?", [pj, v.name, r.id]],
+        ...(direct ? publishStmts(r) : []),
+      ]);
+      if (!done) throw notLeader();
     } catch (e) {
       if (v.pack) await storage.delete(PACK_KEY(id)).catch(() => {});
       if (/UNIQUE/i.test(String(e?.message))) throw new ApiError(409, 'BUSY', `剛好有人同時上傳「${v.name}」，請再按一次送出`);
       throw e;
     }
     r.version = (await db.get('SELECT version FROM skills WHERE id = ?', r.id)).version;
-    await db.run("UPDATE skills SET status = 'superseded' WHERE project = ? AND name = ? AND status = 'pending' AND id != ?", pj, v.name, r.id); // 新版上傳：舊的待核准版作廢，不用審兩次
-    const direct = !v.scripts || manage; // 純文字，或 leader／管理員上傳 → 直接上架
-    if (direct) await publish(ctx, r, null, base);
+    if (direct) await notifyPublished(ctx, r, base);
     return { __status: 201, ...view({ ...r, status: direct ? 'published' : 'pending' }, await peopleMap(ctx)) };
   });
   // 單一版本：全文；附上目前上架版（或上一版）的檔案，網頁算差異
@@ -324,32 +345,54 @@ export function registerSkills({ route, db, ApiError, invalid, readJson, randId,
   route('POST', '/api/skills/:id/review', async ({ ctx, me, params, req, base }) => {
     const r = await db.get('SELECT * FROM skills WHERE id = ?', params.id);
     if (!r || !(await canSee(ctx, me, r.project))) throw new ApiError(404, 'NOT_FOUND', '找不到這個技能');
-    if (!(await canManage(ctx, me, r.project))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的專案管理員能核准');
+    if (!(await canManage(ctx, me, r.project))) throw notLeader();
     await assertWritable(me, r.project);
     if (r.uploaded_by === me.id) throw new ApiError(403, 'SELF_REVIEW', '不能核准自己上傳的技能');
-    if (r.status !== 'pending') throw new ApiError(409, 'NOT_PENDING', '這個版本已經處理過了');
+    if (r.status !== 'pending') throw notPending();
     const body = await readJson(req);
     if (!['approve', 'reject'].includes(body.action)) throw invalid('action 需為 approve 或 reject');
     const note = String(body.note || '').trim().slice(0, 300);
-    if (body.action === 'reject') {
-      if (!note) throw invalid('退回要寫原因');
-      await db.run("UPDATE skills SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, review_note = ? WHERE id = ? AND status = 'pending'", me.id, nowIso(), note, r.id);
-    } else {
-      await db.run('UPDATE skills SET review_note = ? WHERE id = ?', note, r.id);
-      await publish(ctx, r, me.id, base);
+    if (body.action === 'reject' && !note) throw invalid('退回要寫原因');
+    const decision = body.action === 'approve' ? publishStmts(r, me.id, note) : [
+      ["UPDATE skills SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, review_note = ? WHERE id = ? AND status = 'pending'", [me.id, nowIso(), note, r.id]],
+    ];
+    const manager = managerCond(me.id, r.project), pending = pendingCond(r.id);
+    if (!(await writeInWorkspace([ensureCond(manager), ensureCond(pending), ...decision]))) {
+      if (!(await holdsNow(db, manager))) throw notLeader();
+      if (!(await holdsNow(db, pending))) throw notPending();
+      throw busy();
     }
+    if (body.action === 'approve') await notifyPublished(ctx, r, base);
     return view(await db.get('SELECT * FROM skills WHERE id = ?', r.id), await peopleMap(ctx));
   });
   // 下架：目前上架的版本（含待核准的）全部收起，私訊主人
   route('POST', '/api/projects/:id/skills/:name/remove', async ({ ctx, me, params, base }) => {
     const pj = params.id; await requireProject(ctx, me, pj);
-    if (!(await canManage(ctx, me, pj))) throw new ApiError(403, 'NOT_LEADER', '只有這個專案的專案管理員能下架技能');
+    if (!(await canManage(ctx, me, pj))) throw notLeader('remove');
     await assertWritable(me, pj);
-    const cur = await db.get("SELECT project, roles FROM skills WHERE project = ? AND name = ? AND status = 'published'", pj, params.name);
-    const r = await db.run("UPDATE skills SET status = 'removed' WHERE project = ? AND name = ? AND status IN ('published', 'pending')", pj, params.name);
-    if (!r.changes) throw new ApiError(404, 'NOT_FOUND', '沒有上架中的這個技能');
-    if (cur) await tellOwners(ctx, cur, n => `🧩 技能庫下架：${nameOf(pj)} 的「${params.name}」，你有 ${n} 隻 AI 裝過。同步後會從 AI 的技能資料夾移除（按「全部同步」一次處理）：${syncLink(base)}`, 'rm_' + pj + '_' + params.name + '_' + Date.now());
-    return { removed: r.changes };
+    const manager = managerCond(me.id, pj);
+    const active = "WHERE project = ? AND name = ? AND status IN ('published', 'pending')";
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const rows = await db.all(`SELECT id, project, roles, status FROM skills ${active} ORDER BY id`, pj, params.name);
+      if (!rows.length) throw new ApiError(404, 'NOT_FOUND', '沒有上架中的這個技能');
+      const cur = rows.find(r => r.status === 'published');
+      // 若鎖前讀到的上架版或下架數量已變，重讀再試。
+      const same = ensureStmt(`(SELECT COUNT(*) = ? AND COALESCE(MIN(CASE WHEN status = 'published' THEN id END), '') = ? FROM skills ${active})`,
+        [rows.length, cur?.id ?? '', pj, params.name]);
+      const removed = await writeInWorkspace([
+        ensureCond(manager), same,
+        [`UPDATE skills SET status = 'removed' ${active}`, [pj, params.name]],
+        // 改發給誰不取工作區鎖；更新鎖住技能列後，確認通知使用實際下架時的發送對象。
+        cur ? ensureStmt("EXISTS (SELECT 1 FROM skills WHERE id = ? AND status = 'removed' AND roles = ?)", [cur.id, cur.roles]) : null,
+      ]);
+      if (!removed) {
+        if (!(await holdsNow(db, manager))) throw notLeader('remove');
+        continue;
+      }
+      if (cur) await tellOwners(ctx, cur, n => `🧩 技能庫下架：${nameOf(pj)} 的「${params.name}」，你有 ${n} 隻 AI 裝過。同步後會從 AI 的技能資料夾移除（按「全部同步」一次處理）：${syncLink(base)}`, 'rm_' + pj + '_' + params.name + '_' + Date.now());
+      return { removed: rows.length };
+    }
+    throw busy();
   });
   // 改發給誰：不用重傳、不升版本；上架版與待核准版一起改。跟下架同一批人（leader、管理員）能改
   // 新加入的 AI 主人收到「有新技能」，被拿掉的收到「不再發給，同步後移除」

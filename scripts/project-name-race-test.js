@@ -228,7 +228,7 @@ try {
         await ctl.query('SELECT pg_advisory_lock($1)', [key]);
         pause = { re, key };
         const p1 = first();
-        await until(() => lockWait('%pg_advisory_xact_lock%'), 10000, '第一個請求停在交易中');
+        await until(() => lockWait(`%pg_advisory_xact_lock(${key})%`), 10000, '第一個請求停在交易中');
         let done2 = false;
         const p2 = second().finally(() => { done2 = true; });
         await until(async () => done2 || await lockWait('%UPDATE workspaces%'), 10000, '第二個請求被鎖住或做完');

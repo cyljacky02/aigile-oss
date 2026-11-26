@@ -62,6 +62,8 @@ try {
   const lin = await join('林美玲'); // 還沒有任何專案
   assert.equal((await setVisibility(boss.token, N, 'open')).status, 200);
   const joinable = async tok => (await call(tok, '/api/join/projects')).body.items;
+  const aiJoinable = await call(wangAi.token, '/api/join/projects');
+  assert.deepStrictEqual([aiJoinable.status, code(aiJoinable)], [403, 'FORBIDDEN'], 'AI 看不到網頁用的可加入專案清單');
   let it = (await joinable(lin.token)).find(p => p.id === N);
   assert.equal(it?.visibility, 'open', '開放專案列在可以加入的清單');
   r = await call(lin.token, `/api/projects/${N}/join`, 'POST');

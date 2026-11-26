@@ -62,13 +62,29 @@ const clean = rows => { for (const r of rows) if ('rowid' in r) delete r.rowid; 
 
 // 測試用：只准連本機或 CI 的 postgres 服務，其他（含任何雲端、正式庫）一律拒絕
 export function assertTestPgUrl(url) {
-  let host;
-  try { host = new URL(url).hostname; } catch { throw new Error('AIGILE_TEST_PG_URL 格式不對（要像 postgres://postgres:test@127.0.0.1:5432/aigile_test）'); }
+  const formatError = 'AIGILE_TEST_PG_URL 格式不對（要像 postgres://localhost:5432/aigile_test）';
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new Error(formatError); }
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol)) throw new Error(formatError);
+  // pg 可用查詢參數覆寫主機。只接受網址主體指定的主機，不讓空值或重複參數走不同的解析規則。
+  for (const key of parsed.searchParams.keys()) {
+    if (['host', 'hostaddr', 'service', 'servicefile', 'connectionstring'].includes(key.toLowerCase())) {
+      throw new Error(`AIGILE_TEST_PG_URL 不接受用查詢參數指定連線目標（${key}）`);
+    }
+  }
+  const host = parsed.hostname;
   if (!['localhost', '127.0.0.1', '[::1]', '::1', 'postgres'].includes(host)) throw new Error(`測試只准連本機或 CI 的 Postgres（localhost、127.0.0.1、postgres），不連 ${host}`);
   return url;
 }
-// 測試用：同一個資料夾＝同一個 schema（伺服器重開資料還在），不同資料夾互不影響
-export const testSchemaFor = dir => 't_' + createHash('sha256').update(path.resolve(dir)).digest('hex').slice(0, 20);
+
+export const TEST_SCHEMA_SUFFIX_LENGTH = 20;
+// 測試用：同一次 run-all 內，同一個資料夾＝同一個 schema（伺服器重開資料還在）。
+// 直接跑單支測試時保留原本的 t_<路徑雜湊> 命名。
+export function testSchemaFor(dir, prefix = process.env.AIGILE_TEST_PG_RUN || '') {
+  if (prefix && !/^t_[0-9a-f]{32}$/.test(prefix)) throw new Error('AIGILE_TEST_PG_RUN 不是有效的測試 schema 前綴');
+  const key = createHash('sha256').update(path.resolve(dir)).digest('hex').slice(0, TEST_SCHEMA_SUFFIX_LENGTH);
+  return `${prefix || 't'}_${key}`;
+}
 
 // 依環境變數決定用不用 Postgres：DATABASE_URL（正式）＞ AIGILE_TEST_PG_URL（測試，只准本機，每個資料夾一個 schema）＞ 不用（SQLite）
 export function pgTarget(env, dataDir) {
@@ -76,20 +92,36 @@ export function pgTarget(env, dataDir) {
     if (!/^postgres(ql)?:\/\//i.test(env.DATABASE_URL)) throw new Error('DATABASE_URL 要是 postgres:// 開頭（目前只支援 Postgres；不設就用 SQLite）');
     return { url: env.DATABASE_URL, schema: env.DATABASE_SCHEMA || undefined, test: false };
   }
-  if (env.AIGILE_TEST_PG_URL) return { url: assertTestPgUrl(env.AIGILE_TEST_PG_URL), schema: testSchemaFor(dataDir), test: true };
+  if (env.AIGILE_TEST_PG_URL) return { url: assertTestPgUrl(env.AIGILE_TEST_PG_URL), schema: testSchemaFor(dataDir, env.AIGILE_TEST_PG_RUN || ''), test: true };
   return null;
+}
+
+function schemaIdentifier(schema) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(schema)) throw new Error(`DATABASE_SCHEMA 只能用英文字母、數字、底線：${schema}`);
+  return `"${schema}"`;
+}
+
+// URL 的 options 會蓋過 Client 的 options，所以連線後才設定 search_path，保留其他啟動參數。
+export async function setPgSearchPath(client, schema) {
+  await client.query(`SET search_path TO ${schemaIdentifier(schema)}`);
 }
 
 // exitOnIdle：連線都閒置時不擋住程序結束（測試用；不然沒關資料庫的測試會多等連線池的閒置逾時 10 秒）
 export async function openPgDb(url, { legacyProjects = true, max, schema, exitOnIdle = false } = {}) {
   const pg = await loadPg();
   if (schema) { // 指定 schema（DATABASE_SCHEMA）：沒有就建，之後所有表都放在裡面
-    if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(schema)) throw new Error(`DATABASE_SCHEMA 只能用英文字母、數字、底線：${schema}`);
+    const identifier = schemaIdentifier(schema);
     const c = new pg.Client({ connectionString: url });
     await c.connect();
-    try { await c.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`); } finally { await c.end(); }
+    try { await c.query(`CREATE SCHEMA IF NOT EXISTS ${identifier}`); } finally { await c.end(); }
   }
-  const pool = new pg.Pool({ connectionString: url, max: max ?? (Number(process.env.PG_POOL_MAX) || 10), types: typesFor(pg), allowExitOnIdle: exitOnIdle, ...(schema ? { options: `-c search_path="${schema}"` } : {}) });
+  const pool = new pg.Pool({
+    connectionString: url,
+    max: max ?? (Number(process.env.PG_POOL_MAX) || 10),
+    types: typesFor(pg),
+    allowExitOnIdle: exitOnIdle,
+    ...(schema ? { onConnect: client => setPgSearchPath(client, schema) } : {}),
+  });
   pool.on('error', e => console.error(`Postgres 連線中斷（${describeUrl(url)}）：${e.message}`)); // 閒置連線斷掉不讓整個程式掛掉
   try {
     const up = await migratePg(pool, { schema: fs.readFileSync(SCHEMA_FILE, 'utf8'), dir: MIGRATIONS_DIR });
