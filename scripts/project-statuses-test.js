@@ -358,14 +358,19 @@ try {
   }
 
   // 19) 兩個請求都發現專案還沒有狀態：一個先補好、使用者接著拿掉「受阻」，慢的那個再補也不會把它加回來
+  // （新建的專案在建立那一批就有預設狀態組；這裡把它的狀態拿掉，當作升級前就有、還沒有狀態的專案）
   {
     let pj = null;
+    const made = ok(await call(boss.token, '/api/projects', 'POST', { name: '初始化慢一步' }), '建專案（不給狀態）').id;
+    assert.equal(Number((await db.get('SELECT COUNT(*) AS n FROM project_statuses WHERE project = ?', made)).n), 6, '建立時就有預設狀態組');
+    await db.run('DELETE FROM project_statuses WHERE project = ?', made);
     beforeStatusInit = async () => {
       pj = (await db.get('SELECT p.id FROM projects p WHERE NOT EXISTS (SELECT 1 FROM project_statuses s WHERE s.project = p.id)')).id;
       const P3 = encodeURIComponent(pj);
       ok(await del((await byName('受阻', P3)).id, {}, boss.token, P3), '另一個請求補好之後拿掉受阻');
     };
-    ok(await call(boss.token, '/api/projects', 'POST', { name: '初始化慢一步' }), '建專案（不給狀態）');
+    ok(await call(boss.token, '/api/projects'), '讀專案清單（補狀態）');
+    assert.equal(pj, made, '補的是拿掉狀態的那個專案');
     assert.ok(pj && beforeStatusInit === null, '真的有兩個初始化');
     assert.deepEqual((await statuses(encodeURIComponent(pj))).map(s => s.name), ['待整理', '待處理', '進行中', '待確認', '已完成'], '拿掉的受阻沒有被加回來');
   }

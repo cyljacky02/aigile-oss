@@ -1,4 +1,4 @@
-// 驗收測試（#45、ADR 0004、0005）：管理員核准並建立專案，或附理由拒絕
+// 驗收測試（ADR 0004、0005）：管理員核准並建立專案，或附理由拒絕
 // - 審核清單 scope=review（游標分頁、準確的待審總數）；單筆的審核欄位（預估值、衝突欄位不透露占用者、能否核准或拒絕）
 // - 核准：恰好一個專案（申請的可見度、識別碼、看板狀態）、申請人是唯一的初始專案管理員、審核人不是成員、一筆 project.create、一則通知
 // - 冪等：任一位合法審核人再核准回 200 與原結果、不重複寫入；已拒絕／撤回／取消 409；能看但沒審核權 403；看不到 404
@@ -93,7 +93,7 @@ try {
     assert.deepEqual([...l.items, ...l2.items].map(x => x.id).sort(), [r1.id, r2.id, r3.id].sort(), '別人的申請也看得到');
     assert.equal(l.items.find(x => x.requesterId === chen.id || x.requesterId === wang.id)?.requesterName != null, true, '列出申請人名字');
   }
-  for (const [label, t] of [['成員', wang.token], ['申請人', chen.token], ['其他專案的專案管理員', lee.token]]) is(await call(t, '/api/project-creation-requests?scope=review'), 403, 'NOT_REVIEWER', `${label}不能看審核清單`);
+  for (const [label, t] of [['成員', wang.token], ['申請人', chen.token], ['其他專案的專案管理員', lee.token]]) is(await call(t, '/api/project-creation-requests?scope=review'), 404, 'NOT_FOUND', `${label}看不到審核清單（無權查看一律 404）`);
   assert.equal((await call(aiToken, '/api/project-creation-requests?scope=review')).status, 403, 'AI 不能看審核清單');
 
   // ---------- 2) 單筆的審核欄位 ----------

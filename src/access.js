@@ -81,6 +81,9 @@ const notAboveMe = (v, me, { target }) => !target || v.roleIn(target, 'platform'
 const activeHuman = me => !!me && me.kind === 'human' && me.status === 'active';
 // 建立專案申請的申請人本人：有效的人類工作區成員（沒被移出）；target＝申請人（沒帶＝問「自己的」）
 const ownRequest = (v, me, s) => activeHuman(me) && inWorkspace(me) && (!s.target || s.target.id === me.id);
+// 建立專案申請的審核人：有效的人類，是該工作區的工作區管理員，或有隱含權限的平台管理員。不另訂「不能審自己的」
+const reviewer = (v, me) => activeHuman(me) && workspaceAdmin(v, me);
+const REVIEWER_ACTION = Object.freeze({ human: true, fresh: true, rule: reviewer, deny: d => d.err(403, 'NOT_REVIEWER', '只有工作區管理員或平台管理員能審核建立專案申請。') });
 const DENY = {
   platform: d => d.err(403, 'NOT_ADMIN', `只有平台管理員能${d.what || '管理平台'}。`),
   workspace: d => d.err(403, 'NOT_ADMIN', `只有工作區管理員（${d.adminName()}）能${d.what || '管理專案與成員所屬專案'}。`),
@@ -128,11 +131,11 @@ const ACTIONS = {
   // 查看自己的申請、撤回：申請人本人，而且目前仍是有效的人類工作區成員（被移出、停用後查不到）。範圍 { target: 申請人 }
   see_own_project_creation_requests: { human: true, rule: ownRequest, deny: d => d.err(404, 'NOT_FOUND', '找不到這份建立專案申請') },
   withdraw_project_creation_request: { human: true, rule: ownRequest, deny: d => d.err(403, 'NOT_REQUESTER', '只有申請人本人能撤回這份申請。') },
-  // 審核（查看全部申請、核准、拒絕；核准與拒絕在 #45）：該工作區的工作區管理員，或有隱含權限的平台管理員。不另訂「不能審自己的」
-  review_project_creation_requests: { human: true, fresh: true, rule: (v, me) => activeHuman(me) && workspaceAdmin(v, me), deny: d => d.err(403, 'NOT_REVIEWER', '只有工作區管理員或平台管理員能審核建立專案申請。') },
-  // 核准、拒絕（#45）：同一個規則（分開寫，之後要分開調整不必改呼叫端）。每次寫入都在交易內再斷言一次
-  approve_project_creation_request: { human: true, fresh: true, rule: (v, me) => activeHuman(me) && workspaceAdmin(v, me), deny: d => d.err(403, 'NOT_REVIEWER', '只有工作區管理員或平台管理員能審核建立專案申請。') },
-  reject_project_creation_request: { human: true, fresh: true, rule: (v, me) => activeHuman(me) && workspaceAdmin(v, me), deny: d => d.err(403, 'NOT_REVIEWER', '只有工作區管理員或平台管理員能審核建立專案申請。') },
+  // 審核（查看全部申請、核准、拒絕）：審核人。查看清單沒有審核權：跟其他看不到的申請一樣回 404
+  review_project_creation_requests: { ...REVIEWER_ACTION, deny: d => d.err(404, 'NOT_FOUND', '找不到這份建立專案申請') },
+  // 核准、拒絕：同一個規則（分開寫，之後要分開調整不必改呼叫端）。每次寫入都在交易內再斷言一次
+  approve_project_creation_request: REVIEWER_ACTION,
+  reject_project_creation_request: REVIEWER_ACTION,
   // 刪除專案：先進入可復原期，期滿由系統永久清除（只有工作區管理員）
   delete_project: { admin: true, sensitive: true, rule: workspaceAdmin }, // 刪除已封存的專案（敏感）
   preview_project_delete: { admin: true, rule: workspaceAdmin }, // 刪除前的預覽：會刪掉多少、預計永久清除的時間（不用再驗證）

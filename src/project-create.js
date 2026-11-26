@@ -1,9 +1,9 @@
-// 建立專案（#43；ADR 0004、0005；GLOSSARY「成員與權限」）：直接建立、核准建立（#45）、新站預設專案、示範資料共用同一套建立邏輯。
+// 建立專案（ADR 0004、0005；GLOSSARY「成員與權限」）：直接建立、核准建立、新站預設專案、示範資料共用同一套建立邏輯。
 // 這裡只組出「一整批寫入」與它的重試、失敗判斷；不發 HTTP、不模擬管理員身分、沒有跳過授權的旗標：能不能建立由呼叫端先用權限模組檢查，
 // 呼叫端自己的前提（例：申請仍待審核、審核人仍有管理權）以 guards 放進同一批，在交易內斷言。
 //
 // 一批的內容（第一句工作區列鎖、不在還原中、識別碼已正規化由 write 加；見 src/write-order.js）：
-//   呼叫端的 guards → 名稱、網址英文名、代號沒被用掉的斷言 → 專案（含可見度）→ 專案異動紀錄 → 看板狀態（有指定才寫；沒指定＝預設狀態組，第一次讀時補）
+//   呼叫端的 guards → 名稱、網址英文名、代號沒被用掉的斷言 → 專案（含可見度）→ 專案異動紀錄 → 看板狀態（沒指定＝預設狀態組）
 //   → 網址英文名與代號 → 受益人的專案管理員成員資格（只新增這一筆，不覆寫他其他專案的成員資格）→ project.create 稽核 → 呼叫端的 extra 寫入
 //
 // 介面（core.js 建一個，傳給需要的地方）：
@@ -16,17 +16,18 @@
 //     自動產生的網址英文名或代號因競態被用掉：重讀重算整批重試（次數有限）；指定的值被用掉、同名：409，不改值
 //   creation.stmts({ id, at, actor, beneficiary, method, requestId, spec: { name, visibility, slug, code, statuses }, eventText? }) → 這一批的斷言與寫入（不含鎖）
 //     給自己管寫入與重試的呼叫端用（新站預設專案、示範資料）
-//   creation.preview({ name, slug|null, code|null }) → { slug, code, slugEstimated, codeEstimated, conflicts }：審核畫面的預估值與衝突欄位（#45）
+//   creation.preview({ name, slug|null, code|null }) → { slug, code, slugEstimated, codeEstimated, conflicts }：審核畫面的預估值與衝突欄位
 import { ensureStmt } from './write-order.js';
 import { slugFreeCond, codeFreeCond, ensureCond, holdsNow } from './project-identity.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 import { PROJECT_VISIBILITIES } from './access.js';
+import { DEFAULT_STATUSES } from './statuses.js';
 
 // 建立方式（記在 project.create 稽核的 detail.method）
 export const CREATION_METHOD = Object.freeze({
   DIRECT: 'direct', // 直接建立（POST /api/projects）
-  APPROVED_REQUEST: 'approved_request', // 核准建立專案申請（#45）
+  APPROVED_REQUEST: 'approved_request', // 核准建立專案申請
   FIRST_RUN: 'first_run', // 新站第一次啟動，系統自動建立的預設專案
   DEMO: 'demo', // 載入示範資料
 });
@@ -61,7 +62,8 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
       ensureStmt(nf.cond, nf.args), ensureCond(slugFreeCond(slug, id)), ensureCond(codeFreeCond(code, id)),
       ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at, visibility) VALUES (?,?,0,?,?,?,?)', [id, name, workspaceId, actor?.id ?? 'system', at, visibility]],
       projEvent(id, actor?.id ?? 'system', eventText ?? `${actor?.name ?? '系統'} 建立專案`, at),
-      ...(statuses || []).map((st, i) => ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [id, st.name, st.category, i, st.color]]),
+      // 看板狀態跟專案同一批：沒指定就寫預設狀態組。每個狀態一句單列 INSERT（D1 一個複合 SELECT 最多 5 段，不用 UNION ALL）
+      ...(statuses || DEFAULT_STATUSES).map((st, i) => ['INSERT INTO project_statuses (project, name, category, position, color) VALUES (?,?,?,?,?)', [id, st.name, st.category, i, st.color]]),
       ['INSERT INTO app_settings (key, value) VALUES (?, ?)', ['slug:' + id, slug]],
       ['INSERT INTO app_settings (key, value) VALUES (?, ?)', ['pcode:' + id, code]],
       // 受益人成為唯一的初始專案管理員：只新增新專案這一筆（新專案還沒有任何成員資格），不碰他其他專案的成員資格
@@ -100,7 +102,7 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
       if (!(slugLost || codeLost) || attempt >= IDENTITY_TRIES) throw why;
     }
   }
-  // 審核畫面用的預估（#45）：沒指定的網址英文名與代號現在會產生什麼（只是預估，建立時重算）、哪些欄位現在有衝突。
+  // 審核畫面用的預估：沒指定的網址英文名與代號現在會產生什麼（只是預估，建立時重算）、哪些欄位現在有衝突。
   // conflicts 只列欄位（name、slug、code），不說被哪個專案占用；自動產生的值會避開已用的，不算衝突
   async function preview({ name, slug = null, code = null }) {
     await names.refresh();

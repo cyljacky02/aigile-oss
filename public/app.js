@@ -552,7 +552,7 @@
   // 所有工作區管理員的名字（可以有多位）；名單還沒載入時用專案清單給的那位
   const wsAdminNames = () => [...(state.participants?.values() || [])].filter(p => p.memberType === 'human' && p.workspaceRole === 'admin').map(p => p.name).join('、') || state.projMeta.adminName || '';
   const canNewProj = () => !!state.projMeta.canCreateProject; // 工作區設定「誰可以建立專案」：管理員永遠可以，設成所有成員時一般成員也可以（後端判斷）
-  // 建立專案申請（#44）：政策是「成員申請，管理員核准」時，一般成員的入口是「申請建立專案」（後端的 canRequestProjectCreation）。
+  // 建立專案申請：政策是「成員申請，管理員核准」時，一般成員的入口是「申請建立專案」（後端的 canRequestProjectCreation）。
   // 所有建立專案的入口（總覽側欄、總覽、專案切換器、手機選單）都看這兩個：能直接建立＝「新增專案」，能申請＝「申請建立專案」，都不能＝不顯示
   const canReqProj = () => !!state.projMeta.canRequestProjectCreation;
   const canStartProj = () => canNewProj() || canReqProj();
@@ -1030,7 +1030,7 @@
   function liveEvent(kind, raw) {
     if (!kind || kind === 'hello' || kind === 'bye') return;
     if (kind === 'join') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} return onJoinDecided(x).catch(() => {}); }
-    if (kind === 'stale') return refreshPcr().catch(() => {}); // 建立專案申請有變（#44）：事件不帶內容，重新抓取
+    if (kind === 'stale') return refreshPcr().catch(() => {}); // 建立專案申請有變：事件不帶內容，重新抓取
     if (kind === 'messages_cleared' || kind === 'messages_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return reloadProjMsgs(x.project); } // 整個專案的訊息被清空或整批復原
     if (kind === 'message_deleted' || kind === 'message_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return x.id ? reloadMsg(x.id).catch(() => {}) : undefined; } // 別人刪除或復原：重讀那一則
     liveConn.kinds.add(kind);
@@ -1819,7 +1819,7 @@
     for (const { list, last: n } of dmGroups((work.notes || []).filter(x => x.dm))) items.push({ p: n.project ?? null, kind: n.sender?.system ? '通知' : '私訊', title: (n.sender?.system ? `平台通知：${oneLine(dmGist(n.preview, true), 60)}` : `${n.sender?.name || ''} 回你了`) + (list.length > 1 ? `（${list.length} 則）` : ''), key: 'n:' + n.notificationId }); // PLAT-388 E：連發的合併成一項
     for (const j of (work.joins || []).filter(j => dueForMe(j.project, j.createdAt))) items.push({ p: myProjects().includes(j.project) ? j.project : null, kind: '申請', title: `${j.name} 申請加入${j.projectName}`, key: 'j:' + j.id }); // PLAT-381 先給 leader
     for (const k of (work.skillRev || []).filter(k => dueForMe(k.project, k.uploadedAt))) items.push({ p: myProjects().includes(k.project) ? k.project : null, kind: '核准', title: `技能待核准：${k.name} v${k.version}`, key: 'k:' + k.skillId }); // PLAT-381
-    for (const r of work.pcrRev?.items || []) items.push({ p: null, ws: true, kind: '建立專案', title: `${r.requesterName || ''} 申請建立「${r.name}」`, key: 'r:' + r.id }); // 建立專案申請（#45）：工作區層，不屬於任何專案（「要你處理」分在「工作區」）
+    for (const r of work.pcrRev?.items || []) items.push({ p: null, ws: true, kind: '建立專案', title: `${r.requesterName || ''} 申請建立「${r.name}」`, key: 'r:' + r.id }); // 建立專案申請：工作區層，不屬於任何專案（「要你處理」分在「工作區」）
     return items.filter(x => !x.p || myProjects().includes(x.p));
   }
   const todoInView = (x, v = projectView()) => v === 'hub' || (v === 'cross' ? !x.p : x.p === v);
@@ -3805,20 +3805,20 @@
       <div class="sec-acts">${act}<button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(n.detail)} 知道了">知道了</button></div></div>`;
     }
     if (/^admin_/.test(n.kind)) return adminSecHtml(n, when);
-    if (n.kind === 'project_creation_request') { // 建立專案申請送出（#44；只寄給審核人）：細節只有申請人名字，內容到審核頁看
+    if (n.kind === 'project_creation_request') { // 建立專案申請送出（只寄給審核人）：細節只有申請人名字，內容到審核頁看
       let d = {}; try { d = JSON.parse(n.detail) || {}; } catch {}
       const text = `${d.a || '有成員'} 送出了一份建立專案申請 · ${when}。`;
       return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🗂️</span>
       <div class="sec-main"><span>${esc(text)}</span><span class="small">工作區管理員或平台管理員核准後才會建立專案。</span></div>
       <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
     }
-    if (n.kind === 'project_creation_request_cancelled') { // 政策從「成員申請」切走，申請人的待審申請被取消（#46）：細節是空的，哪幾份到「我的建立專案申請」看
+    if (n.kind === 'project_creation_request_cancelled') { // 政策從「成員申請」切走，申請人的待審申請被取消：細節是空的，哪幾份到「我的建立專案申請」看
       const text = `你的建立專案申請已取消：工作區政策已改變，不再收建立專案申請 · ${when}。`;
       return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🗂️</span>
       <div class="sec-main"><span>${esc(text)}</span><span class="small">到總覽的「我的建立專案申請」查看；需要新專案請找工作區管理員。</span></div>
       <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
     }
-    if (n.kind === 'project_creation_request_approved' || n.kind === 'project_creation_request_rejected') { // 建立專案申請的結果（#45；只寄給申請人）：細節只有申請的名稱
+    if (n.kind === 'project_creation_request_approved' || n.kind === 'project_creation_request_rejected') { // 建立專案申請的結果（只寄給申請人）：細節只有申請的名稱
       let d = {}; try { d = JSON.parse(n.detail) || {}; } catch {}
       const yes = n.kind === 'project_creation_request_approved';
       const text = yes ? `你的建立專案申請「${d.n || ''}」已核准，專案已建立 · ${when}。` : `你的建立專案申請「${d.n || ''}」沒有核准 · ${when}。`;
@@ -4051,7 +4051,7 @@
     const rows = !list ? '<p class="muted small">載入可以申請的專案…</p>' : list.length ? list.map(row).join('') : '<p class="muted small">目前沒有可以加入的專案，請專案管理員或工作區管理員把你加入專案。</p>';
     return `<section class="hub-empty hub-joinable" aria-label="可以申請的專案"><p>你還沒有加入任何專案。下面是你可以加入的專案：開放的專案按「加入」就好；審核的專案送出申請，由專案管理員核准。加入後這裡就會出現專案。</p>${rows}</section>`;
   }
-  // ---------- 我的建立專案申請（#44）：總覽的專案列表上方 ----------
+  // ---------- 我的建立專案申請：總覽的專案列表上方 ----------
   // 有申請紀錄、或目前能申請時才顯示；列出狀態、拒絕或取消原因、結果專案（看得到才給連結）、待審核的可以撤回、載入更多。
   // 資料一律從 GET /api/project-creation-requests 讀（即時事件只說「重新抓取」，不帶內容）
   const myPcr = { items: null, next: null, loading: false, armed: null, busy: false };
@@ -4113,7 +4113,7 @@
     catch (err) { toast(err.code === 'REQUEST_NOT_PENDING' ? '這份申請已經結束，不能撤回' : err.message); }
     finally { myPcr.busy = false; await refreshPcr(); }
   });
-  // ---------- 建立專案申請的審核（#45）：「要你處理」的「建立專案申請」一類 ----------
+  // ---------- 建立專案申請的審核：「要你處理」的「建立專案申請」一類 ----------
   // 只有審核人（capability canReviewProjectCreationRequests）讀；待審總數用伺服器的 pendingTotal。失去審核權（capability 沒了、API 403／404）就清掉已載入的資料
   work.pcrRev = { items: [], total: 0, next: null, loading: false };
   const PCR_REV_PAGE = 50; // 一頁幾份；更多的按「載入更多」
@@ -4186,10 +4186,10 @@
       try { st.r = await api(`/api/project-creation-requests/${encodeURIComponent(id)}`); } catch (err) { st.r = null; st.msg = err.message; }
       draw();
     };
-    // 失敗的各種情況：權限失效、另一位管理員已先處理、政策已改、暫時無法處理（503）、連線中斷
+    // 失敗的各種情況：權限失效、另一位審核人已先處理、政策已改、暫時無法處理（503）、連線中斷
     const fail = async err => {
       if (err.status === 404 || err.code === 'NOT_REVIEWER') { toast('你已經沒有審核這份申請的權限'); clearPcrRev(); return refreshPcr(); }
-      st.msg = err.code === 'REQUEST_NOT_PENDING' ? '另一位管理員已經處理了這份申請（或申請人已撤回）。'
+      st.msg = err.code === 'REQUEST_NOT_PENDING' ? '另一位審核人已經處理了這份申請（或申請人已撤回）。'
         : err.status === 503 ? '暫時無法處理（系統正在升級、還原或忙碌），這次什麼都沒寫；請稍後再試。'
         : err.code === 'NETWORK' || err.code === 'TIMEOUT' ? '連線中斷，不確定有沒有處理到；再按一次不會重複建立專案。' : err.message;
       st.busy = false;
@@ -4242,7 +4242,7 @@
     const key = r.dataset.hubTodo, id = key.slice(2);
     if (key[0] === 'j') return openJoinReview(work.joins.find(j => j.id === id)?.project || '');
     if (key[0] === 'k') return skOpenDrawer(id); // PLAT-381 技能待核准
-    if (key[0] === 'r') return openPcrReview(id); // 建立專案申請（#45）
+    if (key[0] === 'r') return openPcrReview(id); // 建立專案申請
     await setProjectView(r.dataset.hubProj, 'inbox');
     work.focusItem = { sel: key[0] === 'n' ? `:is(#fyi-${CSS.escape(id)}, [data-fyi~="${CSS.escape(id)}"])` : `[${{ c: 'data-dcard', m: 'data-conf-row', s: 'data-sugg-row', v: 'data-ver-row' }[key[0]]}="${CSS.escape(id)}"]`, until: Date.now() + 5000, scrolled: false };
     if (!applyFocusItem() && key[0] === 'c') openCard(id);
@@ -4286,7 +4286,7 @@
     const inV = pj => projectView() === 'hub' || pj === projectView();
     const joins = (work.joins || []).filter(j => inV(j.project) && dueForMe(j.project, j.createdAt)); // PLAT-381 leader 先處理
     const skRev = (work.skillRev || []).filter(k => inV(k.project) && dueForMe(k.project, k.uploadedAt));
-    const pcrSection = projectView() === 'hub' || projectView() === 'cross' ? pcrRevHtml() : ''; // 建立專案申請（#45）：工作區層，總覽與跨專案頻道才列
+    const pcrSection = projectView() === 'hub' || projectView() === 'cross' ? pcrRevHtml() : ''; // 建立專案申請：工作區層，總覽與跨專案頻道才列
     if (!pcrSection && !decideMe.length && !confirms.length && !sg.length && !verifyMe.length && !asks.length && !dms.length && !joins.length && !skRev.length) return '<section class="wpanel"><p class="muted">目前沒有要你處理的事。</p></section>';
     for (const id of [...work.askSel]) if (!asks.some(n => n.notificationId === id)) work.askSel.delete(id); // 清單變了就丟掉不在的勾選
     const askN = work.askSel.size, askAll = asks.length > 0 && askN === asks.length;
@@ -9386,7 +9386,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     'workspace_policy.update': ['修改工作區政策', 'Changed workspace policy'], 'recovery_window.update': ['修改可復原期', 'Changed recovery window'],
     'message.delete': ['刪除訊息', 'Deleted message'], 'message.restore': ['復原訊息', 'Restored message'], 'message.purge': ['永久清除訊息', 'Purged messages'],
     'project_messages.clear': ['清空專案訊息', 'Cleared project messages'], 'project_messages.restore': ['復原清空的專案訊息', 'Restored cleared project messages'],
-    'project_creation_request.reject': ['拒絕建立專案申請', 'Rejected project request'], // #45
+    'project_creation_request.reject': ['拒絕建立專案申請', 'Rejected project creation request'],
     'project.create': ['建立專案', 'Created project'], 'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
   };
   const alogAction = k => (ALOG_ACTIONS[k] ? L(...ALOG_ACTIONS[k]) : k);
@@ -9431,14 +9431,14 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       const vis = { open: ['開放', 'open'], review: ['審核', 'review'], private: ['私人', 'private'] }[d.visibility];
       if (vis) out.push(L(`可見度：${vis[0]}`, `Visibility: ${vis[1]}`));
     }
-    if (e.action === 'project_creation_request.reject' && d.requester?.name) out.push(L(`申請人 ${d.requester.name}`, `Requested by ${d.requester.name}`)); // #45
+    if (e.action === 'project_creation_request.reject' && d.requester?.name) out.push(L(`申請人 ${d.requester.name}`, `Requested by ${d.requester.name}`));
     if (d.revokedAiTokens) out.push(L(`作廢 ${d.revokedAiTokens} 個 AI 的 Token`, `Revoked ${d.revokedAiTokens} AI token(s)`));
     if (e.action === 'backup.restore') out.push(L(`備份版本 ${d.appVersion || '?'}；${d.humans ?? 0} 位人類、${d.ais ?? 0} 個 AI`, `Backup version ${d.appVersion || '?'}; ${d.humans ?? 0} human(s), ${d.ais ?? 0} AI(s)`));
     if (d.counts) out.push(L(`訊息 ${d.counts.messages ?? 0}、卡片 ${d.counts.cards ?? 0}、文件 ${d.counts.docs ?? 0}`, `${d.counts.messages ?? 0} messages, ${d.counts.cards ?? 0} cards, ${d.counts.docs ?? 0} docs`));
     if (d.code) out.push(L(`代號 ${d.code}`, `Code ${d.code}`));
     if (d.aisDeleted?.length) out.push(L(`一起刪除的 AI：${d.aisDeleted.join('、')}`, `AIs deleted with it: ${d.aisDeleted.join(', ')}`));
-    if (d.counted === 'cancelledProjectCreationRequests') { // 同一批取消了幾份待審的建立專案申請（#46）；沒取消就不寫
-      if (e.count) out.push(L(`取消 ${e.count} 份待審核的建立專案申請`, `Cancelled ${e.count} pending project request(s)`));
+    if (d.counted === 'cancelledProjectCreationRequests') { // 同一批取消了幾份待審的建立專案申請；沒取消就不寫
+      if (e.count) out.push(L(`取消 ${e.count} 份待審核的建立專案申請`, `Cancelled ${e.count} pending project creation request(s)`));
     } else if (e.count != null) out.push(L(`數量 ${e.count}`, `Count ${e.count}`));
     if (d.legacy) out.push(L('（升級前的紀錄）', '(recorded before the upgrade)'));
     return out.join(L('；', '; '));
@@ -9888,7 +9888,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
       <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('approval', '成員申請，管理員核准', '一般成員送建立專案申請，工作區管理員或平台管理員核准後建立')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
   }
-  // 切換「誰可以建立專案」（#46）：從「成員申請」切走會取消所有待審的建立專案申請——先讀預估數量、跳確認；
+  // 切換「誰可以建立專案」：從「成員申請」切走會取消所有待審的建立專案申請——先讀預估數量、跳確認；
   // 存好後的提示用儲存回應的實際數字（預覽之後可能又有人送出）。取消就不存，單選項回到原本的值
   async function createProjectsChange(to) {
     const from = perm.gs?.createProjects;
@@ -9902,16 +9902,16 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     let n;
     try { n = Number((await api('/api/workspace/settings/create-projects-preview')).pendingProjectCreationRequests) || 0; } catch (err) { drawPerm(); return toast(err.message); }
     const ok = await confirmDialog({
-      title: L('不再收建立專案申請？', 'Stop taking project requests?'),
+      title: L('不再收建立專案申請？', 'Stop taking project creation requests?'),
       message: n ? L(`切換後會取消目前 ${n} 份待審核的建立專案申請，申請人會收到通知；之後切回「成員申請，管理員核准」也不會恢復。這是目前的預估，實際數字以儲存結果為準。`,
-        `Switching cancels the ${n} pending project request(s) right now, and the requesters are notified. Switching back later does not restore them. This is an estimate; the saved result has the actual number.`)
-        : L('目前沒有待審核的建立專案申請。切換後一般成員就不能再送建立專案申請。', 'There are no pending project requests right now. After switching, members can no longer send project requests.'),
+        `Switching cancels the ${n} pending project creation request(s) right now, and the requesters are notified. Switching back later does not restore them. This is an estimate; the saved result has the actual number.`)
+        : L('目前沒有待審核的建立專案申請。切換後一般成員就不能再送建立專案申請。', 'There are no pending project creation requests right now. After switching, members can no longer send project creation requests.'),
       confirmText: L('切換', 'Switch'),
     });
     if (!ok) return drawPerm(); // 單選項回到原本的值
     return saveGroupSettings({ createProjects: to }, d => {
       const c = Number(d?.cancelledProjectCreationRequests) || 0;
-      return c ? L(`${saved}；已取消 ${c} 份待審核的建立專案申請`, `${saved}. Cancelled ${c} pending project request(s)`) : L(`${saved}；沒有取消任何申請`, `${saved}. No requests were cancelled`);
+      return c ? L(`${saved}；已取消 ${c} 份待審核的建立專案申請`, `${saved}. Cancelled ${c} pending project creation request(s)`) : L(`${saved}；沒有取消任何申請`, `${saved}. No requests were cancelled`);
     });
   }
   // 工作區政策「誰可以刪除自己的訊息」：所有成員／只有工作區管理員（點了就存）。工作區管理員刪任何人的不受影響
@@ -10111,7 +10111,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       <button type="button" class="link small" data-np-st-add ${list.length >= 12 ? 'disabled' : ''}>＋ 新增一個狀態</button>`;
   }
   // 新增專案彈窗：名稱＋可見度（預設審核；建立的同一步就設好，私人專案從一開始就是私人的）＋程式庫＋分支（選填）一次填完；看板狀態（選填）
-  // request：申請模式（#44；政策是「成員申請，管理員核准」的一般成員）。同一個表單：多了必填的申請原因、可見度跟名稱放在一起、
+  // request：申請模式（政策是「成員申請，管理員核准」的一般成員）。同一個表單：多了必填的申請原因、可見度跟名稱放在一起、
   // 沒有程式庫欄位，送出的是建立專案申請（核准後才建立，申請人成為專案管理員）。
   // requestId 在打開表單時產生一次：送出中停用按鈕、網路中斷後重按都用同一個（伺服器只會有一份申請）；關掉再開＝新的一份申請
   function openNewProject({ request = false } = {}) {
@@ -10308,7 +10308,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   work.joins = [];
   const joinReviewer = () => isAdmin() || myLeadProjects().length > 0;
   async function loadJoins() {
-    const pcr = loadPcrRev(); // 建立專案申請的審核清單（#45；只有審核人讀）
+    const pcr = loadPcrRev(); // 建立專案申請的審核清單（只有審核人讀）
     if (!joinReviewer()) { work.joins = []; return pcr; }
     const [j, k] = await Promise.all([api('/api/join-requests').catch(() => null), api('/api/skills').catch(() => null), pcr]); // PLAT-381：申請、技能一起到，畫面不會先少一件
     work.joins = j?.items || []; work.skillRev = (k?.items || []).filter(x => x.canReview);
@@ -11477,7 +11477,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!bk.status) { api('/api/admin/backup/status').then(s => { bk.status = s; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(err => toast(err.message)); }
     const st = bk.status;
     const imp = !st ? '<p class="muted small">載入中…</p>'
-      : st.finishing ? `<p class="small"><b>備份的資料已經匯入，只差收尾</b>：收尾沒有做完，站台還在還原中。按「完成匯入」再試一次。</p>
+      : st.finishing ? `<p class="small"><b>備份的資料已經匯入，只差收尾</b>：收尾沒有做完，平台還在還原中。按「完成匯入」再試一次。</p>
         <button type="button" class="btn primary" data-bk="finish"${bk.busy ? ' disabled' : ''}>完成匯入</button>` // 收尾中途失敗：登入已轉移，只能重試收尾
       : st.empty ? `<p class="small">${st.restoring ? '<b>上次匯入沒有做完</b>，可以再選一次備份檔從頭匯入。' : '這是空站，可以匯入備份。'}</p>
         <label class="btn${bk.busy ? ' disabled' : ''}">選擇備份檔…<input type="file" accept=".json,application/json" data-bk-file hidden${bk.busy ? ' disabled' : ''}></label>`

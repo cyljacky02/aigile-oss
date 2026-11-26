@@ -1,4 +1,4 @@
-// 文件測試（#48，規格 #39「API 參考文件寫上新端點、欄位上限與錯誤代碼」）：docs/api-reference.md 涵蓋建立專案申請的
+// 文件測試（規格 #39「API 參考文件寫上新端點、欄位上限與錯誤代碼」）：docs/api-reference.md 涵蓋建立專案申請的
 // 每一個端點（從程式的路由表讀）、每一個錯誤代碼（從程式丟的 ApiError 與權限模組的拒絕讀）、欄位上限、即時事件與錯誤附帶的欄位。
 // 用法：node scripts/project-creation-request-doc-test.js
 import fs from 'node:fs';

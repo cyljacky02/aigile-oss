@@ -1,4 +1,4 @@
-// D1 驗證（#49）專用的 Worker 入口：只給 scripts/d1-verify.mjs 在本機 `wrangler dev --local` 跑，絕不部署（wrangler.toml 的 main 是 worker.js）。
+// D1 驗證專用的 Worker 入口：只給 scripts/d1-verify.mjs 在本機 `wrangler dev --local` 跑，絕不部署（wrangler.toml 的 main 是 worker.js）。
 // - 一般請求原樣交給正式的 worker.js（同一套 createApp、wrapD1(env.DB)）；只是把 env.DB 換成「量測＋注入失敗」的包裝：
 //   每個請求記下呼叫 D1 幾次（get/all/run 各一次、batch 整批算一次，跟 D1 的「每次 Worker 執行的查詢數」同一個算法）、
 //   單句最多綁幾個參數、單句 SQL 最長幾個位元組、一批最多幾句，放在回應標頭 x-d1-verify-stats（JSON）。

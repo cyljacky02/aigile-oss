@@ -189,7 +189,7 @@ try {
   assert.equal(wsRead, 1, 'check 時重讀工作區設定（別份程式剛改過也算）');
   console.log('✓ 建立專案');
 
-  // 建立專案申請（#44）：政策是 approval；規則本身要求有效的人類，can 與 check 對 AI 都回否
+  // 建立專案申請：政策是 approval；規則本身要求有效的人類，can 與 check 對 AI 都回否
   const appr = createAccess({
     ApiError, requireHuman, nameOf: id => id, people: async () => people, projects: () => ACTIVE, projectsOf: p => (p.projects || []).filter(x => ACTIVE.includes(x)),
     isolatedFrom: () => false, loadProjectAdmins: async () => leaders, projectAdminsOf: pj => leaders[pj] || [],
@@ -202,10 +202,11 @@ try {
   assert.equal(await code(appr.check(ctx, member, 'create_project', 'workspace')), 'PROJECT_CREATION_REQUIRES_APPROVAL', '直接建立的錯誤代碼');
   assert.equal(await code(appr.check(ctx, bot, 'create_project', 'workspace')), 'NOT_ADMIN', 'AI 直接建立維持既有拒絕');
   for (const p of [admin, admin2, plat]) assert.ok(!av.can(p, 'request_project_creation', 'workspace'), `${p.id} 直接建立，不送申請`);
-  for (const action of ['review_project_creation_requests', 'approve_project_creation_request', 'reject_project_creation_request']) { // 查看待審、核准、拒絕（#45）
+  for (const action of ['review_project_creation_requests', 'approve_project_creation_request', 'reject_project_creation_request']) { // 查看待審、核准、拒絕
     for (const p of [admin, admin2, plat]) assert.ok(av.can(p, action, 'workspace'), `${p.id} 能 ${action}`);
     for (const p of [lead, member]) assert.ok(!av.can(p, action, 'workspace'), `${p.id}（專案管理員也一樣）不能 ${action}`);
-    assert.equal(await code(appr.check(ctx, member, action, 'workspace')), 'NOT_REVIEWER', `成員 ${action} 的錯誤代碼`);
+    // 查看審核清單：無權查看一律 404；核准、拒絕：看得到申請但沒有審核權 403
+    assert.equal(await code(appr.check(ctx, member, action, 'workspace')), action === 'review_project_creation_requests' ? 'NOT_FOUND' : 'NOT_REVIEWER', `成員 ${action} 的錯誤代碼`);
   }
   for (const action of ['request_project_creation', 'see_own_project_creation_requests', 'withdraw_project_creation_request', 'review_project_creation_requests', 'approve_project_creation_request', 'reject_project_creation_request']) {
     for (const ai of [bot, { ...bot, owner_id: 'admin' }]) {

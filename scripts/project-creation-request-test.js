@@ -1,4 +1,4 @@
-// 驗收測試（#44、ADR 0004、0005）：成員可以送出、查看、撤回建立專案申請
+// 驗收測試（ADR 0004、0005）：成員可以送出、查看、撤回建立專案申請
 // - 權限矩陣：三種政策 × 平台管理員／工作區管理員／只有平台管理權／成員／AI／被移出／停用，對送出、查看與專案列表的三個 capability
 // - 一般成員在 approval 呼叫直接建立：403 PROJECT_CREATION_REQUIRES_APPROVAL，不建立申請
 // - 送出：正規化、201；冪等重送 200、內容不同 409 IDEMPOTENCY_CONFLICT；同名待審 409（資料庫索引）；注入寫入失敗整批回復
@@ -7,7 +7,7 @@
 // - 撤回：本人、待審核才行；不通知、不寫稽核；之後可以用同名重送
 // - 送出與政策切換交錯：交易內斷言擋下，不留申請
 // - 資料表：CHECK 約束、部分唯一索引；唯一的狀態轉換（只有 pending 能轉）與取消入口
-// - 申請資料表還沒建立：503；沒有任何啟用設定也能把政策設成 approval（#48 開放給正式環境）
+// - 申請資料表還沒建立：503；沒有任何啟用設定也能把政策設成 approval（正式環境也能選）
 // SQLite；設 AIGILE_TEST_PG_URL 時是 Postgres。用法：node scripts/project-creation-request-test.js
 import './test-home.mjs';
 import fs from 'node:fs';
@@ -244,7 +244,7 @@ try {
   is(await call(chen.token, '/api/project-creation-requests', 'POST', body), 200, null, '舊的 requestId 拿回已撤回的那份');
   assert.equal((await call(chen.token, '/api/project-creation-requests', 'POST', body)).body.state, 'withdrawn', '回傳目前狀態');
 
-  // ---------- 6) 送出與政策切換交錯：政策在送出那一批之前被切走 → 交易內斷言擋下（放在撤回之後：從 approval 切走會取消所有待審申請，#46） ----------
+  // ---------- 6) 送出與政策切換交錯：政策在送出那一批之前被切走 → 交易內斷言擋下（放在撤回之後：從 approval 切走會取消所有待審申請） ----------
   hooks.before = { re: /^INSERT INTO project_creation_requests\b/, run: async () => { await setPolicy('members'); } };
   is(await submit(chen, { name: '交錯申請' }), 403, 'PROJECT_CREATION_REQUESTS_CLOSED', '政策剛切走');
   assert.equal(hooks.before, null, '真的有交錯');
@@ -329,7 +329,7 @@ try {
   assert.deepEqual({ ...(await db.get('SELECT state, cancel_code, ended_by FROM project_creation_requests WHERE id = ?', 'uq_4')) }, { state: 'cancelled', cancel_code: 'workspace_member_left', ended_by: null });
   assert.equal((await db.get('SELECT state FROM project_creation_requests WHERE id = ?', 'uq_3')).state, 'withdrawn', '終止狀態不受影響');
 
-  // ---------- 12) 正式環境（沒有任何啟用設定，#48 開放）：三種政策都能選；不認得的值 400 ----------
+  // ---------- 12) 正式環境（沒有任何啟用設定）：三種政策都能選；不認得的值 400 ----------
   {
     const { call: plain } = harness(db, CONFIG);
     ok(await plain(boss.token, '/api/workspace/settings', 'PUT', { createProjects: 'admins' }), '切到只有管理員');
