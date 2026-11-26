@@ -3,7 +3,7 @@
 // 標記：建了什麼記在 app_settings 的 demo_data；訊息與卡片的 request_id 一律以 demo: 開頭
 // 清除只刪這些（含它們的通知、收件人、卡片紀錄）；示範專案裡如果有你們自己發的訊息或建的卡，專案保留、只刪示範的部分
 // 內容是虛構的通用情境（活動報名網站），不含任何真實人名；示範成員不能登入（沒有密碼、登入碼已過期）
-import { DEFAULT_WORKSPACE } from './membership.js';
+import { ensureStmt } from './write-order.js';
 
 export const DEMO_KEY = 'demo_data';
 const TAG = 'demo:';
@@ -57,7 +57,10 @@ const TEXT = {
   },
 };
 
-export function registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership, afterChange }) {
+// identity：示範專案的名稱與識別碼（core.js 提供）。pick() 挑沒被用的網址英文名與代號（demo／DEMO 優先）；
+// stmts(專案, { name, slug, code, at, actor, eventText }) 是共用建立專案邏輯的交易內斷言與寫入（專案、異動紀錄、識別碼、project.create 稽核）；write(語句) 鎖工作區列後送出，斷言不成立回 false（重算重試）；
+// release(語句) 鎖工作區列後送出放掉示範專案的那批（不必等識別碼正規化），斷言不成立回 false
+export function registerDemo({ route, db, ApiError, randId, nowIso, access, requireHuman, newCode, newToken, membership, identity, afterChange }) {
   const adminOnly = async (ctx, me) => { requireHuman(me); await access.check(ctx, me, 'manage_platform', 'platform', { what: '載入或清除示範資料' }); };
   const loadMark = async () => { try { return JSON.parse((await db.get('SELECT value FROM app_settings WHERE key = ?', DEMO_KEY))?.value || 'null'); } catch { return null; } };
   const freeName = async base => { for (let i = 0; ; i++) { const n = i ? `${base}${i + 1}` : base; if (!(await db.get('SELECT 1 AS x FROM participants WHERE name = ?', n))) return n; } };
@@ -70,10 +73,19 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
 
   route('POST', '/api/admin/demo', async ({ ctx, me, req }) => {
     await adminOnly(ctx, me);
+    let body = {}; try { body = await req.json(); } catch {}
+    // 挑好的網址英文名或代號剛好被別的專案用掉：重讀重算，整批重試（次數有限）
+    for (let attempt = 1; ; attempt++) {
+      const out = await loadDemo(me, body);
+      if (out) { await afterChange?.(); return out; }
+      if (attempt >= 3) throw new ApiError(409, 'CONFLICT', '剛好有人同時在改同樣的資料，這次沒有存；請重新讀取後再試。');
+    }
+  });
+  // 建立示範資料；回 null＝交易內的斷言不成立（什麼都沒寫）
+  async function loadDemo(me, body) {
     if (await loadMark()) throw new ApiError(409, 'DEMO_LOADED', '示範資料已經載入了；要重來請先清除');
     const now = Date.now(), iso = ms => new Date(now - ms).toISOString(), H = 3600_000, M = 60_000;
     const pj = randId('prj');
-    let body = {}; try { body = await req.json(); } catch {}
     const T = TEXT[body?.lang === 'en' ? 'en' : 'zh']; // 網頁是英文介面就載英文示範
     let pname = T.project;
     if (await db.get('SELECT 1 AS x FROM projects WHERE name = ? AND archived = 0', pname)) pname += `（${new Date(now).toISOString().slice(5, 10)}）`;
@@ -85,14 +97,10 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
     const people = [po, dev, ux];
     // 加入時間一定要是現在：管理員＝最早加入的人類，示範成員比你早就會變成管理員
     const joinedAt = new Date(now + 1000).toISOString();
-    const stmts = [
-      ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at) VALUES (?,?,0,?,?,?)', [pj, pname, DEFAULT_WORKSPACE, me.id, iso(6 * H)]],
-      ['INSERT INTO project_events (project_id, at, actor_id, text) VALUES (?,?,?,?)', [pj, iso(6 * H), me.id, T.loaded(me.name)]],
-    ];
-    const slugUsed = await db.get("SELECT 1 AS x FROM app_settings WHERE key >= 'slug:' AND key < 'slug;' AND value = 'demo'");
-    const codeUsed = await db.get("SELECT 1 AS x FROM app_settings WHERE key >= 'pcode:' AND key < 'pcode;' AND value = 'DEMO'");
-    if (!slugUsed) stmts.push(['INSERT INTO app_settings (key, value) VALUES (?, ?)', ['slug:' + pj, 'demo']]);
-    if (!codeUsed) stmts.push(['INSERT INTO app_settings (key, value) VALUES (?, ?)', ['pcode:' + pj, 'DEMO']]);
+    // 示範專案走共用的建立專案邏輯（執行者＝你、寫 project.create）。網址英文名與代號一定存：demo／DEMO 被用了就挑別的；
+    // 寫入那批在交易內確認名稱、網址英文名、代號都沒被用掉
+    const { slug, code } = await identity.pick();
+    const stmts = [...identity.stmts(pj, { name: pname, slug, code, at: iso(6 * H), actor: me, eventText: T.loaded(me.name) })];
     for (const p of people) {
       stmts.push([`INSERT INTO participants (id, kind, name, role, role_key, code, owner_id, duties, token, token_expires_at, status, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,1,'active',?,?)`, [p.id, p.kind, p.name, p.role, p.role_key, p.code, p.owner_id, p.duties, 'demo_' + newToken(), joinedAt, joinedAt]], // token_expires_at=1：AI 顯示「Token 已過期」；人類沒有密碼、沒有裝置，登入碼是沒人拿得到的亂數
@@ -122,7 +130,6 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
     stmts.push(['INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = CASE WHEN CAST(excluded.value AS INTEGER) > CAST(app_settings.value AS INTEGER) THEN excluded.value ELSE app_settings.value END', [`pnomax:${pj}`, String(no)]]);
 
     // 一段人與 AI 的對話（掛在「報名成功寄確認信」那張卡上）＋給你的一則通知（決策等你）
-    const code = codeUsed ? null : 'DEMO';
     const ref = c => (code ? `${code}-${c.no}` : T.ref(c));
     const mail = cards[1], mobile = cards[2];
     const msgs = [];
@@ -146,10 +153,9 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
     stmts.push(["INSERT INTO app_settings (key, value) VALUES ('join_settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify({ ...js, [pj]: { open: false, note: '' } })]]);
     const mark = { project: pj, projectName: pname, people: people.map(p => p.id), addedMe: addedMe ? me.id : null, by: me.id, at: nowIso() };
     stmts.push(['INSERT INTO app_settings (key, value) VALUES (?, ?)', [DEMO_KEY, JSON.stringify(mark)]]);
-    await db.batch(stmts);
-    await afterChange?.();
+    if (!(await identity.write(stmts))) return null;
     return { loaded: true, projectId: pj, projectName: pname, cards: cards.length, messages: msgs.length, people: people.map(p => p.name) };
-  });
+  }
 
   // 清除：只刪有標記的；示範專案裡有別人的訊息或卡就保留專案
   route('DELETE', '/api/admin/demo', async ({ ctx, me }) => {
@@ -183,8 +189,11 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
     let keptProject = false;
     if (others?.n) keptProject = true;
     else {
-      const rm = [['DELETE FROM projects WHERE id = ?', [m.project]], ['DELETE FROM project_events WHERE project_id = ?', [m.project]],
-        ['DELETE FROM app_settings WHERE key IN (?, ?, ?)', ['slug:' + m.project, 'pcode:' + m.project, 'pnomax:' + m.project]]];
+      // 放掉示範專案的名稱與識別碼：第一句工作區列鎖（identity.release），交易內再確認專案裡沒有別人的訊息或卡（上面的計數是交易前讀的）
+      const rm = [ensureStmt('NOT EXISTS (SELECT 1 FROM messages WHERE project = ?) AND NOT EXISTS (SELECT 1 FROM cards WHERE project = ?)', [m.project, m.project]),
+        ['DELETE FROM projects WHERE id = ?', [m.project]], ['DELETE FROM project_events WHERE project_id = ?', [m.project]],
+        ['DELETE FROM app_settings WHERE key IN (?, ?, ?)', ['slug:' + m.project, 'pcode:' + m.project, 'pnomax:' + m.project]],
+        ["DELETE FROM app_settings WHERE key >= 'pcodeold:' AND key < 'pcodeold;' AND value = ?", [m.project]]]; // 改過代號的舊代號也放掉
       // 誰被加進示範專案（含你）都移出
       const fallback = (await db.get('SELECT id FROM projects WHERE id != ? AND archived = 0 ORDER BY created_at, id LIMIT 1', m.project))?.id || '';
       for (const p of await membership.fetchMembersOf(m.project)) {
@@ -193,7 +202,7 @@ export function registerDemo({ route, db, ApiError, randId, nowIso, access, requ
       }
       let js = {}; try { js = JSON.parse((await db.get("SELECT value FROM app_settings WHERE key = 'join_settings'"))?.value || '{}') || {}; } catch {}
       if (js[m.project]) { delete js[m.project]; rm.push(["UPDATE app_settings SET value = ? WHERE key = 'join_settings'", [JSON.stringify(js)]]); }
-      await db.batch(rm);
+      if (!(await identity.release(rm))) keptProject = true; // 剛好有人在示範專案留了資料：保留專案
     }
     await afterChange?.();
     return { cleared: true, keptProject, projectName: m.projectName };

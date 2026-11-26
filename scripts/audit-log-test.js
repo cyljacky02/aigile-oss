@@ -75,7 +75,7 @@ try {
   // ---------- 停用／恢復帳號 ----------
   ok(await call(boss.token, `/api/participants/${CHEN}/disable`, 'POST'), '停用陳大文');
   e = await latest();
-  assert.deepEqual([e.action, e.scope.kind, e.target.id, e.detail], ['account.disable', 'platform', CHEN, { revokedAiTokens: 0 }], 'A 停用帳號：' + JSON.stringify(e));
+  assert.deepEqual([e.action, e.scope.kind, e.target.id, e.detail], ['account.disable', 'platform', CHEN, { revokedAiTokens: 0, counted: 'cancelledProjectCreationRequests' }], 'A 停用帳號（取消了幾份建立專案申請記在 count）：' + JSON.stringify(e));
   n0 = await count();
   ok(await call(boss.token, `/api/participants/${CHEN}/disable`, 'POST'), '再停用一次');
   assert.equal(await count(), n0, 'A 已停用再停用不寫');

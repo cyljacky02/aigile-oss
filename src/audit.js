@@ -20,6 +20,7 @@
 //   countOf    [sql, args]：數字在同一批裡用這句 SELECT 算（例：這次清空了幾則），取代 count
 //   detail     細節物件（存成 JSON）；不放訊息原文
 //   at         ISO 時間；不給＝現在
+//   id         這筆的 id；不給＝隨機。提交後要讀回 countOf 算出的數字時給（例：這次實際取消了幾份建立專案申請）
 // 不寫的情況：沒有真的改到東西（no-op）、競態檢查擋下來（409）都不寫
 
 // 動作（存在 action 欄位；網頁的篩選與顯示文字照這張表）
@@ -35,6 +36,8 @@ export const AUDIT_ACTION = Object.freeze({
   RECOVERY_WINDOW_UPDATE: 'recovery_window.update', // 平台或工作區；detail { from, to }
   MESSAGE_DELETE: 'message.delete', MESSAGE_RESTORE: 'message.restore', MESSAGE_PURGE: 'message.purge',
   PROJECT_MESSAGES_CLEAR: 'project_messages.clear', PROJECT_MESSAGES_RESTORE: 'project_messages.restore',
+  PROJECT_CREATE: 'project.create', // detail { method: direct｜approved_request｜first_run｜demo, requestId?, requester?, code, slug, visibility }（src/project-create.js）
+  PROJECT_CREATION_REQUEST_REJECT: 'project_creation_request.reject', // 拒絕建立專案申請；target＝申請人，detail { requestId, requester }（不複製申請內容）
   PROJECT_DELETE: 'project.delete', PROJECT_RESTORE: 'project.restore', PROJECT_PURGE: 'project.purge', // 舊的專案刪除紀錄轉成 project.purge，detail.legacy＝true
 });
 export const AUDIT_SCOPE = Object.freeze({ PLATFORM: 'platform', WORKSPACE: 'workspace', PROJECT: 'project' });
@@ -71,7 +74,7 @@ export function createAudit({ db, randId, nowIso }) {
   let ready = true;
   const stmt = evt => {
     if (!ready || !evt?.action) return null;
-    const v = values(evt, randId('aud'), evt.at || nowIso());
+    const v = values(evt, evt.id || randId('aud'), evt.at || nowIso());
     if (!evt.countOf) return [INSERT, v];
     const [sql, args = []] = evt.countOf; // count 是倒數第二欄
     return [INSERT.replace(/\?,\?\)$/, `(${sql}),?)`), [...v.slice(0, -2), ...args, v[v.length - 1]]];
@@ -114,9 +117,9 @@ export function createAudit({ db, randId, nowIso }) {
   }
 
   // 舊的專案刪除紀錄（pdel:）轉進稽核紀錄後移除：一筆一批（新增＋刪鍵），id 由鍵決定，重跑、多份程式同時跑都不會重複
-  // 回 false＝這次沒做完（匯入備份中、還沒有資料表），下個請求再試
-  async function migrateLegacy() {
-    if (await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
+  // 回 false＝這次沒做完（匯入備份中、還沒有資料表），下個請求再試。還原收尾（finishingRestore）時還在還原中，照樣做
+  async function migrateLegacy({ finishingRestore = false } = {}) {
+    if (!finishingRestore && await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
     // 只有「沒有這張表」才當還沒升級；其他錯誤（連線中斷…）照寫，不能因為一次讀不到就不記
     try { await db.get('SELECT seq FROM audit_log LIMIT 1'); ready = true; } catch (e) { if (!isMissingTable(e)) throw e; ready = false; return false; }
     const rows = await db.all('SELECT key, value FROM app_settings WHERE key >= ? AND key < ?', LEGACY_FROM, LEGACY_TO);

@@ -10,6 +10,7 @@
 // 寫：回傳 [sql, args] 語句陣列，呼叫端跟卡片退回、專案事件放進同一個 db.batch（一起成功或一起失敗）；執行後呼叫 load(true)。
 // PROJECTS：未封存專案 id 的陣列（core.js 原地更新的同一個陣列）。
 // onChange：模組自己改了資料（升級轉換）後通知呼叫端（core.js 清成員快取）。
+import { lockWorkspaceStmt } from './write-order.js'; // 工作區列鎖（ADR 0005：同一批的第一句）
 export const DEFAULT_WORKSPACE = 'default';
 export const PROJECT_ROLE = Object.freeze({ ADMIN: 'admin', MEMBER: 'member', VIEWER: 'viewer' });
 const PR = PROJECT_ROLE;
@@ -181,7 +182,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 沒有就什麼都不改（呼叫端再讀一次看有沒有改到）。第一句先鎖工作區這列：兩位管理員同時互降時排隊，後到的看得到前一位的結果（Postgres）。
   // 平台角色另外管（setPlatformRoleStmts）
   const setWorkspaceRoleStmts = (id, role, at) => [
-    ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    lockWorkspaceStmt(DEFAULT_WORKSPACE),
     role === WR.ADMIN
       ? [`UPDATE participants SET workspace_role = '${WR.ADMIN}', updated_at = ? WHERE id = ? AND kind = 'human' AND status = 'active' AND workspace_role != '${WR.ADMIN}'`, [at, id]]
       : [`UPDATE participants SET workspace_role = '${WR.MEMBER}', updated_at = ? WHERE id = ? AND workspace_role = '${WR.ADMIN}'
@@ -192,7 +193,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 升降平台管理員（role：admin | none；只有啟用中的人類帳號能升）。跟工作區管理員一樣：降級在同一句檢查「還有別的啟用中平台管理員」，
   // 沒有就不改（呼叫端再讀一次）；先鎖工作區這列讓同時互降的人排隊（第一階段只有一個工作區，拿它當全平台的鎖）
   const setPlatformRoleStmts = (id, role, at) => [
-    ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    lockWorkspaceStmt(DEFAULT_WORKSPACE),
     role === 'admin'
       ? ["UPDATE accounts SET platform_role = 'admin', updated_at = ? WHERE platform_role != 'admin' AND status = 'active' AND id IN (SELECT account_id FROM participants WHERE id = ? AND kind = 'human' AND status = 'active')", [at, id]]
       : [`UPDATE accounts SET platform_role = 'none', updated_at = ? WHERE platform_role = 'admin' AND id IN (SELECT account_id FROM participants WHERE id = ?)
@@ -202,7 +203,7 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
   // 他是工作區管理員時還有別的啟用中工作區管理員、他是平台管理員時還有別的啟用中平台管理員；不然什麼都不改（呼叫端再讀一次）。
   // 帳號狀態只在真的停用了才跟著改。token：換上的新登入碼雜湊（舊的立刻失效）
   const disableStmts = (id, at, token) => [
-    ['UPDATE workspaces SET name = name WHERE id = ?', [DEFAULT_WORKSPACE]],
+    lockWorkspaceStmt(DEFAULT_WORKSPACE),
     [`UPDATE participants SET status = 'disabled', token = ?, updated_at = ?, version = version + 1 WHERE id = ? AND kind = 'human' AND status = 'active'
       AND (workspace_role != '${WR.ADMIN}' OR EXISTS (SELECT 1 FROM participants o WHERE o.workspace_id = ? AND o.workspace_role = '${WR.ADMIN}' AND o.kind = 'human' AND o.status = 'active' AND o.id != participants.id))
       AND (NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = participants.account_id AND a.platform_role = 'admin' AND a.status = 'active')
@@ -226,10 +227,11 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
 // read_only → 唯讀成員（同時是 leader 又是唯讀：唯讀成員，記在 upgrade_review 給工作區管理員確認）、
   // is_admin（沒有就最早加入的啟用人類）→ 工作區管理員＋平台管理員、停用 → 停用帳號、已刪除（人類）→ 已移出工作區。
   // 跨專案角色 → 每個未封存專案的明確成員資格（migrateCrossRoles）。只靠隱含權限的管理員：現任管理員在「沒有職稱（project_roles）也不是 leader」的專案
-  // 移除成員資格，改靠隱含權限（升級前這些專案本來就不列他），其他保留；跨專案角色的轉換也照這個規則。匯入備份中（restore_state）不做，回 false。
+  // 移除成員資格，改靠隱含權限（升級前這些專案本來就不列他），其他保留；跨專案角色的轉換也照這個規則。匯入備份中（restore_state）不做，回 false；
+  // 還原收尾（finishingRestore）例外：這時還在還原中，收尾的修整步驟就是要在解除還原中之前把它做完。
   // 每個人都轉完後，刪掉抄起來的舊資料與舊設定（project_leaders、read_only、cross_roles）。
-  async function migrateLegacy() {
-    if (await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
+  async function migrateLegacy({ finishingRestore = false } = {}) {
+    if (!finishingRestore && await db.get("SELECT 1 AS x FROM app_settings WHERE key = 'restore_state'").catch(() => null)) return false;
     const base = [
       [`INSERT OR IGNORE INTO workspaces (id, name, create_projects) VALUES (?, '', 'admins')`, [DEFAULT_WORKSPACE]], // 匯入舊版備份後沒有工作區：當升級的站
       ["UPDATE workspaces SET name = (SELECT value FROM app_settings WHERE key = 'group_name') WHERE id = ? AND name = '' AND EXISTS (SELECT 1 FROM app_settings WHERE key = 'group_name')", [DEFAULT_WORKSPACE]],
@@ -275,7 +277,9 @@ export function createMembership({ db, PROJECTS, nowIso, onChange = () => {} }) 
       if (table) stmts.push(['DELETE FROM legacy_members WHERE participant_id = ?', [p.id]]);
       each.push(stmts);
     }
-    await db.batch(base);
+    // 還沒有 cross_roles（套舊規則：PO／SM）時先放一個空的：規則一樣，但每個人轉完後中斷、重跑時（已經沒有沒轉的人）還認得要轉跨專案角色
+    // （例：還原收尾中途失敗再按一次）。轉完跨專案角色就刪掉
+    await db.batch([...base, ["INSERT OR IGNORE INTO app_settings (key, value) VALUES ('cross_roles', '{}')", []]]);
     for (let i = 0; i < each.length; i += 30) await db.batch(each.slice(i, i + 30).flat()); // 一批 30 人（D1 單批不要太大）
     console.log(`成員與權限：已把 ${todo.length} 位成員轉到新的資料表`);
     await migrateCrossRoles(true);

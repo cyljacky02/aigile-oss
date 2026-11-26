@@ -552,6 +552,13 @@
   // 所有工作區管理員的名字（可以有多位）；名單還沒載入時用專案清單給的那位
   const wsAdminNames = () => [...(state.participants?.values() || [])].filter(p => p.memberType === 'human' && p.workspaceRole === 'admin').map(p => p.name).join('、') || state.projMeta.adminName || '';
   const canNewProj = () => !!state.projMeta.canCreateProject; // 工作區設定「誰可以建立專案」：管理員永遠可以，設成所有成員時一般成員也可以（後端判斷）
+  // 建立專案申請：政策是「成員申請，管理員核准」時，一般成員的入口是「申請建立專案」（後端的 canRequestProjectCreation）。
+  // 所有建立專案的入口（總覽側欄、總覽、專案切換器、手機選單）都看這兩個：能直接建立＝「新增專案」，能申請＝「申請建立專案」，都不能＝不顯示
+  const canReqProj = () => !!state.projMeta.canRequestProjectCreation;
+  const canStartProj = () => canNewProj() || canReqProj();
+  const startProjText = () => (canNewProj() ? '新增專案' : '申請建立專案');
+  const startProjPlus = () => (canNewProj() ? '＋ 新增專案' : '＋ 申請建立專案');
+  const openStartProject = () => openNewProject({ request: !canNewProj() });
   // 專案管理員（每個專案可多位、只能人類）
   const projectAdminsOf = pj => state.projMeta.leaders?.[pj] || [];
   // 唯讀：人類看名單；AI 跟著主人。所在是跨專案頻道時，只要在任何專案唯讀就算
@@ -1023,6 +1030,7 @@
   function liveEvent(kind, raw) {
     if (!kind || kind === 'hello' || kind === 'bye') return;
     if (kind === 'join') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} return onJoinDecided(x).catch(() => {}); }
+    if (kind === 'stale') return refreshPcr().catch(() => {}); // 建立專案申請有變：事件不帶內容，重新抓取
     if (kind === 'messages_cleared' || kind === 'messages_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return reloadProjMsgs(x.project); } // 整個專案的訊息被清空或整批復原
     if (kind === 'message_deleted' || kind === 'message_restored') { let x = {}; try { x = JSON.parse(raw || '{}'); } catch {} refreshInboxCount(); return x.id ? reloadMsg(x.id).catch(() => {}) : undefined; } // 別人刪除或復原：重讀那一則
     liveConn.kinds.add(kind);
@@ -1762,7 +1770,7 @@
   async function loadProjectList() {
     const d = await api('/api/projects');
     state.projectList = d.items;
-    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', leaders: d.projectAdmins || d.leaders || {}, archivedLeaders: d.archivedProjectAdmins || d.archivedLeaders || {}, readOnly: d.viewers || d.readOnly || {}, join: d.join || {}, canCreateProject: !!d.canCreateProject, canDeleteOwnMessages: d.canDeleteOwnMessages !== false}; // join // 、
+    state.projMeta = { adminId: d.adminId, adminName: d.adminName || '', leaders: d.projectAdmins || d.leaders || {}, archivedLeaders: d.archivedProjectAdmins || d.archivedLeaders || {}, readOnly: d.viewers || d.readOnly || {}, join: d.join || {}, canCreateProject: !!d.canCreateProject, canRequestProjectCreation: !!d.canRequestProjectCreation, canReviewProjectCreationRequests: !!d.canReviewProjectCreationRequests, canDeleteOwnMessages: d.canDeleteOwnMessages !== false}; // join // 、
     document.querySelectorAll('[data-admin-only]').forEach(b => { b.hidden = !d.adminId || d.adminId !== state.me?.participantId; });
     if (typeof drawAvatarMenu === 'function') drawAvatarMenu();
     if (state.me) drawMe(); // 知道誰是管理員後重畫名片
@@ -1811,6 +1819,7 @@
     for (const { list, last: n } of dmGroups((work.notes || []).filter(x => x.dm))) items.push({ p: n.project ?? null, kind: n.sender?.system ? '通知' : '私訊', title: (n.sender?.system ? `平台通知：${oneLine(dmGist(n.preview, true), 60)}` : `${n.sender?.name || ''} 回你了`) + (list.length > 1 ? `（${list.length} 則）` : ''), key: 'n:' + n.notificationId }); // PLAT-388 E：連發的合併成一項
     for (const j of (work.joins || []).filter(j => dueForMe(j.project, j.createdAt))) items.push({ p: myProjects().includes(j.project) ? j.project : null, kind: '申請', title: `${j.name} 申請加入${j.projectName}`, key: 'j:' + j.id }); // PLAT-381 先給 leader
     for (const k of (work.skillRev || []).filter(k => dueForMe(k.project, k.uploadedAt))) items.push({ p: myProjects().includes(k.project) ? k.project : null, kind: '核准', title: `技能待核准：${k.name} v${k.version}`, key: 'k:' + k.skillId }); // PLAT-381
+    for (const r of work.pcrRev?.items || []) items.push({ p: null, ws: true, kind: '建立專案', title: `${r.requesterName || ''} 申請建立「${r.name}」`, key: 'r:' + r.id }); // 建立專案申請：工作區層，不屬於任何專案（「要你處理」分在「工作區」）
     return items.filter(x => !x.p || myProjects().includes(x.p));
   }
   const todoInView = (x, v = projectView()) => v === 'hub' || (v === 'cross' ? !x.p : x.p === v);
@@ -1827,7 +1836,7 @@
   }
   function todoByView() {
     const items = todoItems();
-    const n = { hub: items.length, cross: items.filter(x => !x.p).length };
+    const n = { hub: items.length + pcrRevHidden(), cross: items.filter(x => !x.p).length + pcrRevHidden() }; // 建立專案申請：還沒載入的也算（待審總數）
     for (const p of myProjects()) n[p] = items.filter(x => x.p === p).length;
     return n;
   }
@@ -1859,7 +1868,7 @@
           ${myProjects().map(p => `<button type="button" class="hs-item" data-proj="${esc(p)}" title="${esc(projName(p))}">${projIcon(p, 22)}<span class="hs-name">${esc(projName(p))}</span>${n(p)}</button>`).join('') || '<p class="muted small hs-empty">還沒有加入任何專案</p>'}
           <button type="button" class="hs-item hs-muted" data-proj="cross">${projIcon('cross', 22)}<span class="hs-name">跨專案頻道</span>${n('cross')}</button>
           <button type="button" class="hs-item hs-add" data-join-open><span class="hs-ico" aria-hidden="true">＋</span><span class="hs-name">申請加入專案</span></button>
-          ${canNewProj() ? '<button type="button" class="hs-item hs-add" data-hub-newproj><span class="hs-ico" aria-hidden="true">＋</span><span class="hs-name">新增專案</span></button>' : ''}
+          ${canStartProj() ? `<button type="button" class="hs-item hs-add" data-hub-newproj><span class="hs-ico" aria-hidden="true">＋</span><span class="hs-name">${startProjText()}</span></button>` : ''}
         </nav>`;
         return;
       }
@@ -1869,7 +1878,7 @@
         <div class="ph-card">${projIcon(v)}<span class="ph-name">${hasHub() ? '<button type="button" class="ph-back in-card" data-proj="hub">‹ 總覽</button>' : ''}<b>${esc(viewLabel(v))}</b>${hasHub() ? '' : `<span class="small">${esc(sub)}</span>`}</span>
           ${canSetProj(v) ? `<button type="button" class="ph-gear" data-pset="${esc(v)}" aria-haspopup="menu" aria-expanded="false" aria-label="${esc(viewLabel(v))} 專案設定" title="專案設定">⚙</button>` : ''}
           ${hasHub() ? `<button type="button" class="ps-btn ph-swap" aria-haspopup="listbox" aria-expanded="false" aria-controls="ps-list-${i}" aria-label="切換專案" title="切換專案">⇅</button>
-          <ul class="ps-list" id="ps-list-${i}" role="listbox" aria-label="切換專案" hidden>${opts.map(k => `<li role="option" tabindex="-1" data-proj="${esc(k)}" aria-selected="${k === v}"><span>${esc(viewLabel(k))}</span>${k === 'hub' ? '' : badge(k)}</li>`).join('')}${canNewProj() || isAdmin() ? '<li class="ps-sep" role="separator"></li>' : ''}${canNewProj() ? '<li role="option" tabindex="-1" class="ps-act" data-ps-act="newproj">＋ 新增專案</li>' : ''}${isAdmin() ? '<li role="option" tabindex="-1" class="ps-act" data-ps-act="manage">管理專案…</li>' : ''}</ul>` : ''}</div>`;
+          <ul class="ps-list" id="ps-list-${i}" role="listbox" aria-label="切換專案" hidden>${opts.map(k => `<li role="option" tabindex="-1" data-proj="${esc(k)}" aria-selected="${k === v}"><span>${esc(viewLabel(k))}</span>${k === 'hub' ? '' : badge(k)}</li>`).join('')}${canStartProj() || isAdmin() ? '<li class="ps-sep" role="separator"></li>' : ''}${canStartProj() ? `<li role="option" tabindex="-1" class="ps-act" data-ps-act="newproj">${startProjPlus()}</li>` : ''}${isAdmin() ? '<li role="option" tabindex="-1" class="ps-act" data-ps-act="manage">管理專案…</li>' : ''}</ul>` : ''}</div>`;
     });
     drawChrome();
   }
@@ -1905,7 +1914,7 @@
     const counts = todoByView(), here = counts[v] || 0; // 收件匣徽章＝所在專案的件數，切專案就跟著變
     document.querySelectorAll('.inbox-badge').forEach(b => { b.hidden = !here; b.textContent = here > 99 ? '99+' : here; });
     const todo = $('#m-todo'), n = counts.hub, nb = todo.querySelector('.m-todo-n');
-    const mnp = $('#m-newproj'); if (mnp) mnp.hidden = !canNewProj(); // 手機選單也能新增專案
+    const mnp = $('#m-newproj'); if (mnp) { mnp.hidden = !canStartProj(); const t = mnp.querySelector('.m-newproj-t'); if (t && t.dataset.k !== startProjText()) { t.dataset.k = startProjText(); t.textContent = startProjText(); } } // 手機選單也能新增專案（或申請建立專案）
     todo.hidden = !hasHub(); // 在手機選單裡，每頁都有（各專案彙總）
     nb.hidden = !n; nb.textContent = n > 99 ? '99+' : n;
     const mn = $('#menu-btn .menu-n'), mc = hasHub() ? n : here; // 選單鈕帶「要你處理」件數（按鈕收進選單後還看得到）
@@ -2005,7 +2014,7 @@
     const btn = e.target.closest('.ps-btn');
     if (btn) return psOpen(btn, btn.getAttribute('aria-expanded') !== 'true');
     const pa = e.target.closest('[data-ps-act]'); // 切換清單最下面：新增專案、管理專案
-    if (pa) { document.querySelectorAll('.ps-btn[aria-expanded="true"]').forEach(x => psOpen(x, false)); closeSheet(false); return pa.dataset.psAct === 'newproj' ? openNewProject() : openAdmin('projects'); }
+    if (pa) { document.querySelectorAll('.ps-btn[aria-expanded="true"]').forEach(x => psOpen(x, false)); closeSheet(false); return pa.dataset.psAct === 'newproj' ? openStartProject() : openAdmin('projects'); }
     const b = e.target.closest('[data-proj]');
     document.querySelectorAll('.ps-btn[aria-expanded="true"]').forEach(x => psOpen(x, false));
     if (b) { closeSheet(false); setProjectView(b.dataset.proj); }
@@ -3796,6 +3805,28 @@
       <div class="sec-acts">${act}<button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(n.detail)} 知道了">知道了</button></div></div>`;
     }
     if (/^admin_/.test(n.kind)) return adminSecHtml(n, when);
+    if (n.kind === 'project_creation_request') { // 建立專案申請送出（只寄給審核人）：細節只有申請人名字，內容到審核頁看
+      let d = {}; try { d = JSON.parse(n.detail) || {}; } catch {}
+      const text = `${d.a || '有成員'} 送出了一份建立專案申請 · ${when}。`;
+      return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🗂️</span>
+      <div class="sec-main"><span>${esc(text)}</span><span class="small">工作區管理員或平台管理員核准後才會建立專案。</span></div>
+      <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
+    }
+    if (n.kind === 'project_creation_request_cancelled') { // 政策從「成員申請」切走，申請人的待審申請被取消：細節是空的，哪幾份到「我的建立專案申請」看
+      const text = `你的建立專案申請已取消：工作區政策已改變，不再收建立專案申請 · ${when}。`;
+      return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">🗂️</span>
+      <div class="sec-main"><span>${esc(text)}</span><span class="small">到總覽的「我的建立專案申請」查看；需要新專案請找工作區管理員。</span></div>
+      <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
+    }
+    if (n.kind === 'project_creation_request_approved' || n.kind === 'project_creation_request_rejected') { // 建立專案申請的結果（只寄給申請人）：細節只有申請的名稱
+      let d = {}; try { d = JSON.parse(n.detail) || {}; } catch {}
+      const yes = n.kind === 'project_creation_request_approved';
+      const text = yes ? `你的建立專案申請「${d.n || ''}」已核准，專案已建立 · ${when}。` : `你的建立專案申請「${d.n || ''}」沒有核准 · ${when}。`;
+      const hint = yes ? '你是這個專案的專案管理員；在「我的建立專案申請」可以進入專案。' : '拒絕理由在「我的建立專案申請」；可以修改後重新申請。';
+      return `<div class="sec-note" id="sec-${esc(n.id)}"><span class="sec-ico" aria-hidden="true">${yes ? '✅' : '📮'}</span>
+      <div class="sec-main"><span>${esc(text)}</span><span class="small">${hint}</span></div>
+      <div class="sec-acts"><button type="button" class="btn small" data-sec-read="${esc(n.id)}" aria-label="${esc(text)} 知道了">知道了</button></div></div>`;
+    }
     const [text, hint] = n.kind === 'password_login' ? [`有新裝置用你的帳號密碼登入：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它並改密碼。']
       : n.kind === 'rescue_login' ? [`有裝置用主機救援連結登入你的帳號：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並檢查誰有主機部署權限。']
       : n.kind === 'login_code_read' ? [`有裝置讀取了你的登入碼：${secDev(n.detail)} · ${when}。`, '不是你？到「我的裝置」登出它，並換一組登入碼（舊的會失效）。']
@@ -3932,9 +3963,9 @@
     const cm = lastMsgOf(null);
     return `<div class="hub"><section class="hub-main">
         <div class="work-head"><div class="work-title"><h2>${esc(greeting())}，<span data-nt>${esc(shownName(state.me?.name || ''))}</span></h2><span class="muted small"><span>${esc(new Date().toLocaleDateString(window.aigileI18n?.lang === 'en' ? 'en-US' : 'zh-TW', { month: 'numeric', day: 'numeric', weekday: 'short' }))}</span>${counts.hub ? ` · ${counts.hub} 件要你處理` : ' · 沒有要你處理的事'}</span></div></div>
-        ${onboardHtml()}${hubNewAiHtml()}${nextStepsHtml()}<div class="hub-grid">${cards || hubJoinHtml()}</div>
+        ${onboardHtml()}${hubNewAiHtml()}${nextStepsHtml()}${pcrMineHtml()}<div class="hub-grid">${cards || hubJoinHtml()}</div>
         <button type="button" class="link hub-join" data-join-open>＋ 申請加入專案</button>
-        ${canNewProj() ? '<button type="button" class="link hub-join" data-hub-newproj>＋ 新增專案</button>' : ''}
+        ${canStartProj() ? `<button type="button" class="link hub-join" data-hub-newproj>${startProjPlus()}</button>` : ''}
         <button type="button" class="hub-card hub-cross" data-proj="cross" aria-label="進入跨專案頻道">${projIcon('cross', 44)}<span class="hc-name"><b>跨專案頻道</b><span class="small">規則公告、跨團隊協調。${cm ? `最新：${esc(cm.author.name)} ${whenText(cm.createdAt)}「${esc(oneLine(cm.text, 40))}」` : '最近 12 小時沒有新訊息'}</span></span><span class="hc-go">進入 ›</span></button>
       </section>
       <aside class="hub-todo" aria-label="要你處理">${hubTodoHtml()}</aside></div>`;
@@ -4020,14 +4051,186 @@
     const rows = !list ? '<p class="muted small">載入可以申請的專案…</p>' : list.length ? list.map(row).join('') : '<p class="muted small">目前沒有可以加入的專案，請專案管理員或工作區管理員把你加入專案。</p>';
     return `<section class="hub-empty hub-joinable" aria-label="可以申請的專案"><p>你還沒有加入任何專案。下面是你可以加入的專案：開放的專案按「加入」就好；審核的專案送出申請，由專案管理員核准。加入後這裡就會出現專案。</p>${rows}</section>`;
   }
+  // ---------- 我的建立專案申請：總覽的專案列表上方 ----------
+  // 有申請紀錄、或目前能申請時才顯示；列出狀態、拒絕或取消原因、結果專案（看得到才給連結）、待審核的可以撤回、載入更多。
+  // 資料一律從 GET /api/project-creation-requests 讀（即時事件只說「重新抓取」，不帶內容）
+  const myPcr = { items: null, next: null, loading: false, armed: null, busy: false };
+  const PCR_STATE = { pending: ['待審核', 'yellow'], approved: ['已核准', 'green'], rejected: ['已拒絕', 'red'], withdrawn: ['已撤回', 'grey'], cancelled: ['已取消', 'grey'] };
+  const PCR_CANCEL = { policy_changed: '工作區政策已改變，不再收建立專案申請', workspace_member_removed: '你已被移出工作區', workspace_member_left: '你已離開工作區', account_disabled: '帳號已停用', restore_invalid: '還原備份後這份申請不再成立' };
+  // more：載入下一頁（接在後面）；否則從第一頁重讀
+  async function loadMyPcr(more = false) {
+    if (state.me?.memberType !== 'human' || myPcr.loading) return;
+    myPcr.loading = true;
+    try {
+      const d = await api(`/api/project-creation-requests?scope=mine${more && myPcr.next ? `&cursor=${encodeURIComponent(myPcr.next)}` : ''}`);
+      myPcr.items = more ? [...(myPcr.items || []), ...d.items.filter(x => !(myPcr.items || []).some(y => y.id === x.id))] : d.items;
+      myPcr.next = d.nextCursor;
+    } catch { myPcr.items = myPcr.items || []; } finally { myPcr.loading = false; }
+  }
+  function pcrRowHtml(r) {
+    const [label, color] = PCR_STATE[r.state] || [r.state, 'grey'];
+    const why = r.state === 'rejected' && r.rejectReason ? `<div class="small pcr-why">拒絕原因：<span data-nt>${esc(r.rejectReason)}</span></div>`
+      : r.state === 'cancelled' ? `<div class="small pcr-why">${esc(PCR_CANCEL[r.cancelCode] || '系統已取消這份申請')}</div>` : '';
+    const proj = r.state !== 'approved' || !r.project ? '' : r.project.available ? `<button type="button" class="link small" data-proj="${esc(r.project.id)}">進入專案 ›</button>` : '<span class="muted small">專案已不存在或你目前沒有權限</span>';
+    const act = r.canWithdraw ? `<button type="button" class="btn small" data-pcr-withdraw="${esc(r.id)}"${myPcr.busy ? ' disabled' : ''}>${myPcr.armed === r.id ? '確定撤回？' : '撤回'}</button>` : '';
+    return `<li class="pcr-row" data-pcr="${esc(r.id)}"><div class="pcr-main"><b data-nt>${esc(r.name)}</b> <span class="pill-tag ${color}">${label}</span>
+      <div class="muted small">送出於 ${esc(fmtDate(r.createdAt))}</div>${why}</div><div class="pcr-acts">${proj}${act}</div></li>`;
+  }
+  function pcrMineHtml() {
+    if (state.me?.memberType !== 'human') return '';
+    if (myPcr.items === null) { if (!myPcr.loading) loadMyPcr().then(() => { if (state.page === 'hub') renderWork(); }); return ''; }
+    if (!myPcr.items.length && !canReqProj()) return '';
+    return `<section class="pcr-mine" aria-labelledby="pcr-mine-h"><div class="pcr-head"><h3 id="pcr-mine-h">我的建立專案申請</h3><span class="grow"></span>${canReqProj() ? '<button type="button" class="btn small" data-hub-newproj>＋ 申請建立專案</button>' : ''}</div>
+      ${myPcr.items.length ? `<ul class="pcr-list">${myPcr.items.map(pcrRowHtml).join('')}</ul>` : '<p class="muted small">還沒有申請。需要新專案時按「申請建立專案」，由工作區管理員核准後建立。</p>'}
+      ${myPcr.next ? `<button type="button" class="link small" data-pcr-more${myPcr.loading ? ' disabled' : ''}>載入更多</button>` : ''}</section>`;
+  }
+  // 重新抓取（即時事件、送出、撤回、核准或拒絕後）：申請清單、capability、審核清單一起更新（失去審核權就清掉已載入的審核資料）
+  // 申請人：自己的申請剛被核准 → 重讀自己的專案（新專案馬上出現）；剛被拒絕 → 提示去看理由
+  async function refreshPcr() {
+    const before = new Map((myPcr.items || []).map(r => [r.id, r.state]));
+    await Promise.all([loadMyPcr(), loadProjectList().catch(() => {})]);
+    await loadPcrRev();
+    const decided = (myPcr.items || []).filter(r => before.get(r.id) === 'pending' && r.state !== 'pending');
+    const approved = decided.find(r => r.state === 'approved'), rejected = decided.find(r => r.state === 'rejected');
+    if (approved) {
+      state.me = await api('/api/me').catch(() => state.me);
+      await afterJoinChange();
+      loadCards().catch(() => {});
+      toast(`你的建立專案申請「${approved.name}」已核准，專案已建立`);
+    } else if (rejected) toast(`你的建立專案申請「${rejected.name}」沒有核准，理由在「我的建立專案申請」`);
+    updateTodoBadge();
+    drawProjSwitch();
+    if (state.page === 'hub' || state.page === 'inbox') renderWork();
+  }
+  document.addEventListener('click', async e => {
+    if (e.target.closest?.('[data-pcr-more]')) { await loadMyPcr(true); if (state.page === 'hub') renderWork(); return; }
+    const w = e.target.closest?.('[data-pcr-withdraw]');
+    if (!w || myPcr.busy) return;
+    const id = w.dataset.pcrWithdraw;
+    if (myPcr.armed !== id) { myPcr.armed = id; return renderWork(); } // 第一下只是確認
+    myPcr.armed = null; myPcr.busy = true; renderWork();
+    try { await api(`/api/project-creation-requests/${encodeURIComponent(id)}/withdraw`, { method: 'POST' }); toast('已撤回這份申請'); }
+    catch (err) { toast(err.code === 'REQUEST_NOT_PENDING' ? '這份申請已經結束，不能撤回' : err.message); }
+    finally { myPcr.busy = false; await refreshPcr(); }
+  });
+  // ---------- 建立專案申請的審核：「要你處理」的「建立專案申請」一類 ----------
+  // 只有審核人（capability canReviewProjectCreationRequests）讀；待審總數用伺服器的 pendingTotal。失去審核權（capability 沒了、API 403／404）就清掉已載入的資料
+  work.pcrRev = { items: [], total: 0, next: null, loading: false };
+  const PCR_REV_PAGE = 50; // 一頁幾份；更多的按「載入更多」
+  // 已有待審總數、但還沒載入的份數（「要你處理」的數字用總數，不用載入的筆數）
+  const pcrRevHidden = () => Math.max(0, (work.pcrRev?.total || 0) - (work.pcrRev?.items || []).length);
+  const canReviewPcr = () => state.me?.memberType === 'human' && !!state.projMeta.canReviewProjectCreationRequests;
+  function clearPcrRev() {
+    work.pcrRev = { items: [], total: 0, next: null, loading: false };
+    if (document.querySelector('#modal-root #pcr-rv')) closeModal();
+  }
+  // more：載入下一頁（接在後面）；否則從頭重讀，份數照目前載入的（最多 100，即時更新不會把已載入的縮回第一頁）
+  async function loadPcrRev(more = false) {
+    if (!canReviewPcr()) return clearPcrRev();
+    const cur = work.pcrRev;
+    if (more && (!cur.next || cur.loading)) return;
+    const limit = more ? PCR_REV_PAGE : Math.min(100, Math.max(PCR_REV_PAGE, cur.items.length));
+    cur.loading = true;
+    try {
+      const d = await api(`/api/project-creation-requests?scope=review&state=pending&limit=${limit}${more ? `&cursor=${encodeURIComponent(cur.next)}` : ''}`);
+      const items = more ? [...cur.items, ...(d.items || []).filter(x => !cur.items.some(y => y.id === x.id))] : d.items || [];
+      work.pcrRev = { items, total: d.pendingTotal ?? items.length, next: d.nextCursor || null, loading: false };
+    } catch (err) { cur.loading = false; if (err.status === 403 || err.status === 404) clearPcrRev(); }
+  }
+  document.addEventListener('click', async e => {
+    if (!e.target.closest?.('[data-pcr-rev-more]')) return;
+    await loadPcrRev(true);
+    updateTodoBadge();
+    if (state.page === 'inbox' || state.page === 'hub') renderWork();
+  });
+  function pcrRevHtml() {
+    const items = work.pcrRev?.items || [];
+    if (!items.length) return '';
+    return `<section class="wsugg wpcr"><div class="wsugg-head"><span class="wdot"></span><h3>建立專案申請</h3><span class="wcount ora">${work.pcrRev.total}</span><span class="muted small">成員申請的新專案：核准後立即建立，申請人成為專案管理員</span></div>
+      ${items.map(r => `<div class="sugg-row pcr-rev-row" data-pcr-rev-row="${esc(r.id)}"><span class="lead-ic" aria-hidden="true">🗂️</span><div class="sugg-main"><b data-nt>${esc(r.name)}</b><span class="muted small"><span data-nt>${esc(r.requesterName || '')}</span> · <span>${agoText(r.createdAt)}</span> · <span data-nt>「${esc(oneLine(r.reason, 60))}」</span></span></div>
+        <div class="sugg-actions"><button type="button" class="btn small primary" data-pcr-review="${esc(r.id)}">查看並處理</button></div></div>`).join('')}
+      ${work.pcrRev.next ? `<button type="button" class="link small" data-pcr-rev-more${work.pcrRev.loading ? ' disabled' : ''}>載入更多</button>` : ''}</section>`;
+  }
+  // 審核視窗：完整不可修改的內容、自動識別碼的預估值（標明預估）、衝突提示、「核准並建立」與「拒絕」（理由必填）
+  async function openPcrReview(id) {
+    const body = openModal('建立專案申請', '<div id="pcr-rv" class="pcr-rv"><p class="muted small">載入中…</p></div>', { size: 'form', sub: '核准後立即建立專案，申請人成為唯一的專案管理員；申請內容不能修改。' });
+    const st = { r: null, busy: false, rejecting: false, msg: '' };
+    const draw = () => {
+      const box = body.querySelector('#pcr-rv');
+      if (!box) return;
+      const r = st.r;
+      if (!r) { box.innerHTML = `<p class="muted">${esc(st.msg || '找不到這份申請。')}</p>`; return; }
+      const rv = r.review || {}, pv = rv.preview, cf = new Set(rv.conflicts || []);
+      const ident = (val, est, field) => (val ? `<code data-nt>${esc(val)}</code>` : pv ? `<code data-nt>${esc(est)}</code> <span class="pill-tag">預估</span> <span class="muted small">自動產生，核准時重新計算</span>` : '<span class="muted">自動產生</span>')
+        + (cf.has(field) ? ' <span class="pill-tag red">已有專案在用</span>' : '');
+      const f = (label, html) => `<div class="pcr-f"><dt>${label}</dt><dd>${html}</dd></div>`;
+      const pending = r.state === 'pending', can = pending && rv.canApprove;
+      const [stLabel, stColor] = PCR_STATE[r.state] || [r.state, 'grey'];
+      box.innerHTML = `<dl class="pcr-dl">
+          ${f('專案名稱', `<b data-nt>${esc(r.name)}</b>${cf.has('name') ? ' <span class="pill-tag red">已有專案在用</span>' : ''}`)}
+          ${f('申請人', `<span data-nt>${esc(r.requesterName || '')}</span> <span class="muted small">${esc(fmtDate(r.createdAt))}</span>`)}
+          ${f('申請原因', `<span class="pcr-reason" data-nt>${esc(r.reason)}</span>`)}
+          ${f('可見度', esc(visName(r.visibility)))}
+          ${f('網址英文名', ident(r.slug, pv?.slug, 'slug'))}
+          ${f('專案代號', ident(r.code, pv?.code, 'code'))}
+          ${f('看板狀態', r.statuses?.length ? `<span data-nt>${esc(r.statuses.map(s => s.name).join('、'))}</span>` : '預設狀態')}
+        </dl>
+        ${pending && cf.size ? '<p class="pcr-warn" role="note">標示「已有專案在用」的欄位目前跟現有專案衝突，現在核准會失敗。可以附理由拒絕，或等申請人撤回重提。</p>' : ''}
+        ${st.msg ? `<p class="error small" role="alert" id="pcr-rv-msg">${esc(st.msg)}</p>` : ''}
+        ${!pending ? `<p class="pcr-done">這份申請<span class="pill-tag ${stColor}">${stLabel}</span>${r.state === 'approved' && r.project?.available ? ` <button type="button" class="link small" data-proj="${esc(r.project.id)}">進入專案 ›</button>` : ''}</p>`
+        : !can ? '' : st.rejecting ? `<label class="field"><span class="field-label">拒絕理由（申請人會看到，200 字內）</span><textarea id="pcr-rej" maxlength="200" rows="3" required></textarea></label>
+          <div class="pcr-acts"><button type="button" class="btn" data-pcr-rej-cancel${st.busy ? ' disabled' : ''}>取消</button><button type="button" class="btn danger" data-pcr-rej-go${st.busy ? ' disabled' : ''}>確定拒絕</button></div>`
+        : `<div class="pcr-acts"><button type="button" class="btn danger-outline" data-pcr-rej${st.busy ? ' disabled' : ''}>拒絕…</button><button type="button" class="btn primary" data-pcr-ok${st.busy ? ' disabled' : ''}>核准並建立</button></div>`}`;
+    };
+    const load = async () => {
+      try { st.r = await api(`/api/project-creation-requests/${encodeURIComponent(id)}`); } catch (err) { st.r = null; st.msg = err.message; }
+      draw();
+    };
+    // 失敗的各種情況：權限失效、另一位審核人已先處理、政策已改、暫時無法處理（503）、連線中斷
+    const fail = async err => {
+      if (err.status === 404 || err.code === 'NOT_REVIEWER') { toast('你已經沒有審核這份申請的權限'); clearPcrRev(); return refreshPcr(); }
+      st.msg = err.code === 'REQUEST_NOT_PENDING' ? '另一位審核人已經處理了這份申請（或申請人已撤回）。'
+        : err.status === 503 ? '暫時無法處理（系統正在升級、還原或忙碌），這次什麼都沒寫；請稍後再試。'
+        : err.code === 'NETWORK' || err.code === 'TIMEOUT' ? '連線中斷，不確定有沒有處理到；再按一次不會重複建立專案。' : err.message;
+      st.busy = false;
+      if (err.code !== 'NETWORK' && err.code !== 'TIMEOUT') await load(); else draw(); // 重讀：顯示目前的狀態與衝突
+      refreshPcr().catch(() => {});
+    };
+    body.addEventListener('click', async e => {
+      if (st.busy || !st.r) return;
+      if (e.target.closest('[data-pcr-rej]')) { st.rejecting = true; st.msg = ''; draw(); return body.querySelector('#pcr-rej')?.focus(); }
+      if (e.target.closest('[data-pcr-rej-cancel]')) { st.rejecting = false; return draw(); }
+      const ok = e.target.closest('[data-pcr-ok]'), go = e.target.closest('[data-pcr-rej-go]');
+      if (!ok && !go) return;
+      let reason = '';
+      if (go) {
+        reason = body.querySelector('#pcr-rej')?.value.trim() || '';
+        if (!reason) { st.msg = '請寫拒絕理由（申請人會看到）'; draw(); return body.querySelector('#pcr-rej')?.focus(); }
+      }
+      st.busy = true; st.msg = ''; draw();
+      try {
+        const r = await api(`/api/project-creation-requests/${encodeURIComponent(st.r.id)}/${ok ? 'approve' : 'reject'}`, { method: 'POST', body: ok ? {} : { reason } });
+        closeModal();
+        toast(ok ? (r.duplicate ? '這份申請已經核准過了（沒有重複建立）' : `已核准，已建立專案「${r.name}」`) : '已拒絕，理由會通知申請人');
+        await refreshPcr();
+      } catch (err) { await fail(err); }
+    });
+    await load();
+  }
+  document.addEventListener('click', e => {
+    const b = e.target.closest?.('[data-pcr-review]');
+    if (!b) return;
+    if (b.closest('#modal-root .modal')) closeModal();
+    openPcrReview(b.dataset.pcrReview);
+  });
   const hubTodoItems = () => todoItems(); // 跟數字同一個來源
   function hubTodoHtml(inModal = false) {
-    const items = hubTodoItems();
-    const groups = [...myProjects(), null].map(p => [p, items.filter(x => x.p === p)]).filter(([, l]) => l.length);
-    const cls = { 決策: 'dec', 需確認: 'ask', 建議: 'sg', 驗收: 'ver', 回覆: 'ask', 私訊: 'sg', 通知: 'sg', 申請: 'ver', 核准: 'ver' };
-    return `${inModal ? '' : `<div class="ht-head"><h3>要你處理</h3>${items.length ? `<span class="ps-count">${items.length}</span>` : ''}<span class="grow"></span><span class="muted small">各專案彙總</span></div>`}
-      ${groups.length ? groups.map(([p, l]) => `<div class="ht-group">${esc(p ? projName(p) : '跨專案頻道')}</div>
-        ${l.map(x => `<button type="button" class="ht-row" data-hub-todo="${esc(x.key)}" data-hub-proj="${esc(p || 'cross')}"><span class="ht-tag ${cls[x.kind]}">${x.kind}</span><span class="ht-title">${esc(x.title)}</span><span class="ht-go" aria-hidden="true">›</span></button>`).join('')}`).join('')
+    const items = hubTodoItems(), total = items.length + pcrRevHidden(); // 數字是總數（建立專案申請還沒載入的也算）
+    const groups = [...myProjects().map(p => [p, items.filter(x => x.p === p)]), [null, items.filter(x => !x.p && !x.ws)], ['ws', items.filter(x => x.ws)]].filter(([, l]) => l.length); // ws＝工作區層（建立專案申請）
+    const cls = { 決策: 'dec', 需確認: 'ask', 建議: 'sg', 驗收: 'ver', 回覆: 'ask', 私訊: 'sg', 通知: 'sg', 申請: 'ver', 核准: 'ver', 建立專案: 'ver' };
+    return `${inModal ? '' : `<div class="ht-head"><h3>要你處理</h3>${total ? `<span class="ps-count">${total}</span>` : ''}<span class="grow"></span><span class="muted small">各專案彙總</span></div>`}
+      ${groups.length ? groups.map(([p, l]) => `<div class="ht-group">${esc(p === 'ws' ? '工作區' : p ? projName(p) : '跨專案頻道')}</div>
+        ${l.map(x => `<button type="button" class="ht-row" data-hub-todo="${esc(x.key)}" data-hub-proj="${esc(p && p !== 'ws' ? p : 'cross')}"><span class="ht-tag ${cls[x.kind]}">${x.kind}</span><span class="ht-title">${esc(x.title)}</span><span class="ht-go" aria-hidden="true">›</span></button>`).join('')}${p === 'ws' && pcrRevHidden() ? `<p class="muted small ht-more">還有 ${pcrRevHidden()} 份建立專案申請，在「要你處理」按「載入更多」</p>` : ''}`).join('')
         : '<p class="muted small ht-empty">目前沒有要你處理的事。</p>'}
       <p class="muted small ht-note">點一項＝進那個專案的「要你處理」並打開那一項；選項、回覆都在專案裡做，這裡只列、不在這裡決定。</p>`;
   }
@@ -4039,6 +4242,7 @@
     const key = r.dataset.hubTodo, id = key.slice(2);
     if (key[0] === 'j') return openJoinReview(work.joins.find(j => j.id === id)?.project || '');
     if (key[0] === 'k') return skOpenDrawer(id); // PLAT-381 技能待核准
+    if (key[0] === 'r') return openPcrReview(id); // 建立專案申請
     await setProjectView(r.dataset.hubProj, 'inbox');
     work.focusItem = { sel: key[0] === 'n' ? `:is(#fyi-${CSS.escape(id)}, [data-fyi~="${CSS.escape(id)}"])` : `[${{ c: 'data-dcard', m: 'data-conf-row', s: 'data-sugg-row', v: 'data-ver-row' }[key[0]]}="${CSS.escape(id)}"]`, until: Date.now() + 5000, scrolled: false };
     if (!applyFocusItem() && key[0] === 'c') openCard(id);
@@ -4050,7 +4254,7 @@
       const go = () => { const t = document.querySelector('.hub-todo'); if (t && t.offsetParent) { t.scrollIntoView({ behavior: 'smooth', block: 'start' }); t.classList.add('flash'); setTimeout(() => t.classList.remove('flash'), 1400); } else openModal('要你處理', hubTodoHtml(true), { size: 'narrow', sub: '各專案彙總；點一項進到該專案處理' }); };
       return state.page === 'hub' ? go() : Promise.resolve(setProjectView('hub')).then(() => setTimeout(go, 50));
     }
-    if (e.target.closest?.('[data-hub-newproj]')) { closeSheet(false); return openNewProject(); }
+    if (e.target.closest?.('[data-hub-newproj]')) { closeSheet(false); return openStartProject(); }
   });
   function inboxHtml() {
     const all = [...work.cards.values()].filter(cardInView);
@@ -4082,7 +4286,8 @@
     const inV = pj => projectView() === 'hub' || pj === projectView();
     const joins = (work.joins || []).filter(j => inV(j.project) && dueForMe(j.project, j.createdAt)); // PLAT-381 leader 先處理
     const skRev = (work.skillRev || []).filter(k => inV(k.project) && dueForMe(k.project, k.uploadedAt));
-    if (!decideMe.length && !confirms.length && !sg.length && !verifyMe.length && !asks.length && !dms.length && !joins.length && !skRev.length) return '<section class="wpanel"><p class="muted">目前沒有要你處理的事。</p></section>';
+    const pcrSection = projectView() === 'hub' || projectView() === 'cross' ? pcrRevHtml() : ''; // 建立專案申請：工作區層，總覽與跨專案頻道才列
+    if (!pcrSection && !decideMe.length && !confirms.length && !sg.length && !verifyMe.length && !asks.length && !dms.length && !joins.length && !skRev.length) return '<section class="wpanel"><p class="muted">目前沒有要你處理的事。</p></section>';
     for (const id of [...work.askSel]) if (!asks.some(n => n.notificationId === id)) work.askSel.delete(id); // 清單變了就丟掉不在的勾選
     const askN = work.askSel.size, askAll = asks.length > 0 && askN === asks.length;
     const askSection = asks.length ? `
@@ -4129,7 +4334,7 @@
           <div class="sugg-actions"><button type="button" class="btn small" data-lead-jno="${esc(j.id)}">${L('拒絕', 'Reject')}</button><button type="button" class="btn small primary" data-join-review="${esc(j.project)}">${L('核准', 'Approve')}</button></div></div>`).join('')}
         ${skRev.map(k => `<div class="sugg-row lead-row" data-skrev-row="${esc(k.skillId)}"><span class="lead-ic" aria-hidden="true">🧩</span><div class="sugg-main"><b>技能待核准：${esc(k.name)}</b><span class="muted small">${late(k.project)}<span>${esc(projName(k.project))}</span> · ${k.scripts ? `${esc(L(`含腳本 ${k.scripts} 個`, `${k.scripts} script${k.scripts > 1 ? 's' : ''}`))} · ` : ''}${esc(L(`${k.uploadedBy?.name || ''}上傳`, `uploaded by ${k.uploadedBy?.name || ''}`))} · <span>${agoText(k.uploadedAt)}</span></span></div>
           <div class="sugg-actions"><button type="button" class="btn small" data-lead-skview="${esc(k.skillId)}">${L('看內容', 'View')}</button><button type="button" class="btn small primary" data-lead-skok="${esc(k.skillId)}">${L('核准', 'Approve')}</button></div></div>`).join('')}</section>` : '';
-    return joinSection + dmSection + askSection + decisionSectionHtml(decideMe) + verSection + confSection + suggHtml(true);
+    return pcrSection + joinSection + dmSection + askSection + decisionSectionHtml(decideMe) + verSection + confSection + suggHtml(true);
   }
 
   const wide = () => matchMedia('(min-width: 900px)').matches;
@@ -9181,7 +9386,8 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     'workspace_policy.update': ['修改工作區政策', 'Changed workspace policy'], 'recovery_window.update': ['修改可復原期', 'Changed recovery window'],
     'message.delete': ['刪除訊息', 'Deleted message'], 'message.restore': ['復原訊息', 'Restored message'], 'message.purge': ['永久清除訊息', 'Purged messages'],
     'project_messages.clear': ['清空專案訊息', 'Cleared project messages'], 'project_messages.restore': ['復原清空的專案訊息', 'Restored cleared project messages'],
-    'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
+    'project_creation_request.reject': ['拒絕建立專案申請', 'Rejected project creation request'],
+    'project.create': ['建立專案', 'Created project'], 'project.delete': ['刪除專案', 'Deleted project'], 'project.restore': ['復原專案', 'Restored project'], 'project.purge': ['永久清除專案', 'Purged project'],
   };
   const alogAction = k => (ALOG_ACTIONS[k] ? L(...ALOG_ACTIONS[k]) : k);
   const ALOG_PLATFORM = ['platform_admin.grant', 'platform_admin.revoke', 'account.disable', 'account.enable', 'backup.restore']; // 工作區頁的篩選不列
@@ -9210,7 +9416,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   function alogDetail(e) {
     const d = e.detail || {}, out = [];
     if (e.action === 'workspace_policy.update' && (d.field === 'createProjects' || d.field === 'deleteOwnMessages')) {
-      const lab = v => (v === 'admins' ? '只有工作區管理員' : '所有成員'), en = v => (v === 'admins' ? 'workspace admins only' : 'all members');
+      const lab = v => (v === 'admins' ? '只有工作區管理員' : v === 'approval' ? '成員申請，管理員核准' : '所有成員'), en = v => (v === 'admins' ? 'workspace admins only' : v === 'approval' ? 'members request, admins approve' : 'all members');
       out.push(d.field === 'createProjects' ? L(`誰可以建立專案：${lab(d.from)} → ${lab(d.to)}`, `Who can create projects: ${en(d.from)} → ${en(d.to)}`)
         : L(`誰可以刪除自己的訊息：${lab(d.from)} → ${lab(d.to)}`, `Who can delete their own messages: ${en(d.from)} → ${en(d.to)}`));
     } else if (e.action === 'recovery_window.update') {
@@ -9218,12 +9424,22 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       out.push(L(`可復原期：${zh(d.from)} → ${zh(d.to)}`, `Recovery window: ${en(d.from)} → ${en(d.to)}`));
     } else if (d.field) out.push(`${d.field}: ${d.from ?? '—'} → ${d.to ?? '—'}`);
     else if ('from' in d || 'to' in d) out.push(`${d.from ?? '—'} → ${d.to ?? '—'}`);
+    if (e.action === 'project.create') { // 建立方式與可見度（代號在下面）
+      const how = { direct: ['直接建立', 'Created directly'], approved_request: ['核准申請後建立', 'Created from an approved request'], first_run: ['新站第一次啟動自動建立', 'Created automatically on first start'], demo: ['載入示範資料', 'Loaded demo data'] }[d.method];
+      if (how) out.push(L(...how));
+      if (d.requester?.name) out.push(L(`申請人 ${d.requester.name}`, `Requested by ${d.requester.name}`));
+      const vis = { open: ['開放', 'open'], review: ['審核', 'review'], private: ['私人', 'private'] }[d.visibility];
+      if (vis) out.push(L(`可見度：${vis[0]}`, `Visibility: ${vis[1]}`));
+    }
+    if (e.action === 'project_creation_request.reject' && d.requester?.name) out.push(L(`申請人 ${d.requester.name}`, `Requested by ${d.requester.name}`));
     if (d.revokedAiTokens) out.push(L(`作廢 ${d.revokedAiTokens} 個 AI 的 Token`, `Revoked ${d.revokedAiTokens} AI token(s)`));
     if (e.action === 'backup.restore') out.push(L(`備份版本 ${d.appVersion || '?'}；${d.humans ?? 0} 位人類、${d.ais ?? 0} 個 AI`, `Backup version ${d.appVersion || '?'}; ${d.humans ?? 0} human(s), ${d.ais ?? 0} AI(s)`));
     if (d.counts) out.push(L(`訊息 ${d.counts.messages ?? 0}、卡片 ${d.counts.cards ?? 0}、文件 ${d.counts.docs ?? 0}`, `${d.counts.messages ?? 0} messages, ${d.counts.cards ?? 0} cards, ${d.counts.docs ?? 0} docs`));
     if (d.code) out.push(L(`代號 ${d.code}`, `Code ${d.code}`));
     if (d.aisDeleted?.length) out.push(L(`一起刪除的 AI：${d.aisDeleted.join('、')}`, `AIs deleted with it: ${d.aisDeleted.join(', ')}`));
-    if (e.count != null) out.push(L(`數量 ${e.count}`, `Count ${e.count}`));
+    if (d.counted === 'cancelledProjectCreationRequests') { // 同一批取消了幾份待審的建立專案申請；沒取消就不寫
+      if (e.count) out.push(L(`取消 ${e.count} 份待審核的建立專案申請`, `Cancelled ${e.count} pending project creation request(s)`));
+    } else if (e.count != null) out.push(L(`數量 ${e.count}`, `Count ${e.count}`));
     if (d.legacy) out.push(L('（升級前的紀錄）', '(recorded before the upgrade)'));
     return out.join(L('；', '; '));
   }
@@ -9645,8 +9861,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <details class="audit pm-gs-log"${perm.gsLogOpen ? ' open' : ''}><summary>工作區異動紀錄</summary><ul class="pa-log">${log}</ul></details>
       </div>`;
   }
+  // done：存好後的提示；也可以是函式（拿儲存回應組提示，例：實際取消了幾份建立專案申請）
   async function saveGroupSettings(body, done) {
-    try { perm.gs = await api('/api/workspace/settings', { method: 'PUT', body }); toast(done); }
+    try { perm.gs = await api('/api/workspace/settings', { method: 'PUT', body }); toast(typeof done === 'function' ? done(perm.gs) : done); }
     catch (err) { toast(err.message); }
     perm.gsLogOpen = !!$('.pm-gs-log')?.open;
     await loadGroupSettings();
@@ -9663,13 +9880,39 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       ${perm.gs && !perm.gs.error ? wsTtlHtml(perm.gsTtl) : ''}
       ${perm.gs && !perm.gs.error ? wsRecHtml(perm.gsRec) : ''}</div>`;
   }
-  // 誰可以建立專案：所有成員／只有工作區管理員（點了就存）
+  // 誰可以建立專案：所有成員／成員申請，管理員核准／只有工作區管理員（點了就存；從「成員申請」切走先確認，見 createProjectsChange）。
   function createProjectsHtml() {
     const gs = perm.gs;
     if (!gs || gs.error || !gs.createProjects) return '';
     const opt = (v, t, sub) => `<label class="chk pm-cp-opt"><input type="radio" name="pm-cp" value="${v}" data-pp="createprojects"${gs.createProjects === v ? ' checked' : ''}> <span><b>${t}</b><span class="pm-sub">${sub}</span></span></label>`;
     return `<div class="pm-card pm-create-proj"><div class="pm-card-head"><strong id="pm-cp-t">誰可以建立專案</strong></div>
-      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+      <div class="pm-cp-list" role="radiogroup" aria-labelledby="pm-cp-t">${opt('members', '所有成員', '建立專案的人會成為該專案的專案管理員')}${opt('approval', '成員申請，管理員核准', '一般成員送建立專案申請，工作區管理員或平台管理員核准後建立')}${opt('admins', '只有工作區管理員', '一般成員要請工作區管理員建立')}</div></div>`;
+  }
+  // 切換「誰可以建立專案」：從「成員申請」切走會取消所有待審的建立專案申請——先讀預估數量、跳確認；
+  // 存好後的提示用儲存回應的實際數字（預覽之後可能又有人送出）。取消就不存，單選項回到原本的值
+  async function createProjectsChange(to) {
+    const from = perm.gs?.createProjects;
+    if (!to || to === from) return;
+    const saved = {
+      members: L('已儲存：所有成員都能建立專案', 'Saved: all members can create projects'),
+      approval: L('已儲存：一般成員要送建立專案申請，管理員核准後建立', 'Saved: members request projects and admins approve them'),
+      admins: L('已儲存：只有工作區管理員能建立專案', 'Saved: only workspace admins can create projects'),
+    }[to];
+    if (from !== 'approval') return saveGroupSettings({ createProjects: to }, saved);
+    let n;
+    try { n = Number((await api('/api/workspace/settings/create-projects-preview')).pendingProjectCreationRequests) || 0; } catch (err) { drawPerm(); return toast(err.message); }
+    const ok = await confirmDialog({
+      title: L('不再收建立專案申請？', 'Stop taking project creation requests?'),
+      message: n ? L(`切換後會取消目前 ${n} 份待審核的建立專案申請，申請人會收到通知；之後切回「成員申請，管理員核准」也不會恢復。這是目前的預估，實際數字以儲存結果為準。`,
+        `Switching cancels the ${n} pending project creation request(s) right now, and the requesters are notified. Switching back later does not restore them. This is an estimate; the saved result has the actual number.`)
+        : L('目前沒有待審核的建立專案申請。切換後一般成員就不能再送建立專案申請。', 'There are no pending project creation requests right now. After switching, members can no longer send project creation requests.'),
+      confirmText: L('切換', 'Switch'),
+    });
+    if (!ok) return drawPerm(); // 單選項回到原本的值
+    return saveGroupSettings({ createProjects: to }, d => {
+      const c = Number(d?.cancelledProjectCreationRequests) || 0;
+      return c ? L(`${saved}；已取消 ${c} 份待審核的建立專案申請`, `${saved}. Cancelled ${c} pending project creation request(s)`) : L(`${saved}；沒有取消任何申請`, `${saved}. No requests were cancelled`);
+    });
   }
   // 工作區政策「誰可以刪除自己的訊息」：所有成員／只有工作區管理員（點了就存）。工作區管理員刪任何人的不受影響
   function deleteOwnHtml() {
@@ -9867,17 +10110,24 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     return `<ol class="st-list np-st-list">${list.map((s, i) => `<li class="st-row" data-i="${i}"><span class="st-swatch" data-color="${esc(s.color)}" aria-hidden="true"></span><input class="st-name" value="${esc(s.name)}" maxlength="20" aria-label="狀態名稱"><select class="st-cat" aria-label="狀態類別">${catOpts(s.category)}</select><span class="st-acts"><button type="button" class="btn small" data-np-st-del ${list.length <= 3 ? 'disabled' : ''}>拿掉</button></span></li>`).join('')}</ol>
       <button type="button" class="link small" data-np-st-add ${list.length >= 12 ? 'disabled' : ''}>＋ 新增一個狀態</button>`;
   }
-  // 新增專案彈窗：名稱＋程式庫＋分支（選填）一次填完；看板狀態（選填）
-  function openNewProject() {
-    const body = openModal('新增專案', `<form id="np-form" class="stack">
+  // 新增專案彈窗：名稱＋可見度（預設審核；建立的同一步就設好，私人專案從一開始就是私人的）＋程式庫＋分支（選填）一次填完；看板狀態（選填）
+  // request：申請模式（政策是「成員申請，管理員核准」的一般成員）。同一個表單：多了必填的申請原因、可見度跟名稱放在一起、
+  // 沒有程式庫欄位，送出的是建立專案申請（核准後才建立，申請人成為專案管理員）。
+  // requestId 在打開表單時產生一次：送出中停用按鈕、網路中斷後重按都用同一個（伺服器只會有一份申請）；關掉再開＝新的一份申請
+  function openNewProject({ request = false } = {}) {
+    const requestId = request ? `pcr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` : null;
+    const visHtml = `<fieldset class="field np-vis"><legend>專案可見度</legend>
+          <div class="vis-list" role="radiogroup" aria-label="專案可見度">${VISIBILITY.map(([v, t, sub]) => `<label class="vis-opt"><input type="radio" name="visibility" value="${v}"${v === 'review' ? ' checked' : ''}><span><b>${t}</b><span class="muted small">${sub}</span></span></label>`).join('')}</div>
+        </fieldset>`;
+    const body = openModal(request ? '申請建立專案' : '新增專案', `<form id="np-form" class="stack">
         <label class="field">專案名稱<input name="name" required maxlength="20" autocomplete="off"></label>
-        ${slugFieldHtml('np-slug', '')}
+        ${request ? `<label class="field">申請原因<textarea name="reason" required maxlength="200" rows="3" placeholder="這個專案要做什麼、為什麼需要（審核人會看到）"></textarea></label>${visHtml}${slugFieldHtml('np-slug', '')}` : `${slugFieldHtml('np-slug', '')}${visHtml}
         <label class="field">程式庫連結（選填）<input name="url" maxlength="300" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://github.com/帳號/專案"></label>
-        <label class="field">分支（選填）<input name="branch" maxlength="100" autocomplete="off" spellcheck="false" placeholder="main"></label>
+        <label class="field">分支（選填）<input name="branch" maxlength="100" autocomplete="off" spellcheck="false" placeholder="main"></label>`}
         <details class="np-st"><summary>看板狀態（選填，預設六欄）</summary>${ST_HELP}<div id="np-st"></div></details>
-        <p class="muted small" id="pm-new-hint">${esc(newProjText())}，其他成員請到「成員」分頁加入。</p>
+        <p class="muted small" id="pm-new-hint">${request ? '送出後由工作區管理員審核；核准時專案才會建立，你會成為這個專案的專案管理員。程式庫等設定在核准後由你自己設定。' : `${esc(newProjText())}，其他成員請到「成員」分頁加入。`}</p>
         <p class="error" id="np-err" role="alert"></p>
-      </form>`, { size: 'narrow', foot: '<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="np-form">新增專案</button>' });
+      </form>`, { size: 'narrow', foot: `<button class="btn" type="button" data-close>取消</button><button class="btn primary" type="submit" form="np-form" id="np-submit">${request ? '送出申請' : '新增專案'}</button>` });
     const f = body.querySelector('#np-form');
     const slugF = bindSlugField(body, 'np-slug', f.name, null);
     const npSts = ST_DEFAULT.map(s => ({ ...s })), npBox = body.querySelector('#np-st');
@@ -9890,8 +10140,10 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       if (e.target.closest('[data-np-st-add]')) { npSts.push({ name: '', category: '進行中', color: ST_CAT_COLOR['進行中'] }); npDraw(); npBox.querySelector('.st-row:last-child .st-name')?.focus(); }
     });
     setTimeout(() => f.name.focus(), 30);
+    const sendBtn = () => document.getElementById('np-submit');
     f.addEventListener('submit', async e => {
       e.preventDefault();
+      if (request) return submitRequest();
       const err = body.querySelector('#np-err'), name = f.name.value.trim(), url = f.url.value.trim(), branch = f.branch.value.trim();
       err.textContent = '';
       if (!name) { err.textContent = '請輸入專案名稱'; return f.name.focus(); }
@@ -9902,7 +10154,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       try {
         let r;
         const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
-        try { r = await api('/api/projects', { method: 'POST', body: { name, slug: sf.auto ? '' : sf.slug, ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
+        try { r = await api('/api/projects', { method: 'POST', body: { name, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review', ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
         catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
         let repoErr = '';
         if (url) { try { await api(`/api/projects/${encodeURIComponent(r.id)}/repo`, { method: 'PUT', body: { url, branch } }); } catch (e2) { repoErr = e2.message; } }
@@ -9912,6 +10164,29 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         toast(repoErr ? `已新增專案「${name}」，但程式庫沒存：${repoErr}` : `已新增專案「${name}」，目前只有你`);
       } catch (e2) { err.textContent = e2.message; }
     });
+    // 送出建立專案申請：送出中停用按鈕（按兩次也只送一次）；失敗後重按沿用同一個 requestId
+    async function submitRequest() {
+      const err = body.querySelector('#np-err'), name = f.name.value.trim(), reason = f.reason.value.trim(), btn = sendBtn();
+      err.textContent = '';
+      if (btn?.disabled) return;
+      if (!name) { err.textContent = '請輸入專案名稱'; return f.name.focus(); }
+      if (!reason) { err.textContent = '請寫申請原因'; return f.reason.focus(); }
+      const sf = slugF.check();
+      if (!sf) return;
+      const changed = JSON.stringify(npSts.map(s => [s.name.trim(), s.category])) !== JSON.stringify(ST_DEFAULT.map(s => [s.name, s.category]));
+      if (btn) btn.disabled = true;
+      try {
+        try { await api('/api/project-creation-requests', { method: 'POST', body: { requestId, name, reason, slug: sf.auto ? '' : sf.slug, visibility: f.visibility.value || 'review', ...(changed ? { statuses: npSts.map(s => ({ name: s.name.trim(), category: s.category, color: s.color })) } : {}) } }); }
+        catch (e1) { if (slugF.serverError(e1)) return; throw e1; }
+        closeModal();
+        toast(`已送出「${name}」的建立專案申請，等工作區管理員審核`);
+        await loadMyPcr();
+        if (state.page === 'hub') renderWork();
+      } catch (e2) {
+        err.textContent = e2.code === 'IDEMPOTENCY_CONFLICT' ? '這份申請剛才已經送出（內容不同）：請關掉表單，在「我的建立專案申請」查看；要改內容請撤回後重送。'
+          : e2.code === 'NETWORK' || e2.code === 'TIMEOUT' ? '連線中斷，不確定有沒有送到；再按一次「送出申請」不會重複送出。' : e2.message;
+      } finally { if (btn) btn.disabled = false; }
+    }
   }
   function drawPermBar() {
     const bar = $('#pm-bar');
@@ -10033,8 +10308,9 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
   work.joins = [];
   const joinReviewer = () => isAdmin() || myLeadProjects().length > 0;
   async function loadJoins() {
-    if (!joinReviewer()) { work.joins = []; return; }
-    const [j, k] = await Promise.all([api('/api/join-requests').catch(() => null), api('/api/skills').catch(() => null)]); // PLAT-381：申請、技能一起到，畫面不會先少一件
+    const pcr = loadPcrRev(); // 建立專案申請的審核清單（只有審核人讀）
+    if (!joinReviewer()) { work.joins = []; return pcr; }
+    const [j, k] = await Promise.all([api('/api/join-requests').catch(() => null), api('/api/skills').catch(() => null), pcr]); // PLAT-381：申請、技能一起到，畫面不會先少一件
     work.joins = j?.items || []; work.skillRev = (k?.items || []).filter(x => x.canReview);
   }
   // PLAT-381：「要你處理」裡直接拒絕加入申請、看技能、核准技能
@@ -10554,10 +10830,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       perm.gsLogOpen = !!$('.pm-gs-log')?.open;
       return loadGroupSettings(); // 異動紀錄多一筆
     }
-    if (a === 'createprojects') {
-      if (pp.value === perm.gs?.createProjects) return;
-      return saveGroupSettings({ createProjects: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能建立專案' : '已儲存：只有工作區管理員能建立專案');
-    }
+    if (a === 'createprojects') return createProjectsChange(pp.value);
     if (a === 'deleteown') {
       if (pp.value === perm.gs?.deleteOwnMessages) return;
       return saveGroupSettings({ deleteOwnMessages: pp.value }, pp.value === 'members' ? '已儲存：所有成員都能刪除自己的訊息' : '已儲存：只有工作區管理員能刪除訊息');
@@ -11148,6 +11421,23 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
       setTimeout(() => location.reload(), 1200);
     } catch (err) { toast(err.message); demo.busy = false; demo.status = null; drawPerm(); }
   });
+  // ---------- 專案代號與網址英文名的診斷（只給平台管理員；沒有問題就不顯示）----------
+  // 升級前就有的衝突原樣保留（不自動改名、不影響建立專案），這裡列出來讓平台管理員自己決定要不要整理
+  const ident = { data: null, loading: false };
+  const IDENT_KIND = { duplicate_code: '代號重複', code_is_old_alias: '代號跟別的專案的舊代號相同', duplicate_slug: '網址英文名重複', duplicate_name: '未封存的專案同名' };
+  function identCardHtml() {
+    if (!ident.data && !ident.loading) {
+      ident.loading = true;
+      api('/api/admin/project-identity').then(d => { ident.data = d; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(() => { ident.data = { hidden: true }; }).finally(() => { ident.loading = false; });
+    }
+    const d = ident.data;
+    if (!d || d.hidden || (d.normalized && !d.conflicts.length)) return '';
+    const pj = p => `「${esc(p.name || p.id)}」${p.deleted ? '（已刪除）' : p.archived ? '（已封存）' : ''}`;
+    const list = d.conflicts.map(c => `<li><b>${esc(IDENT_KIND[c.kind] || c.kind)}</b> <code>${esc(c.value)}</code>：${c.projects.map(pj).join('、')}</li>`).join('');
+    const head = d.normalized ? '' : '<p class="small"><b>專案的代號與網址英文名還沒整理完</b>：建立專案、改名、改代號或網址英文名暫時不能用，系統會自動重試。</p>';
+    const body = d.conflicts.length ? `<p class="small">升級前就有 ${d.conflicts.length} 處重複，原樣保留、建立專案照常；新的修改不會讓重複變多。要整理請改其中一個專案的名稱、代號或網址英文名。</p><ul class="small ident-list">${list}</ul>` : '';
+    return `<div class="pm-card ident-card"><div class="pm-card-head"><strong>專案代號與網址英文名</strong></div><div class="pm-pad">${head}${body}</div></div>`;
+  }
   // ---------- 有新版本：管理員打開成員與權限時查一次（伺服器一天最多問 GitHub 一次）----------
   const upd = { data: null, loading: false };
   const UPD_HIDE = 'aigile.updHidden';
@@ -11187,6 +11477,8 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     if (!bk.status) { api('/api/admin/backup/status').then(s => { bk.status = s; if (state.page === 'perm' && perm.tab === 'admin' && perm.adm === 'system') drawPerm(); }).catch(err => toast(err.message)); }
     const st = bk.status;
     const imp = !st ? '<p class="muted small">載入中…</p>'
+      : st.finishing ? `<p class="small"><b>備份的資料已經匯入，只差收尾</b>：收尾沒有做完，平台還在還原中。按「完成匯入」再試一次。</p>
+        <button type="button" class="btn primary" data-bk="finish"${bk.busy ? ' disabled' : ''}>完成匯入</button>` // 收尾中途失敗：登入已轉移，只能重試收尾
       : st.empty ? `<p class="small">${st.restoring ? '<b>上次匯入沒有做完</b>，可以再選一次備份檔從頭匯入。' : '這是空站，可以匯入備份。'}</p>
         <label class="btn${bk.busy ? ' disabled' : ''}">選擇備份檔…<input type="file" accept=".json,application/json" data-bk-file hidden${bk.busy ? ' disabled' : ''}></label>`
       : '<p class="small">這個站已經有資料，不能匯入；要搬家請在新架的空站匯入</p>';
@@ -11196,6 +11488,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
     }
     return `<div class="pm-projs">
       ${updCardHtml()}
+      ${identCardHtml()}
       ${admTtlHtml(perm.platTtl)}
       ${admRecHtml(perm.platRec)}
       ${demoCardHtml()}
@@ -11247,6 +11540,7 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         <p>匯入後，你會變成備份裡的工作區管理員（名字：<b>${esc(admin?.name || '你自己')}</b>），你現在的密碼與這台裝置照舊。其他人的登入與 AI 的 Token 都不在備份裡：請在「成員」按「重設登入」、請主人重發 Token。</p>` });
     if (!ok) return;
     bk.busy = true; bk.where = 'import'; bk.msg = '開始匯入…'; drawPerm();
+    let stage = 'rows';
     try {
       bkSay('開始匯入…');
       await api('/api/admin/restore/begin', { method: 'POST', body: { format: b.format, formatVersion: b.formatVersion, appVersion: b.appVersion } });
@@ -11263,13 +11557,22 @@ ${codex ? `下載失敗時：看到 127.0.0.1:9、curl 錯誤 7、連線被拒�
         }
       }
       for (const d of b.docs || []) { await bkRaw(`/api/admin/restore/doc?id=${encodeURIComponent(d.id)}`, 'POST', bkUnB64(d.b64)); bkSay(`匯入中… ${++done} / ${total}`); }
-      const fin = await api('/api/admin/restore/finish', { method: 'POST', body: {} });
-      bkSay(`匯入完成：${fin.humans} 位人類、${fin.ais} 隻 AI。即將重新整理…`);
-      toast(`匯入完成，你現在是「${fin.admin.name}」`);
-      setTimeout(() => location.reload(), 1500);
-    } catch (err) { bkSay('匯入失敗：' + err.message + '（可以再選一次檔案從頭匯入）'); toast('匯入失敗：' + err.message); bk.status = null; bk.busy = false; drawPerm(); }
+      stage = 'finish';
+      bkDone(await api('/api/admin/restore/finish', { method: 'POST', body: {} }));
+    } catch (err) { bkSay('匯入失敗：' + err.message + (stage === 'finish' ? '（可以再試一次）' : '（可以再選一次檔案從頭匯入）')); toast('匯入失敗：' + err.message); bk.status = null; bk.busy = false; drawPerm(); }
   }
-  document.addEventListener('click', e => { if (e.target.closest?.('[data-bk="export"]') && !bk.busy) bkExport(); });
+  function bkDone(fin) {
+    bkSay(`匯入完成：${fin.humans} 位人類、${fin.ais} 隻 AI。即將重新整理…`);
+    toast(`匯入完成，你現在是「${fin.admin.name}」`);
+    setTimeout(() => location.reload(), 1500);
+  }
+  // 收尾中途失敗後重試（資料已匯入、登入已轉移）：只再呼叫一次收尾，伺服器從頭重跑收尾步驟
+  async function bkFinish() {
+    bk.busy = true; bk.where = 'import'; bk.msg = '完成匯入中…'; drawPerm();
+    try { bkSay('完成匯入中…'); bkDone(await api('/api/admin/restore/finish', { method: 'POST', body: {} })); }
+    catch (err) { bkSay('匯入失敗：' + err.message + '（可以再試一次）'); toast('匯入失敗：' + err.message); bk.status = null; bk.busy = false; drawPerm(); }
+  }
+  document.addEventListener('click', e => { if (e.target.closest?.('[data-bk="export"]') && !bk.busy) bkExport(); if (e.target.closest?.('[data-bk="finish"]') && !bk.busy) bkFinish(); });
   document.addEventListener('change', e => { const inp = e.target.closest?.('[data-bk-file]'); if (inp?.files?.[0] && !bk.busy) { const f = inp.files[0]; inp.value = ''; bkImport(f); } });
   function permInvitesHtml() {
     if (!perm.invites) { loadInvites(); return '<p class="muted pm-pad">載入中…</p>'; }

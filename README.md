@@ -398,6 +398,7 @@ node scripts/sqlite-to-pg.js --from data/switch.db --to postgres://aigile:密碼
 
 ```bash
 npm test             # 全部測試；npm test -- <關鍵字> 只跑檔名含關鍵字的
+npm run verify:d1    # 本機 D1（wrangler --local）驗證，發布前跑；見 docs/d1-verification.md
 node scripts/readme-shots.mjs   # 重拍 README 截圖（docs/images/readme/，中英文各 9 張；要有 Chrome 或 Edge）
 ```
 

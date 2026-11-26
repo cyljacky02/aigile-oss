@@ -28,6 +28,7 @@ node scripts/<名稱>-test.js   # 單獨跑一支
 - 需要兩個專案的測試會設 `AIGILE_TEST_PROJECTS=1`，讓伺服器先建「預設專案」「第二專案」兩個固定代號的專案。
 - 檔名結尾是 `-ui-test.js` 的是畫面測試，會用無頭的 Chrome 或 Edge；找不到瀏覽器就自動略過。
 - 測試只呼叫本機的程式，**不要**寫會連到正式環境的測試。
+- Cloudflare D1：`npm test` 只跑 SQLite（設 `AIGILE_TEST_PG_URL` 是 Postgres），D1 另外用 `npm run verify:d1` 在本機 D1（wrangler `--local`）跑一次，發布前要過；前提、預期輸出與本機和正式 D1 的差異見 [docs/d1-verification.md](docs/d1-verification.md)。寫 SQL 要在 D1 的限制內（`src/db-d1.js` 的 `D1_SQLITE_LIMITS`，`d1-sqlite-limits-test` 會擋）。
 
 ## 送 PR 前
 
@@ -46,7 +47,7 @@ node scripts/<名稱>-test.js   # 單獨跑一支
 2. 把 `src/schema.sql` 改成最新的完整結構（全新的站直接用它建表，現有升級會標成已套、不重跑），全部用 `IF NOT EXISTS`。
 
 - Docker／本機（`node server.js`）啟動時自動套沒套過的，每個升級一個交易；失敗會整個回復、印出檔名與原因、停止啟動。已套過的記在資料庫的 `schema_migrations` 表。
-- Cloudflare D1：`npm run cf:db:migrate` 一次套完（`npm run deploy` 也會先跑）；`-- --local` 對本機模擬的 D1。
+- Cloudflare D1：`npm run cf:db:migrate` 一次套完（`npm run deploy` 也會先跑）；`-- --local` 對本機模擬的 D1。`npm run verify:d1` 會在空的本機 D1 驗一次全新與舊 D1 的升級（[docs/d1-verification.md](docs/d1-verification.md)）。
 - 測試：`migrations-test` 會檢查全新站、從 1.0 升級、重複啟動不重跑、失敗回復；`schema-test` 檢查 `schema.sql` 有包含升級檔加的每個欄位與索引。新增升級檔時在 `migrations-test` 或另一支測試裡驗一次「舊資料升級後還在、程式讀得到新欄位」。
 
 ## 發佈後要人工確認
