@@ -474,8 +474,28 @@ try {
     const diag = ok(await a.call(boss.token, '/api/admin/project-identity'), '診斷');
     assert.equal(diag.normalized, true);
     assert.ok(diag.conflicts.some(c => c.kind === 'duplicate_slug' && c.value === 'legacy-site'), '診斷列出既有的網址英文名衝突：' + JSON.stringify(diag.conflicts));
+    const preview = (token, field, replacement, options = {}) => a.call(token, '/api/admin/project-identity/preview', 'POST', { projectId: 'p_legacy_a', field, replacement, ...options });
+    const plan = ok(within('修復預覽', await preview(boss.token, 'slug', 'legacy-alpha')), '修復預覽');
+    assert.deepEqual(plan.routes.map(r => [r.path, r.before?.projectId, r.after?.projectId]), [
+      ['/p/legacy-site', 'p_legacy_a', 'p_legacy_b'], ['/p/legacy-alpha', undefined, 'p_legacy_a'],
+    ]);
+    is(await preview(dan.token, 'slug', 'legacy-alpha'), 403, 'NOT_ADMIN', '只有平台管理員能預覽');
+    assert.deepEqual(ok(await a.call(boss.token, '/api/admin/project-identity'), '預覽後診斷'), diag);
     is(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 舊代號', code: 'OLDL' }), 409, 'CODE_TAKEN', '舊代號別名也算占用');
     is(await a.call(boss.token, '/api/projects', 'POST', { name: 'D1 撞正規化', code: stored['pcode:p_legacy_b'] }), 409, 'CODE_TAKEN', '正規化寫入的代號也算占用');
+    const alphaCard = ok(await a.call(boss.token, '/api/cards', 'POST', { project: 'p_legacy_a', title: 'Legacy Alpha card', requestId: 'legacy-alpha-card' }), '建立甲卡');
+    const betaCard = ok(await a.call(boss.token, '/api/cards', 'POST', { project: 'p_legacy_b', title: 'Legacy Beta card', requestId: 'legacy-beta-card' }), '建立乙卡');
+    const oldCode = stored['pcode:p_legacy_a'];
+    assert.deepEqual(await a.batch([["INSERT INTO app_settings (key, value) VALUES (?, 'p_legacy_b')", [`pcodeold:${oldCode}`]]]), { ok: true });
+    const codePlan = ok(within('代號修復預覽', await preview(boss.token, 'code', 'LEGZ')), '代號修復預覽');
+    const oldRef = codePlan.cardReferences.find(r => r.code === oldCode);
+    assert.equal(oldRef.ambiguous, true);
+    assert.deepEqual(oldRef.examples.map(r => [r.before?.legacyId, r.after?.legacyId]), [[alphaCard.legacyId, betaCard.legacyId]]);
+    assert.equal(ok(await a.call(boss.token, `/api/cards/${oldCode}-1`), '預覽後查卡').legacyId, alphaCard.legacyId);
+    const keep = ok(within('停用舊代號預覽', await preview(boss.token, 'code', oldCode, { retireAlias: true, reference: `${oldCode}-1` })), '保留現行代號');
+    assert.deepEqual(keep.retiredAlias, { code: oldCode, projectId: 'p_legacy_b' });
+    assert.deepEqual(keep.cardReferences[0].examples.map(r => [r.outcome, r.after?.legacyId]), [['same_card', alphaCard.legacyId]]);
+    assert.ok(keep.resolutionState);
     note(`舊專案代號：${stored['pcode:p_legacy_a']}、${stored['pcode:p_legacy_b']}；既有衝突 ${diag.conflicts.length} 處`);
   });
 
@@ -625,17 +645,23 @@ try {
   });
 
   await check('D1-12', '專案範本：選取本機預設值、停用後仍可依送出的內容核准', async () => {
+    // A fresh Worker process has a fresh per-participant request limiter; keep the main scenario run independent of this optional-feature check.
+    const worker = await A.dev({ vars: VARS });
+    running.push(worker);
+    const templateSite = site(worker.base, TOKEN);
     const base = '/api/workspace/project-templates';
     const draft = { name: '交付流程', visibility: 'private', statuses: THREE };
-    const t = ok(within('新增範本', await a.call(boss.token, base, 'POST', draft)), '新增範本');
-    const selected = ok(within('選取範本', await a.call(chen.token, `${base}/${t.id}`)), '選取範本');
+    const t = ok(within('新增範本', await templateSite.call(boss.token, base, 'POST', draft)), '新增範本');
+    const selected = ok(within('選取範本', await templateSite.call(chen.token, `${base}/${t.id}`)), '選取範本');
     assert.equal(selected.visibility, 'private');
-    const q = await submit(chen, { name: 'D1 範本申請', visibility: selected.visibility, statuses: selected.statuses });
-    const edited = ok(within('修改範本', await a.call(boss.token, `${base}/${t.id}`, 'PUT', { ...draft, visibility: 'open', expected: t })), '修改範本');
-    ok(within('停用範本', await a.call(boss.token, `${base}/${t.id}`, 'DELETE', { expected: edited })), '停用範本');
-    assert.equal((await a.call(chen.token, `${base}/${t.id}`)).status, 404, '不能再選取');
-    const resolved = ok(await approve(q), '核准');
-    const projects = ok(await a.call(chen.token, '/api/projects'), '查看建立結果');
+    const q = ok(await templateSite.call(chen.token, '/api/project-creation-requests', 'POST', {
+      requestId: 'd1-template-snapshot', name: 'D1 範本申請', reason: '驗證選取範本', visibility: selected.visibility, statuses: selected.statuses,
+    }), '送出範本申請');
+    const edited = ok(within('修改範本', await templateSite.call(boss.token, `${base}/${t.id}`, 'PUT', { ...draft, visibility: 'open', expected: t })), '修改範本');
+    ok(within('停用範本', await templateSite.call(boss.token, `${base}/${t.id}`, 'DELETE', { expected: edited })), '停用範本');
+    assert.equal((await templateSite.call(chen.token, `${base}/${t.id}`)).status, 404, '不能再選取');
+    const resolved = ok(await templateSite.call(boss.token, `/api/project-creation-requests/${q.id}/approve`, 'POST', {}), '核准');
+    const projects = ok(await templateSite.call(chen.token, '/api/projects'), '查看建立結果');
     const p = projects.items.find(p => p.id === resolved.project.id);
     assert.equal(p.visibility, 'private');
     assert.deepEqual(p.statuses.map(s => s.name), THREE.map(s => s.name));
@@ -665,9 +691,12 @@ try {
     const upgraded = await siteOld.dev({ vars: VARS });
     running.push(upgraded);
     const dest = site(upgraded.base, TOKEN);
+    const templateWorker = await A.dev({ vars: VARS });
+    running.push(templateWorker);
+    const sourceSite = site(templateWorker.base, TOKEN);
     const base = '/api/workspace/project-templates';
-    const template = ok(await a.call(boss.token, base, 'POST', { name: '備份範本', visibility: 'private', statuses: THREE }), '來源工作區新增範本');
-    const source = ok(await a.call(boss.token, '/api/admin/backup/rows?table=project_templates'), '來源工作區匯出範本');
+    const template = ok(await sourceSite.call(boss.token, base, 'POST', { name: '備份範本', visibility: 'private', statuses: THREE }), '來源工作區新增範本');
+    const source = ok(await sourceSite.call(boss.token, '/api/admin/backup/rows?table=project_templates'), '來源工作區匯出範本');
     const saved = source.rows.find(r => r.id === template.id);
     ok(await dest.call(admin.token, '/api/admin/restore/begin', 'POST', header), '升級後可重新開始匯入');
     for (const [table, rows] of Object.entries({ ...destinationRows, project_templates: [saved] })) {
