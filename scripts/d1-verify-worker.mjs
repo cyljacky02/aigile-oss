@@ -11,6 +11,7 @@
 //     POST /__d1verify/fault-status                   → { hits, left }
 import worker from '../worker.js';
 import { createApp } from '../src/core.js';
+import { createProjectIdentity } from '../src/project-identity.js';
 import { wrapD1 } from '../src/db-d1.js';
 import { isNotNullViolation, isConstraintViolation } from '../src/db-errors.js';
 
@@ -79,6 +80,11 @@ async function control(req, env, path) {
     if (path === 'query') return json({ rows: await db.all(body.sql, ...(body.args || [])) });
     if (path === 'batch') {
       try { await db.batch(body.stmts || []); return json({ ok: true }); } catch (e) { return json({ ok: false, error: String(e?.message ?? e), kind: kindOf(e) }); }
+    }
+    if (path === 'reconcile-claims') {
+      const reconciled = await createProjectIdentity({ db, nowIso: () => new Date().toISOString() }).reconcileDrainedClaims();
+      if (reconciled) stagedApp = null;
+      return json({ reconciled });
     }
     if (path === 'fault') {
       const hits = fault?.hits ?? 0;

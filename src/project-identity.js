@@ -10,7 +10,7 @@
 import { lockWorkspaceStmt, ensureStmt, notRestoringStmt, writeOrdered, RESTORE_STATE_KEY } from './write-order.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { claimAvailable, recoverableProjectClaims } from './project-claim-write.js';
-import { CLAIMS_VERSION, CLAIM_SCHEMA_QUERY, claimsSeeded, seedClaimsStmts, diagnoseClaims, notDisputed, routeToken } from './project-identity-claims.js';
+import { CLAIMS_VERSION, CLAIM_SCHEMA_QUERY, claimsSeeded, seedClaimsStmts, readClaimOnlyKeys, reconcileDrainedClaimStmts, diagnoseClaims, notDisputed, routeToken } from './project-identity-claims.js';
 
 export const CODE_RE = /^[A-Z]{2,5}$/;
 export const SLUG_DEFAULT = { '預設專案': 'main', '第二專案': 'second' }; // 舊站固定 id 的專案的網址英文名（卡號前綴取它的字母）
@@ -187,13 +187,14 @@ export function createProjectIdentity({ db, nowIso, waits }) {
   }
   // restoreRaw：還原收尾時確定仍是同一次還原，且不看正規化標記（一定重新算）。啟動時若還原中，先回 false。
   // 回 true＝已正規化；false＝這次沒做成（之後再試）；讀寫錯誤照丟
-  async function normalize({ restoreRaw, keepDisputes = false, attempts = 5 } = {}) {
+  async function normalize({ restoreRaw, keepDisputes = false, drained = false, attempts = 5 } = {}) {
     const finishingRestore = restoreRaw !== undefined;
     for (let i = 0; i < attempts; i++) {
       const state = await markers();
       const ready = state.get(IDENTITY_READY_KEY);
       if (state.get(RESTORE_STATE_KEY) !== restoreRaw) return false;
-      if (!finishingRestore && claimsSeeded(ready)) return true;
+      if (!drained && !finishingRestore && claimsSeeded(ready)) return true;
+      const claimOnlyKeys = drained ? await readClaimOnlyKeys(db) : null;
       const { rows, settings, shown } = await snapshot();
       const stored = new Map(settings.map(r => [r.key, r.value]));
       const items = rows.flatMap(r => [['slug:' + r.id, shown.slugs[r.id]], ['pcode:' + r.id, shown.codes[r.id]]])
@@ -204,6 +205,10 @@ export function createProjectIdentity({ db, nowIso, waits }) {
       const projectKeys = jsonPages(rows.map(r => ({ id: r.id, at: r.created_at })));
       const stmts = [lockWorkspaceStmt(DEFAULT_WORKSPACE),
         finishingRestore ? ensureStmt('EXISTS (SELECT 1 FROM app_settings WHERE key = ? AND value = ?)', [RESTORE_STATE_KEY, restoreRaw]) : notRestoringStmt(),
+        ...(drained ? [ensureStmt(`EXISTS (SELECT 1 FROM workspaces WHERE id = ?)
+          AND NOT EXISTS (SELECT 1 FROM workspaces WHERE id != ?)
+          AND NOT EXISTS (SELECT 1 FROM projects WHERE workspace_id IS NOT NULL AND workspace_id != ?)`,
+        [DEFAULT_WORKSPACE, DEFAULT_WORKSPACE, DEFAULT_WORKSPACE])] : []),
         // 別的執行個體先做完時，重讀標記。舊程式之後的寫入可能讓快照過時，不能在每次啟動時洗掉爭議來源。
         ...(finishingRestore ? [] : [ready === undefined
           ? ensureStmt('NOT EXISTS (SELECT 1 FROM app_settings WHERE key = ?)', [IDENTITY_READY_KEY])
@@ -215,7 +220,7 @@ export function createProjectIdentity({ db, nowIso, waits }) {
         ...settingSnapshotStmts(settings),
         ...Array.from(jsonPages(items), ([json]) => [`INSERT INTO app_settings (key, value) SELECT json_extract(value, '$.k'), json_extract(value, '$.v') FROM json_each(?)
           WHERE EXISTS (SELECT 1 FROM projects WHERE id = json_extract(value, '$.p')) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [json]]),
-        ...seedClaimsStmts({ keepDisputes: finishingRestore && keepDisputes }),
+        ...(drained ? reconcileDrainedClaimStmts(claimOnlyKeys) : seedClaimsStmts({ keepDisputes: finishingRestore && keepDisputes })),
         ['INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [IDENTITY_READY_KEY, JSON.stringify({ at: nowIso(), projects: rows.length, written: items.length, conflicts: conflicts.length, claimsVersion: CLAIMS_VERSION })]]];
       if (await writeOrdered(db, stmts, waits ? { waits } : {})) {
         if (conflicts.length) console.warn(`專案識別碼：既有的衝突 ${conflicts.length} 處（原樣保留，平台管理員在平台設定看得到）`, JSON.stringify(conflicts));
@@ -231,5 +236,6 @@ export function createProjectIdentity({ db, nowIso, waits }) {
     const claims = await diagnoseClaims(db, { rows, shown, marker: state.get(IDENTITY_READY_KEY), restoring: state.has(RESTORE_STATE_KEY) });
     return { normalized: state.has(IDENTITY_READY_KEY), rows, shown, conflicts: identityConflicts(rows, shown), claims };
   }
-  return { normalize, isNormalized, diagnose, snapshot };
+  // Maintenance only. A workspace lock cannot fence an older application.
+  return { normalize, reconcileDrainedClaims: () => normalize({ drained: true }), isNormalized, diagnose, snapshot };
 }

@@ -851,6 +851,24 @@ try {
     ok(await create(), '永久清除後可以使用原識別碼');
   });
 
+  await check('D1-16', '在停止舊寫入後核對並重建識別碼保留值', async () => {
+    const worker = await A.dev({ vars: VARS });
+    running.push(worker);
+    const claimSite = site(worker.base, TOKEN);
+    const create = (name, slug, code, staged) => claimSite.call(boss.token, '/api/projects', 'POST', { name, slug, code }, staged);
+    const { id } = ok(await create('D1 legacy project', 'legacy-d1-route', 'DLGY', false), '舊程式建案');
+    assert.deepEqual(await claimSite.ctl('reconcile-claims'), { reconciled: true });
+    const diagnose = async () => ok(await claimSite.call(boss.token, '/api/admin/project-identity', 'GET', undefined, true), '核對識別碼').claims;
+    assert.equal((await diagnose()).status, 'current');
+    // Stop using the staged writer, edit through the legacy writer, then reconcile again.
+    ok(await claimSite.call(boss.token, `/api/projects/${id}/slug`, 'PUT', { slug: 'legacy-d1-new' }), '舊程式改網址英文名');
+    ok(await claimSite.call(boss.token, `/api/projects/${id}/code`, 'PUT', { code: 'DLNEW' }), '舊程式改代號');
+    assert.deepEqual(await claimSite.ctl('reconcile-claims'), { reconciled: true });
+    assert.equal((await diagnose()).status, 'current');
+    ok(await create('D1 reused route', 'legacy-d1-route', 'DLUSE', true), '釋放已不用的網址英文名');
+    is(await create('D1 alias blocked', 'legacy-d1-free', 'DLGY', true), 409, 'CODE_TAKEN', '保留舊代號');
+  });
+
   if (usage.length) {
     console.log('\nD1 用量（每個請求＝一次 Worker 執行；查詢數裡 db.batch 整批算一次）：');
     const worst = [...usage].sort((x, y) => y.calls - x.calls);
