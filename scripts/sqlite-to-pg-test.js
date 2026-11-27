@@ -51,6 +51,9 @@ const card = (await call(boss.token, '/api/cards', 'POST', { requestId: 'c1', pr
 assert.ok(card.cardId, '建卡：' + JSON.stringify(card));
 await lite.run("UPDATE workspaces SET name = '搬家的工作區', create_projects = 'admins' WHERE id = 'default'"); // 跟建表時的預設值不一樣
 await lite.run("INSERT INTO avatars (participant_id, mime, data, updated_at) VALUES (?, 'image/png', ?, 't')", boss.participant.participantId, new Uint8Array([137, 80, 78, 71, 0, 255]));
+const projectId = lite.prepare('SELECT id FROM projects WHERE name = ?').get('預設專案').id;
+await lite.run("INSERT INTO project_identity_claims (namespace, value) VALUES ('code', 'MIGRATION-CLAIM')");
+await lite.run("INSERT INTO project_identity_claimants (namespace, value, project_id, source, raw_value) VALUES ('code', 'MIGRATION-CLAIM', ?, 'current_code', 'MIGRATION-CLAIM'), ('code', 'MIGRATION-CLAIM', ?, 'historical_code', 'OLD-MIGRATION-CLAIM')", projectId, projectId);
 await lite.close();
 
 // 實際搬
@@ -77,6 +80,12 @@ try {
   assert.equal((await pgdb.get("SELECT seq FROM messages WHERE id = 'msg_after'")).seq, maxSeq + 1, '流水號從最大號之後接');
   assert.deepEqual(await pgdb.all('SELECT id, name, create_projects FROM workspaces'), [{ id: 'default', name: '搬家的工作區', create_projects: 'admins' }], '工作區用來源的（建表時寫的預設那列不留）');
   assert.equal((await pgdb.get("SELECT value FROM app_settings WHERE key = 'isolation_since'")).value, src.prepare("SELECT value FROM app_settings WHERE key = 'isolation_since'").get().value, '設定用來源的');
+  assert.deepEqual(await pgdb.all("SELECT namespace, value FROM project_identity_claims WHERE value = 'MIGRATION-CLAIM'"), [{ namespace: 'code', value: 'MIGRATION-CLAIM' }], '全域識別碼 claim 搬過去');
+  assert.deepEqual(await pgdb.all("SELECT namespace, value, project_id, source, raw_value FROM project_identity_claimants WHERE value = 'MIGRATION-CLAIM' ORDER BY source"), [
+    { namespace: 'code', value: 'MIGRATION-CLAIM', project_id: projectId, source: 'current_code', raw_value: 'MIGRATION-CLAIM' },
+    { namespace: 'code', value: 'MIGRATION-CLAIM', project_id: projectId, source: 'historical_code', raw_value: 'OLD-MIGRATION-CLAIM' },
+  ], '目前代碼與歷史別名的 claimants 搬過去');
+  assert.deepEqual(await pgdb.all('SELECT id, project FROM cards WHERE id = ?', card.cardId), [{ id: card.cardId, project: projectId }], '既有卡片仍參照原專案');
 } finally { await pgdb.close(); src.close(); }
 
 // 搬過去的資料用伺服器（Postgres）打開：原本的登入碼照樣能用、看得到原本的卡

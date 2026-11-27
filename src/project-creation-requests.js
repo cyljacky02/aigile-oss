@@ -55,12 +55,12 @@ export const activeMemberCond = (id, workspaceId = DEFAULT_WORKSPACE) => ({
 export const directCreateCond = id => ({
   cond: `EXISTS (SELECT 1 FROM participants p WHERE p.id = ? AND (p.workspace_role = 'admin'
     OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.platform_role = 'admin' AND a.status = 'active')))`, args: [id] });
-// 審核人：有效的人類，是這個工作區的工作區管理員，或帳號是啟用中的平台管理員（隱含權限）。核准、拒絕在交易內斷言
+// 審核人：有效的人類且帳號未停用。工作區管理員須是該工作區的有效成員；平台管理員的權限屬於帳號，不依賴工作區成員資格（ADR 0002 隱含權限）。核准、拒絕在交易內斷言
 export const reviewerCond = (id, workspaceId = DEFAULT_WORKSPACE) => ({
   cond: `EXISTS (SELECT 1 FROM participants p WHERE p.id = ? AND p.kind = 'human' AND p.status = 'active'
     AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.status != 'active')
-    AND p.workspace_id = ? AND p.workspace_status = 'active'
-    AND (p.workspace_role = 'admin' OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.platform_role = 'admin' AND a.status = 'active')))`, args: [id, workspaceId] });
+    AND ((p.workspace_role = 'admin' AND p.workspace_id = ? AND p.workspace_status = 'active')
+      OR EXISTS (SELECT 1 FROM accounts a WHERE a.id = p.account_id AND a.platform_role = 'admin' AND a.status = 'active')))`, args: [id, workspaceId] });
 // 現在能直接建立專案（直接建立在交易內斷言）：審核人（工作區管理員或平台管理員），或政策是「所有成員」時的有效人類成員
 export const directCreateAllowedCond = (id, workspaceId = DEFAULT_WORKSPACE) => {
   const admin = reviewerCond(id, workspaceId), policy = policyCond(workspaceId, CREATE_PROJECTS.MEMBERS), member = activeMemberCond(id, workspaceId);
