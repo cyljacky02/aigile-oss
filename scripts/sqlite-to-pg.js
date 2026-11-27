@@ -40,8 +40,8 @@ export async function migrate({ from, to, schema, log = console.log }) {
   const src = new DatabaseSync(from, { readOnly: true });
   try {
     // 1. 來源的結構要是這版程式的
-    const tables = src.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name).filter(t => !SKIP.has(t))
-      .sort((a, b) => (a === 'project_identity_claims' ? -1 : b === 'project_identity_claims' ? 1 : a === 'project_identity_claimants' ? 1 : b === 'project_identity_claimants' ? -1 : 0));
+    // 識別碼宣稱列有外鍵，須等保留表搬完再搬。
+    const tables = src.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name = 'project_identity_claimants', name").all().map(r => r.name).filter(t => !SKIP.has(t));
     if (!tables.includes('participants')) throw new Error('來源不是 Aigile-Switch 的資料庫（沒有 participants 表）');
     const applied = new Set(tables.length && src.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get()
       ? src.prepare('SELECT name FROM schema_migrations').all().map(r => r.name) : []);

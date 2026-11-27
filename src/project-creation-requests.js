@@ -428,8 +428,9 @@ export function registerProjectCreationRequests(d) {
     const allowed = { cond: `EXISTS (SELECT 1 FROM workspaces WHERE id = ?)
       AND EXISTS (SELECT 1 FROM accounts WHERE id = ? AND status = 'active') AND (${role.cond})`, args: [scope, accountId, ...role.args] };
     if (member) {
-      allowed.cond += ' AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND account_id = ?)';
-      allowed.args.push(member.id, accountId);
+      // 交易內仍須是該工作區的成員，才能把審核歸給成員資格。
+      allowed.cond += ` AND EXISTS (SELECT 1 FROM participants WHERE id = ? AND ${reviewMembershipWhere})`;
+      allowed.args.push(member.id, accountId, scope);
     }
     // 工作區列先鎖，再跟平台角色／帳號狀態的異動在 accounts 列上排序。
     return { actor, decision, allowed, lock: ['UPDATE accounts SET status = status WHERE id = ?', [accountId]] };
