@@ -7,6 +7,7 @@ import { createApp } from '../src/core.js';
 import { createProjectIdentity } from '../src/project-identity.js';
 import { openTestDb, TEST_PG_URL } from './test-db.js';
 import { appCaller } from './test-call.js';
+import { adminSession } from './test-admin.js';
 
 const db = await openTestDb(TEST_PG_URL ? join(tmpdir(), `project-claims-cutover-${randomUUID()}.db`) : ':memory:', { legacyProjects: false });
 try {
@@ -36,6 +37,21 @@ try {
   assert.equal(reuse.status, 201, `reactivation releases a stale slug: ${JSON.stringify(reuse.body)}`);
   const historical = await create(resumed, 'Reserved code', 'available', 'LGY');
   assert.deepEqual([historical.status, historical.body.error?.code], [409, 'CODE_TAKEN']);
+
+  const purged = ok(await create(resumed, 'Rollback purge', 'purged-route', 'PURGE')).id;
+  ok(await resumed(token, `/api/projects/${purged}/code`, 'PUT', { code: 'AFTER' }));
+  // Roll back again. Legacy scheduled purge removes the settings and records
+  // the purge in the audit log, but leaves the staged claims behind.
+  const legacyApp = createApp({ db, docText: '' });
+  const rollback = appCaller(legacyApp);
+  const { token: admin } = await adminSession(rollback, token);
+  ok(await rollback(admin, `/api/projects/${purged}/archive`, 'POST'));
+  ok(await rollback(admin, `/api/projects/${purged}/delete`, 'POST', { confirmName: 'Rollback purge' }));
+  await db.run('UPDATE projects SET purge_at = ? WHERE id = ?', Date.now() - 1, purged);
+  assert.equal((await legacyApp.runScheduled()).purged.projects, 1);
+  await reconcile();
+  const afterPurge = await create(claimWriter(), 'Reuse purged code', 'used-after-purge', 'PURGE');
+  assert.equal(afterPurge.status, 201, `legacy permanent purge releases its historical code: ${JSON.stringify(afterPurge.body)}`);
 
   // Old backups may contain reservations with no corresponding legacy setting.
   await db.batch([

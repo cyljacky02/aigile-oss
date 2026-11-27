@@ -83,11 +83,13 @@ export function seedClaimsStmts({ keepDisputes }) {
 
 const emptyClaim = `NOT EXISTS (SELECT 1 FROM project_identity_claimants s
   WHERE s.namespace = c.namespace AND s.value = c.value)`;
+const purgedOwner = `NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = s.project_id)
+  AND EXISTS (SELECT 1 FROM audit_log a WHERE a.action = 'project.purge' AND a.scope_kind = 'project' AND a.project_id = s.project_id)`;
 export const readClaimOnlyKeys = db => db.all(`SELECT c.namespace, c.value FROM project_identity_claims c WHERE ${emptyClaim}`);
 
 // The caller has drained all writers and holds the Default Workspace lock.
-// Keep historical and disputed provenance. Drop obsolete singleton current
-// claims. An opaque key has no owner to whom we can safely assign it.
+// Keep disputed provenance and historical claims unless their owner was
+// purged. An ownerless key has no owner to whom we can safely assign it.
 export function reconcileDrainedClaimStmts(claimOnlyKeys) {
   const opaqueKeys = JSON.stringify(claimOnlyKeys);
   const opaqueMatch = `EXISTS (SELECT 1 FROM (SELECT value FROM json_each(?)) AS k
@@ -104,13 +106,15 @@ export function reconcileDrainedClaimStmts(claimOnlyKeys) {
         ON s.namespace = live.namespace AND s.value = live.value AND s.project_id != live.project_id
       WHERE NOT EXISTS (SELECT 1 FROM project_identity_claimants o
         WHERE o.namespace = live.namespace AND o.value = live.value AND o.project_id = live.project_id)
-      AND ((s.source = 'historical_code' AND (s.namespace, s.value, s.project_id, s.source, s.raw_value) NOT IN (${SOURCE_ROWS}))
+      AND ((s.source = 'historical_code' AND NOT (${purgedOwner})
+        AND (s.namespace, s.value, s.project_id, s.source, s.raw_value) NOT IN (${SOURCE_ROWS}))
         OR EXISTS (SELECT 1 FROM project_identity_claimants o
           WHERE o.namespace = s.namespace AND o.value = s.value AND o.project_id != s.project_id))
     )`),
-    [`DELETE FROM project_identity_claimants WHERE source != 'historical_code' AND (namespace, value) IN (
+    [`DELETE FROM project_identity_claimants AS s
+    WHERE (s.source != 'historical_code' OR (${purgedOwner})) AND (s.namespace, s.value) IN (
       SELECT namespace, value FROM project_identity_claimants GROUP BY namespace, value HAVING COUNT(DISTINCT project_id) = 1
-    ) AND (namespace, value, project_id, source, raw_value) NOT IN (${SOURCE_ROWS})`, []],
+    ) AND (s.namespace, s.value, s.project_id, s.source, s.raw_value) NOT IN (${SOURCE_ROWS})`, []],
     [`DELETE FROM project_identity_claims AS c WHERE ${emptyClaim} AND NOT (${opaqueMatch})`, [opaqueKeys]],
     ...insertSourceClaims(),
     ensureStmt(`NOT EXISTS (${SOURCE_ROWS}

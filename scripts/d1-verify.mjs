@@ -867,6 +867,14 @@ try {
     assert.equal((await diagnose()).status, 'current');
     ok(await create('D1 reused route', 'legacy-d1-route', 'DLUSE', true), '釋放已不用的網址英文名');
     is(await create('D1 alias blocked', 'legacy-d1-free', 'DLGY', true), 409, 'CODE_TAKEN', '保留舊代號');
+
+    assert.equal((await claimSite.batch([["INSERT INTO project_identity_claims (namespace, value) VALUES ('code', 'LOCKD')", []]])).ok, true);
+    ok(await create('D1 legacy conflicts', 'opaque-d1-code', 'LOCKD', false), '舊寫入看不到無宣稱者的保留值');
+    const marker = await claimSite.one("SELECT value FROM app_settings WHERE key = 'project_identity_ready'");
+    assert.deepEqual(await claimSite.ctl('reconcile-claims'), { reconciled: false });
+    assert.deepEqual(await claimSite.one("SELECT value FROM app_settings WHERE key = 'project_identity_ready'"), marker);
+    assert.equal(await claimSite.n("SELECT COUNT(*) FROM project_identity_claims WHERE namespace = 'code' AND value = 'LOCKD'"), 1);
+    assert.equal(await claimSite.n("SELECT COUNT(*) FROM project_identity_claimants WHERE namespace = 'code' AND value = 'LOCKD'"), 0);
   });
 
   if (usage.length) {
