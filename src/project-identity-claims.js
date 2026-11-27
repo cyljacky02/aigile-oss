@@ -1,4 +1,6 @@
 // ADR 0006：正規化時留下全站識別碼及來源的快照。切換所有寫入之前，舊設定仍負責查找與碰撞檢查。
+import { ensureStmt } from './write-order.js';
+
 export const CLAIMS_VERSION = 1;
 export const CLAIM_TABLES = ['project_identity_claims', 'project_identity_claimants'];
 export function isMissingClaimTable(error) {
@@ -58,6 +60,15 @@ const SOURCE_ROWS = `SELECT 'slug' AS namespace, lower(s.value) AS value, p.id A
   UNION ALL SELECT 'code', upper(substr(key, 10)), value, 'historical_code', substr(key, 10)
   FROM app_settings WHERE key >= 'pcodeold:' AND key < 'pcodeold;'`;
 
+const insertSourceClaims = () => [
+  [`INSERT INTO project_identity_claims (namespace, value)
+    SELECT DISTINCT namespace, value FROM (${SOURCE_ROWS}) AS sources WHERE 1 = 1
+    ON CONFLICT (namespace, value) DO NOTHING`, []],
+  [`INSERT INTO project_identity_claimants (namespace, value, project_id, source, raw_value)
+    SELECT namespace, value, project_id, source, raw_value FROM (${SOURCE_ROWS}) AS sources WHERE 1 = 1
+    ON CONFLICT (namespace, value, project_id, source, raw_value) DO NOTHING`, []],
+];
+
 // 還原先保留備份裡由不同專案共同宣稱的值，再用舊設定重建現況。由呼叫端在同一批交易內提交。
 export function seedClaimsStmts({ keepDisputes }) {
   return [
@@ -66,12 +77,51 @@ export function seedClaimsStmts({ keepDisputes }) {
     )` : 'DELETE FROM project_identity_claimants', []],
     [`DELETE FROM project_identity_claims WHERE NOT EXISTS (SELECT 1 FROM project_identity_claimants s
       WHERE s.namespace = project_identity_claims.namespace AND s.value = project_identity_claims.value)`, []],
-    [`INSERT INTO project_identity_claims (namespace, value)
-      SELECT DISTINCT namespace, value FROM (${SOURCE_ROWS}) AS sources WHERE 1 = 1
-      ON CONFLICT (namespace, value) DO NOTHING`, []],
-    [`INSERT INTO project_identity_claimants (namespace, value, project_id, source, raw_value)
-      SELECT namespace, value, project_id, source, raw_value FROM (${SOURCE_ROWS}) AS sources WHERE 1 = 1
-      ON CONFLICT (namespace, value, project_id, source, raw_value) DO NOTHING`, []],
+    ...insertSourceClaims(),
+  ];
+}
+
+const emptyClaim = `NOT EXISTS (SELECT 1 FROM project_identity_claimants s
+  WHERE s.namespace = c.namespace AND s.value = c.value)`;
+const purgedOwner = `NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = s.project_id)
+  AND EXISTS (SELECT 1 FROM audit_log a WHERE a.action = 'project.purge' AND a.scope_kind = 'project' AND a.project_id = s.project_id)`;
+export const readClaimOnlyKeys = db => db.all(`SELECT c.namespace, c.value FROM project_identity_claims c WHERE ${emptyClaim}`);
+
+// The caller has drained all writers and holds the Default Workspace lock.
+// Keep disputed provenance and historical claims unless their owner was
+// purged. An ownerless key has no owner to whom we can safely assign it.
+export function reconcileDrainedClaimStmts(claimOnlyKeys) {
+  const opaqueKeys = JSON.stringify(claimOnlyKeys);
+  const opaqueMatch = `EXISTS (SELECT 1 FROM (SELECT value FROM json_each(?)) AS k
+    WHERE json_extract(k.value, '$.namespace') = c.namespace AND json_extract(k.value, '$.value') = c.value)`;
+  return [
+    ensureStmt(`(SELECT COUNT(*) FROM project_identity_claims c WHERE ${emptyClaim}) = ?
+      AND NOT EXISTS (SELECT 1 FROM project_identity_claims c WHERE ${emptyClaim} AND NOT (${opaqueMatch}))`,
+    [claimOnlyKeys.length, opaqueKeys]),
+    ensureStmt(`NOT EXISTS (SELECT 1 FROM (${SOURCE_ROWS}) AS c WHERE ${opaqueMatch})`, [opaqueKeys]),
+    // A legacy reader may disagree with an existing reservation. Never admit
+    // a new owner to a claim-only historical key or an existing dispute.
+    ensureStmt(`NOT EXISTS (
+      SELECT 1 FROM (${SOURCE_ROWS}) AS live JOIN project_identity_claimants s
+        ON s.namespace = live.namespace AND s.value = live.value AND s.project_id != live.project_id
+      WHERE NOT EXISTS (SELECT 1 FROM project_identity_claimants o
+        WHERE o.namespace = live.namespace AND o.value = live.value AND o.project_id = live.project_id)
+      AND ((s.source = 'historical_code' AND NOT (${purgedOwner})
+        AND (s.namespace, s.value, s.project_id, s.source, s.raw_value) NOT IN (${SOURCE_ROWS}))
+        OR EXISTS (SELECT 1 FROM project_identity_claimants o
+          WHERE o.namespace = s.namespace AND o.value = s.value AND o.project_id != s.project_id))
+    )`),
+    [`DELETE FROM project_identity_claimants AS s
+    WHERE (s.source != 'historical_code' OR (${purgedOwner})) AND (s.namespace, s.value) IN (
+      SELECT namespace, value FROM project_identity_claimants GROUP BY namespace, value HAVING COUNT(DISTINCT project_id) = 1
+    ) AND (s.namespace, s.value, s.project_id, s.source, s.raw_value) NOT IN (${SOURCE_ROWS})`, []],
+    [`DELETE FROM project_identity_claims AS c WHERE ${emptyClaim} AND NOT (${opaqueMatch})`, [opaqueKeys]],
+    ...insertSourceClaims(),
+    ensureStmt(`NOT EXISTS (${SOURCE_ROWS}
+      EXCEPT SELECT namespace, value, project_id, source, raw_value FROM project_identity_claimants)
+      AND NOT EXISTS (SELECT 1 FROM project_identity_claimants s WHERE
+        s.value != CASE s.namespace WHEN 'slug' THEN lower(s.raw_value) ELSE upper(s.raw_value) END
+        OR NOT EXISTS (SELECT 1 FROM project_identity_claims c WHERE c.namespace = s.namespace AND c.value = s.value))`),
   ];
 }
 

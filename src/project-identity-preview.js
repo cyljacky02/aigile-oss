@@ -145,6 +145,7 @@ export async function prepareProjectIdentityRepair({ db, projectIdentity, ApiErr
   return {
     plan: { projectId, field, current, replacement, retiredAlias, projects: [...affected].map(info), conflicts, routes, cardReferences, codeChanges, pinnedCodes, state, resolutionState },
     changes,
+    claimKeys: [...checkedTokens].map(value => ({ namespace: field, value, acquire: true })),
     assertions: () => ({
       identity: [...identitySnapshotStmts({ rows, settings }), ...reservationSnapshotStmts(field, checkedTokens, relevantReservations)],
       resolution: cardResolutionStmt(cardWitnesses, sampleWitnesses),

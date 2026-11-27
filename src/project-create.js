@@ -20,6 +20,7 @@
 import { ensureStmt } from './write-order.js';
 import { slugFreeCond, codeFreeCond, ensureCond, holdsNow } from './project-identity.js';
 import { notDisputed, routeToken } from './project-identity-claims.js';
+import { newProjectClaimStmts } from './project-claim-write.js';
 import { DEFAULT_WORKSPACE } from './membership.js';
 import { AUDIT_ACTION, AUDIT_SCOPE } from './audit.js';
 import { PROJECT_VISIBILITIES } from './access.js';
@@ -50,7 +51,7 @@ const IDENTITY_TRIES = 3; // 自動產生的值最多試幾次
 //   names：讀現況、產生候選值與友善的錯誤（core.js 的專案快取與識別碼規則）
 //     refresh()、nameInUse(name, workspaceId)、usedSlugs() → Set、autoSlug(name, used)、autoCode(slug)、
 //     checkCode(code, actor)（被用掉丟 CODE_TAKEN）、slugTaken(slug, used) → ApiError、nameWriteFailed(id, name, workspaceId) → ApiError、afterWrite()
-export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, membership, projEvent, nameFreeCond, write, names }) {
+export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, membership, projEvent, nameFreeCond, write, names, claimWrites = false }) {
   const auditNotReady = () => new ApiError(503, 'AUDIT_NOT_READY', '稽核紀錄還沒準備好（資料庫還沒升級），這次沒有建立；請稍後再試。', { retryAfter: 5 });
 
   function stmts({ id, at, actor = null, beneficiary = null, method, requestId = null, spec, eventText = null, workspaceId = DEFAULT_WORKSPACE }) {
@@ -61,8 +62,10 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
     if (!audit && AUDIT_REQUIRED.has(method)) throw auditNotReady();
     const nf = nameFreeCond(name, id, workspaceId);
     return [
-      ensureStmt(nf.cond, nf.args), ensureCond(slugFreeCond(slug, id)), ensureCond(codeFreeCond(code, id)),
-      ensureStmt(notDisputed('slug'), [routeToken(id)]), // 舊網址也可以用專案 ID 開啟
+      ensureStmt(nf.cond, nf.args), ensureCond(slugFreeCond(slug, id, claimWrites)), ensureCond(codeFreeCond(code, id, claimWrites)),
+      // 舊網址也可以用專案 ID 開啟
+      ...(claimWrites ? [ensureCond(slugFreeCond(routeToken(id), id, true)), ...newProjectClaimStmts(id, slug, code)]
+        : [ensureStmt(notDisputed('slug'), [routeToken(id)])]),
       ['INSERT INTO projects (id, name, archived, workspace_id, created_by, created_at, visibility) VALUES (?,?,0,?,?,?,?)', [id, name, workspaceId, participantActorId, at, visibility]],
       projEvent(id, participantActorId, eventText ?? `${actor?.name ?? '系統'} 建立專案`, at),
       // 看板狀態跟專案同一批：沒指定就寫預設狀態組。每個狀態一句單列 INSERT（D1 一個複合 SELECT 最多 5 段，不用 UNION ALL）
@@ -98,11 +101,13 @@ export function createProjectCreation({ db, randId, nowIso, ApiError, auditLog, 
       if (mine) throw mine;
       const why = await names.nameWriteFailed(id, name, workspaceId);
       if (why.code === 'NAME_TAKEN') throw why;
-      const slugLost = !(await holdsNow(db, slugFreeCond(slug, id))), codeLost = !(await holdsNow(db, codeFreeCond(code, id)));
+      const slugLost = !(await holdsNow(db, slugFreeCond(slug, id, claimWrites)));
+      const codeLost = !(await holdsNow(db, codeFreeCond(code, id, claimWrites)));
+      const idLost = claimWrites && !(await holdsNow(db, slugFreeCond(routeToken(id), id, true)));
       await names.refresh();
       if (slugLost && spec.slug) throw names.slugTaken(slug, await names.usedSlugs());
-      if (codeLost && spec.code) names.checkCode(spec.code, actor); // 丟 CODE_TAKEN（占用者是看不到的私人專案時不說是哪個）
-      if (!(slugLost || codeLost) || attempt >= IDENTITY_TRIES) throw why;
+      if (codeLost && spec.code) names.checkCode(spec.code, actor); // 占用者是看不到的私人專案時不說是哪個
+      if (!(slugLost || codeLost || idLost) || attempt >= IDENTITY_TRIES) throw why;
     }
   }
   // 審核畫面用的預估：沒指定的網址英文名與代號現在會產生什麼（只是預估，建立時重算）、哪些欄位現在有衝突。
