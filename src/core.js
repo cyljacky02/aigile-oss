@@ -5044,8 +5044,8 @@ ${ending}`;
   }
   // 可復原期滿了的專案：每次最多 5 個（一個專案要好幾批），跑不完下次繼續。還沒升級資料庫（沒有 purge_at）時不做
   async function purgeDueProjects() {
-    const claimsFilter = projectClaimWrites ? `AND ${undisputedCurrentClaimsSql('p.id')}` : '';
-    const due = await db.all(`SELECT p.* FROM projects p WHERE p.deleted_at IS NOT NULL AND p.purge_at <= ? ${claimsFilter} ORDER BY p.purge_at LIMIT 5`, Date.now()).catch(() => []);
+    const claimsFilter = projectClaimWrites ? ` AND ${undisputedCurrentClaimsSql('projects.id')}` : '';
+    const due = await db.all(`SELECT * FROM projects WHERE deleted_at IS NOT NULL AND purge_at <= ?${claimsFilter} ORDER BY purge_at LIMIT 5`, Date.now()).catch(() => []);
     if (due.length) await loadProjects(true);
     let n = 0;
     for (const row of due) if (await purgeProject(row)) n++;
